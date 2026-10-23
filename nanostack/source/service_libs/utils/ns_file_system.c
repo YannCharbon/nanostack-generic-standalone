@@ -16,7 +16,9 @@
  */
 
 #include <string.h>
+#ifndef NS_FILE_NO_STDIO
 #include <stdio.h>
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include "nanostack/ns_file_system.h"
@@ -80,12 +82,16 @@ NS_FILE ns_fopen(const char *file_name, const char *mode)
         return file_open_cb(file_name, mode);
     }
 
+#ifdef NS_FILE_NO_STDIO
+    return NULL;
+#else
     FILE *file = fopen(file_name, mode);
     if (file == NULL) {
         return NULL;
     }
 
     return (NS_FILE) file;
+#endif
 }
 
 int ns_fclose(NS_FILE *ns_handle)
@@ -97,8 +103,12 @@ int ns_fclose(NS_FILE *ns_handle)
     if (file_close_cb) {
         return file_close_cb(ns_handle);
     }
+#ifdef NS_FILE_NO_STDIO
+    return -1;
+#else
     fclose((FILE *) ns_handle);
     return 0;
+#endif
 }
 
 int ns_fremove(const char *file_name)
@@ -111,7 +121,11 @@ int ns_fremove(const char *file_name)
         return -1;
     }
 
+#ifdef NS_FILE_NO_STDIO
+    return -1;
+#else
     return remove(file_name);
+#endif
 }
 
 size_t ns_fwrite(NS_FILE *ns_handle, const void *buffer, size_t size)
@@ -124,8 +138,12 @@ size_t ns_fwrite(NS_FILE *ns_handle, const void *buffer, size_t size)
         return file_write_cb(ns_handle, buffer, size);
     }
 
+#ifdef NS_FILE_NO_STDIO
+    return 0;
+#else
     rewind((FILE *) ns_handle);
     return fwrite(buffer, 1, size, (FILE *) ns_handle);
+#endif
 }
 
 size_t ns_fread(NS_FILE *ns_handle, void *buffer, size_t size)
@@ -138,8 +156,12 @@ size_t ns_fread(NS_FILE *ns_handle, void *buffer, size_t size)
         return file_read_cb(ns_handle, buffer, size);
     }
 
+#ifdef NS_FILE_NO_STDIO
+    return 0;
+#else
     rewind((FILE *) ns_handle);
     return fread(buffer, 1, size, (FILE *) ns_handle);
+#endif
 }
 
 int ns_fsize(NS_FILE *ns_handle, size_t *size)
@@ -152,6 +174,10 @@ int ns_fsize(NS_FILE *ns_handle, size_t *size)
         return file_size_cb(ns_handle, size);
     }
 
+#ifdef NS_FILE_NO_STDIO
+    return 0;
+#else
     fseek((FILE *) ns_handle, 0L, SEEK_END);
     return ftell((FILE *) ns_handle);
+#endif
 }

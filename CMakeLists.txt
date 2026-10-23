@@ -9,29 +9,51 @@ project(nanostack-generic-standalone C)
 #                               the stack's rand_* helpers (ns_rand.h)
 #   nanostack_libservice        mbed-client-libservice (ns_list, ns_trace, ...)
 #   nanostack_eventloop         nanostack-event-loop
-#   nanostack_port_linux        POSIX platform layer in port/posix (timers,
+#   nanostack_port_posix        POSIX platform layer in port/posix (timers,
 #                               FHSS timer, scheduler, critical sections,
-#                               random, logging)
+#                               random, logging). Only built when it is the
+#                               selected port (NANOSTACK_PORT)
 # Functions (a Nanostack build depends on compile-time configuration):
 #   nanostack_add_library(<name> CONFIG <nsconfig> [BORDER_ROUTER]
 #                         [DEFINITIONS <def>...])
 #                               6LoWPAN/IPv6/RPL/MPL/Wi-SUN upper layers
 #   nanostack_add_rcp_library(<name> [DEFINITIONS <def>...])
 #                               802.15.4 MAC, FHSS and CCM (RCP side)
+#
+# Options (GENERICITY_PLAN.md D9, D15, D18):
+#   NANOSTACK_PORT              target implementing the porting API
+#                               (include/ns_port/). Default
+#                               nanostack_port_posix. Another port is a target
+#                               of the consumer, which links nanostack_port_api;
+#                               then Threads, backtrace and libdl are not used.
+#   NANOSTACK_RCP_INPROCESS     the MAC is linked into the same image as the
+#                               upper layers: drop rcp/'s copy of
+#                               rf_driver_storage.c, nanostack/'s is used
+#   NANOSTACK_FILE_NO_STDIO     compile out the stdio fallback of
+#                               ns_file_system.c, for targets without files
+# mbedTLS: if the consumer already defines MbedTLS::mbedtls,
+# MbedTLS::mbedcrypto and MbedTLS::mbedx509, they are used as they are;
+# otherwise find_package(MbedTLS) looks for v3.0.0.
 
 set(NANOSTACK_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
-include(CheckIncludeFile)
-include(CheckSymbolExists)
-check_include_file(backtrace.h BACKTRACE_FOUND)
-set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_DL_LIBS})
-set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
-check_symbol_exists(dladdr dlfcn.h LIBDL_FOUND)
-unset(CMAKE_REQUIRED_LIBRARIES)
-unset(CMAKE_REQUIRED_DEFINITIONS)
+set(NANOSTACK_PORT nanostack_port_posix CACHE STRING "Target implementing the Nanostack porting API")
+option(NANOSTACK_RCP_INPROCESS "MAC in the same image as the upper layers: one rf_driver_storage.c" OFF)
+option(NANOSTACK_FILE_NO_STDIO "Compile out the stdio fallback of ns_file_system.c" OFF)
 
-set(THREADS_PREFER_PTHREAD_FLAG ON)
-find_package(Threads REQUIRED)
+if(NANOSTACK_PORT STREQUAL "nanostack_port_posix")
+    include(CheckIncludeFile)
+    include(CheckSymbolExists)
+    check_include_file(backtrace.h BACKTRACE_FOUND)
+    set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_DL_LIBS})
+    set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+    check_symbol_exists(dladdr dlfcn.h LIBDL_FOUND)
+    unset(CMAKE_REQUIRED_LIBRARIES)
+    unset(CMAKE_REQUIRED_DEFINITIONS)
+
+    set(THREADS_PREFER_PTHREAD_FLAG ON)
+    find_package(Threads REQUIRED)
+endif()
 if(NOT TARGET MbedTLS::mbedtls)
     find_package(MbedTLS REQUIRED)
     mark_as_advanced(MbedTLS_DIR)
@@ -60,7 +82,7 @@ target_include_directories(nanostack_libservice PUBLIC
     ${NANOSTACK_ROOT}/mbed-client-libservice/
 )
 # ns_rand.c gets its random bytes from the port.
-target_link_libraries(nanostack_libservice PUBLIC nanostack_port_api nanostack_port_linux)
+target_link_libraries(nanostack_libservice PUBLIC nanostack_port_api ${NANOSTACK_PORT})
 
 add_library(nanostack_eventloop STATIC
     nanostack-event-loop/source/event.c
@@ -69,32 +91,34 @@ add_library(nanostack_eventloop STATIC
 target_include_directories(nanostack_eventloop PUBLIC
     ${NANOSTACK_ROOT}/nanostack-event-loop/
 )
-target_link_libraries(nanostack_eventloop PUBLIC nanostack_libservice nanostack_port_linux)
+target_link_libraries(nanostack_eventloop PUBLIC nanostack_libservice ${NANOSTACK_PORT})
 
-# Includes stay "common/xxx.h", as in the original tree.
-add_library(nanostack_port_linux STATIC
-    port/posix/common/fhss_timer.c
-    port/posix/common/hal_interrupt.c
-    port/posix/common/os_timer.c
-    port/posix/common/os_scheduler.c
-    port/posix/common/log.c
-    port/posix/common/random.c
-    port/posix/common/slist.c
-)
-target_include_directories(nanostack_port_linux PUBLIC
-    ${NANOSTACK_ROOT}/port/posix/
-)
-# fhss_timer.c uses the stack's nanostack/mac/fhss_config.h.
-target_include_directories(nanostack_port_linux PRIVATE ${NANOSTACK_ROOT}/nanostack/)
-target_link_libraries(nanostack_port_linux PUBLIC Threads::Threads nanostack_eventloop)
-if(BACKTRACE_FOUND)
-    target_compile_definitions(nanostack_port_linux PUBLIC HAVE_BACKTRACE)
-    target_sources(nanostack_port_linux PRIVATE port/posix/common/backtrace_show.c)
-    target_link_libraries(nanostack_port_linux PUBLIC backtrace)
-endif()
-if(LIBDL_FOUND)
-    target_compile_definitions(nanostack_port_linux PRIVATE HAVE_LIBDL)
-    target_link_libraries(nanostack_port_linux PUBLIC ${CMAKE_DL_LIBS})
+if(NANOSTACK_PORT STREQUAL "nanostack_port_posix")
+    # Includes stay "common/xxx.h", as in the original tree.
+    add_library(nanostack_port_posix STATIC
+        port/posix/common/fhss_timer.c
+        port/posix/common/hal_interrupt.c
+        port/posix/common/os_timer.c
+        port/posix/common/os_scheduler.c
+        port/posix/common/log.c
+        port/posix/common/random.c
+        port/posix/common/slist.c
+    )
+    target_include_directories(nanostack_port_posix PUBLIC
+        ${NANOSTACK_ROOT}/port/posix/
+    )
+    # fhss_timer.c uses the stack's nanostack/mac/fhss_config.h.
+    target_include_directories(nanostack_port_posix PRIVATE ${NANOSTACK_ROOT}/nanostack/)
+    target_link_libraries(nanostack_port_posix PUBLIC Threads::Threads nanostack_eventloop)
+    if(BACKTRACE_FOUND)
+        target_compile_definitions(nanostack_port_posix PUBLIC HAVE_BACKTRACE)
+        target_sources(nanostack_port_posix PRIVATE port/posix/common/backtrace_show.c)
+        target_link_libraries(nanostack_port_posix PUBLIC backtrace)
+    endif()
+    if(LIBDL_FOUND)
+        target_compile_definitions(nanostack_port_posix PRIVATE HAVE_LIBDL)
+        target_link_libraries(nanostack_port_posix PUBLIC ${CMAKE_DL_LIBS})
+    endif()
 endif()
 
 set(NANOSTACK_SOURCES
@@ -257,8 +281,11 @@ function(nanostack_add_library name)
     if(ARG_DEFINITIONS)
         target_compile_definitions(${name} PRIVATE ${ARG_DEFINITIONS})
     endif()
+    if(NANOSTACK_FILE_NO_STDIO)
+        target_compile_definitions(${name} PRIVATE NS_FILE_NO_STDIO)
+    endif()
     target_link_libraries(${name} PUBLIC
-        nanostack_port_linux nanostack_eventloop nanostack_libservice
+        ${NANOSTACK_PORT} nanostack_eventloop nanostack_libservice
         MbedTLS::mbedtls MbedTLS::mbedcrypto MbedTLS::mbedx509)
 endfunction()
 
@@ -286,6 +313,9 @@ set(NANOSTACK_RCP_SOURCES
     rcp/fhss/fhss_ws.c
     # Excluded rcp/fhss/fhss_test_api.c
 )
+if(NANOSTACK_RCP_INPROCESS)
+    list(REMOVE_ITEM NANOSTACK_RCP_SOURCES rcp/mac/rf_driver_storage.c)
+endif()
 list(TRANSFORM NANOSTACK_RCP_SOURCES PREPEND ${NANOSTACK_ROOT}/)
 set(NANOSTACK_RCP_SOURCES ${NANOSTACK_RCP_SOURCES} CACHE INTERNAL "")
 
@@ -302,7 +332,7 @@ function(nanostack_add_rcp_library name)
         target_compile_definitions(${name} PRIVATE ${ARG_DEFINITIONS})
     endif()
     target_link_libraries(${name} PUBLIC
-        nanostack_port_linux nanostack_eventloop nanostack_libservice
+        ${NANOSTACK_PORT} nanostack_eventloop nanostack_libservice
         MbedTLS::mbedtls m)
 endfunction()
 
