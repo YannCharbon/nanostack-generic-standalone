@@ -17,7 +17,7 @@
 
 #include "nsconfig.h"
 
-#include "common/rand.h"
+#include "ns_rand.h"
 #include "service_libs/fnv_hash/fnv_hash.h"
 
 #include "ipv6_flow.h"

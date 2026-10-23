@@ -21,7 +21,7 @@
 #include "timer_sys.h"
 #include <stdlib.h>
 #include "event.h"
-#include "common/hal_interrupt.h"
+#include "ns_port/critical.h"
 
 
 typedef struct arm_core_tasklet {

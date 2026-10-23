@@ -18,7 +18,7 @@
 #include "nsconfig.h"
 
 #include <string.h>
-#include "common/rand.h"
+#include "ns_rand.h"
 #include "mbed-client-libservice/ns_list.h"
 #include <stdlib.h>
 #include "mbed-client-libservice/ns_trace.h"

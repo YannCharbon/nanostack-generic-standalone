@@ -21,7 +21,7 @@
 #include "ws_regulation.h"
 #include "6lowpan/mac/mac_helper.h"
 #include "nwk_interface/protocol.h"
-#include "common/utils.h"
+#include "ns_utils.h"
 
 /** Represent API for one regional regulation. */
 typedef struct ws_regulation_entry_s {

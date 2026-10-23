@@ -31,7 +31,7 @@
 #include "nsconfig.h"
 #include <stdint.h>
 #include <string.h>
-#include "common/rand.h"
+#include "ns_rand.h"
 #include "mbed-client-libservice/common_functions.h"
 
 #include "nwk_interface/protocol.h"

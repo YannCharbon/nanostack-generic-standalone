@@ -18,9 +18,9 @@
 #include "nanostack-event-loop/eventOS_event.h"
 #include <string.h>
 #include <stdlib.h>
-#include "common/rand.h"
+#include "ns_rand.h"
 #include "mbed-client-libservice/common_functions.h"
-#include "common/hal_interrupt.h"
+#include "ns_port/critical.h"
 #include "nanostack/mac/ccm.h"
 #include "nanostack/mac/mac_api.h"
 #include "nanostack/mac/fhss_api.h"

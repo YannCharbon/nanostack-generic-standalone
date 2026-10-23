@@ -5,6 +5,8 @@ project(nanostack-generic-standalone C)
 # that use them (border router, router, RCP) live in the consumer project.
 #
 # Targets:
+#   nanostack_port_api          include/: the porting API (ns_port/*.h) and
+#                               the stack's rand_* helpers (ns_rand.h)
 #   nanostack_libservice        mbed-client-libservice (ns_list, ns_trace, ...)
 #   nanostack_eventloop         nanostack-event-loop
 #   nanostack_port_linux        Linux platform layer (timers, scheduler,
@@ -34,6 +36,11 @@ if(NOT TARGET MbedTLS::mbedtls)
     mark_as_advanced(MbedTLS_DIR)
 endif()
 
+# Headers shared by the stack and every port: the porting API a port
+# implements (GENERICITY_PLAN.md §3) and the stack's rand_* helpers.
+add_library(nanostack_port_api INTERFACE)
+target_include_directories(nanostack_port_api INTERFACE ${NANOSTACK_ROOT}/include)
+
 # The repository root is kept on the include path, as it was in
 # wisun-mbed-simulator, so that "nanostack/...", "mbed-client-libservice/..."
 # and "nanostack-event-loop/..." style includes resolve unchanged.
@@ -50,6 +57,7 @@ target_include_directories(nanostack_libservice PUBLIC
     ${NANOSTACK_ROOT}
     ${NANOSTACK_ROOT}/mbed-client-libservice/
 )
+target_link_libraries(nanostack_libservice PUBLIC nanostack_port_api)
 
 add_library(nanostack_eventloop STATIC
     nanostack-event-loop/source/event.c

@@ -18,7 +18,7 @@
 #include <stdint.h>
 #include "mbed-client-libservice/ns_trace.h"
 #include <stdlib.h>
-#include "common/hal_interrupt.h"
+#include "ns_port/critical.h"
 #include "nanostack/mac/mac_api.h"
 #include "nanostack/mac/sw_mac.h"
 #include "nanostack/mac/mac_common_defines.h"

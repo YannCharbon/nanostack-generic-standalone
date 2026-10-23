@@ -25,7 +25,7 @@
 #include <stdlib.h>
 #include "mbed-client-libservice/common_functions.h"
 #include "nanostack-event-loop/eventOS_callback_timer.h"
-#include "common/rand.h"
+#include "ns_rand.h"
 #include <string.h>
 
 

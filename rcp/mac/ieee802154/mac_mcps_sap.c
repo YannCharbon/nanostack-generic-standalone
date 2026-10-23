@@ -31,9 +31,9 @@
 #include "nanostack/mac/mlme.h"
 #include "nanostack/mac/mac_api.h"
 #include "nanostack/mac/fhss_api.h"
-#include "common/hal_interrupt.h"
+#include "ns_port/critical.h"
 #include "mbed-client-libservice/common_functions.h"
-#include "common/rand.h"
+#include "ns_rand.h"
 
 #include "mac/ieee802154/sw_mac_internal.h"
 #include "mac/ieee802154/mac_defines.h"

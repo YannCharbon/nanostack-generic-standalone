@@ -17,7 +17,7 @@
 #include <stdint.h>
 #include "mbed-client-libservice/ns_trace.h"
 #include "nanostack-event-loop/eventOS_callback_timer.h"
-#include "common/hal_interrupt.h"
+#include "ns_port/critical.h"
 #include "mac/ieee802154/sw_mac_internal.h"
 #include "mac/ieee802154/mac_pd_sap.h"
 #include "mac/ieee802154/mac_timer.h"

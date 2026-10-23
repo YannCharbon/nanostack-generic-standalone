@@ -24,7 +24,7 @@
 #include "nsconfig.h"
 #include <stdint.h>
 #include <string.h>
-#include "common/rand.h"
+#include "ns_rand.h"
 #include "mbed-client-libservice/ip6string.h"
 #include "mbed-client-libservice/ns_trace.h"
 #include <stdlib.h>

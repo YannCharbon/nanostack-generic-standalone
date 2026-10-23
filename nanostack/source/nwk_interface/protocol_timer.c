@@ -17,7 +17,7 @@
 #include "nsconfig.h"
 #include <stdint.h>
 #include "mbed-client-libservice/ns_trace.h"
-#include "common/hal_interrupt.h"
+#include "ns_port/critical.h"
 #include "nanostack-event-loop/eventOS_event.h"
 #include "nanostack-event-loop/eventOS_callback_timer.h"
 #include "nwk_interface/protocol.h"

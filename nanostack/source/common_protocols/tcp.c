@@ -31,7 +31,7 @@
 #include "mbed-client-libservice/common_functions.h"
 #include "nanostack/net_interface.h"
 #include <stdlib.h>
-#include "common/rand.h"
+#include "ns_rand.h"
 
 #ifndef NO_TCP
 #define TRACE_GROUP "tcp"

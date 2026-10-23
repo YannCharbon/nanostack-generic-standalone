@@ -35,7 +35,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include "common/rand.h"
+#include "ns_rand.h"
 #include "mbed-client-libservice/common_functions.h"
 #include "mbed-client-libservice/ip6string.h"
 #include "mbed-client-libservice/ns_trace.h"
