@@ -7,9 +7,18 @@ repository of its own. The emulator that consumes it lives in
 
 This first step is a pure move: the code is the same as in
 `wisun-mbed-simulator`, file for file, and builds into the same machine code
-(see [Verification](#verification)). Nothing was fixed or redesigned. Making the
-stack generic (porting API, radio layer with timed operations, no RCP split,
-multi-instance) is the next stage.
+(see [Verification](#verification)). Nothing was fixed or redesigned.
+
+Status (2026-10-23):
+
+- The stack already runs unchanged on FreeRTOS on the EFR32FG25. See
+  [`nanostack-efr32fg25-freertos`](https://github.com/YannCharbon/nanostack-efr32fg25-freertos):
+  two boards form a valid Wi-SUN network.
+- Making the stack itself generic (porting API, POSIX port, in-process nodes)
+  has not started. The plan and its progress table are in
+  [`docs/GENERICITY_PLAN.md`](docs/GENERICITY_PLAN.md).
+- This is the Silicon Labs-derived Wi-SUN stack (see [Licensing](#licensing)).
+  It is not the code base for the fire-alarm protocol stack.
 
 ## Content
 

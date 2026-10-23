@@ -1,6 +1,19 @@
 # Making the extracted Nanostack generic: plan and specification
 
-Status: proposal, 2026-10-22. Experimental/PoC engineering, not product work.
+Status: proposal written 2026-10-22; progress updated 2026-10-23. Experimental/PoC engineering, not product work.
+
+## Progress (2026-10-23)
+
+| Steps (§6) | Status |
+| --- | --- |
+| S1–S5 (stack and emulator: port API, POSIX port, CMake, run loop, in-process nodes) | **Not started.** The stack is still the 1-to-1 extraction (`baseline-2026-10-23`) |
+| S6–S10 (EFR32FG25 FreeRTOS firmware) | **Done** in [`nanostack-efr32fg25-freertos`](https://github.com/YannCharbon/nanostack-efr32fg25-freertos). Two BRD4271A kits (Wi-SUN EU) form a valid network on 3 cold boots. Deviations from §5 are listed in that repo's README, "Design notes" |
+| S11 (optional extras) | Not started. Measurements on two boards are done: ACK turnaround, timer lateness, drift, heap |
+
+The order constraint in §6 ("S5 before S10") was not followed: the firmware was brought up first. It worked without S1–S5, because the firmware builds the stack from this repo's source lists with its own port. S1–S3 still make the porting boundary explicit, and they absorb the firmware's proposed patches (`nanostack-efr32fg25-freertos/docs/stack-patches/`).
+
+The workspace-level tracker is `documents/pre-study/STATUS.md` in [`mesh-emulator-rework`](https://github.com/YannCharbon/mesh-emulator-rework).
+
 Scope: workstream "separate the stack from the emulator and make it generic".
 This builds on, and does not repeat:
 
@@ -16,7 +29,7 @@ Unless noted, paths are relative to:
 
 Line numbers refer to the current trees: stack = extraction of `wisun-mbed-simulator` `d86eb34`.
 
-Measurement artefacts (scratch, not committed) are in `/tmp/claude-1000/-home-yann-mesh-emulator-rework/d4ddb9d0-f90a-45e0-b53f-a1c82161aa85/scratchpad/genericity/`:
+Measurement artefacts were kept in a session scratch directory, not committed, and are not preserved. The firmware repo supersedes them. They were:
 
 - `build.sh`: cross-compile script;
 - `proto/app_inproc.c`: in-process BR/RN link prototype;
@@ -556,7 +569,7 @@ Vendor code (SDK, RAIL) lives only in this repository's `port/` and `drivers/`. 
 ### 5.2 Repository
 
 - **Name:** `nanostack-efr32fg25-freertos`. The product-track name `firemesh-efr32` from the pre-study stays reserved for the later non-IP stack.
-- **The stack is a git submodule:** `third_party/nanostack-generic-standalone`, pinned.
+- **The stack is a git submodule:** `third_party/nanostack-generic-standalone`, pinned. *(As built: the firmware takes the stack from `NANOSTACK_DIR`, default `../nanostack-generic-standalone`, and reads its source lists from this repo's `CMakeLists.txt`.)*
 
 ```
 nanostack-efr32fg25-freertos/
@@ -857,7 +870,8 @@ All estimates are **estimates** for one engineer who knows the code base. PD = p
    - Using the SDK's 3.6.x (2025.6: 3.6.2; 2025.12/2026.6: 3.6.4) needs these changes: `psa_crypto_init()`; `mbedtls_ssl_conf_min/max_tls_version`; disable TLS 1.3; check `mbedtls_ssl_tls_prf`/export-keys behaviour; check `MBEDTLS_ECP_RESTARTABLE` versus the SDK's hardware ECC drivers.
    - Silicon Labs plans Mbed TLS 4 / TF-PSA-Crypto, with legacy `mbedtls_*` crypto APIs ending in about June 2027. That matters only for product work.
    - Running v3.0.0 next to the SDK requires that no SDK component pulls in its own mbedTLS (RAIL and NVM3 don't).
-3. **Footprint.** It fits (§5.8). The RAIL library size is an estimate; confirm it at S6.
+   - *Outcome (2026-10-23):* v3.0.0 works on target. One spec bug surfaced: §5.4's configuration left no strong entropy source, so every TLS handshake failed. The firmware fixes this by registering the SE TRNG as a strong source.
+3. **Footprint.** It fits (§5.8). *Outcome:* BR 552 kB and RN 502 kB of flash, of which RAIL is about 123 kB. That is with full newlib: newlib-nano can't print 64-bit integers and crashed the BR. Static RAM is about 260 kB, including a 200 kB heap; the peak heap use was 46 kB.
 4. **FHSS and MAC timing on RAIL** (highest technical risk):
    - Enh-ACK at T+1 ms after MAC processing, with the peer's ACK wait about 10–21 ms.
    - Absolute-time CCA/TX through `CCA_PREPARE`.
@@ -865,12 +879,19 @@ All estimates are **estimates** for one engineer who knows the code base. PD = p
    - Single-task latency under EAP-TLS ECC.
    - Mitigations: RAIL scheduled TX; Phase-B MAC context; restartable ECC; measure at S8/S10.
    - Also unverified: whether the SDK-shipped Wi-SUN radio configs set the 15.4g PHR/FCS options as the MAC expects (no FCS in the PSDU, 4-byte CRC, data whitening per PHR). Check at S8.
+   - *Outcome (2026-10-23, two boards):*
+     - The PHR, FCS and whitening interoperate.
+     - Enh-ACK goes out 1.4–2.3 ms after RX end.
+     - RAIL refuses a scheduled TX with less than about 400 µs of lead time. The driver schedules at least 400 µs ahead and falls back to an immediate start.
+     - Timer lateness is 1.2–1.5 ms once joined.
+     - EAP-TLS ECC blocks the stack task for 0.7–0.9 s. The join still works; the mitigations above remain open.
 5. **Wi-SUN certificate compatibility.** The `examples/` certificates are a demo PKI (CN "Wi-SUN Demo Root CA") with the Wi-SUN FAN EKU and HW-module SAN. They work between our BR and RN because both trust the same CA. Interop with Silicon Labs' certified stack or a real Wi-SUN PKI is out of scope. If ever tried, use the Wi-SUN Alliance test PKI.
 6. **SDK tooling.**
    - Not tried: whether `slc generate` runs the Radio Configurator headless on Linux.
    - Fallback: generate `rail_config.c` once in Studio and commit it.
+   - *Outcome:* `slc generate` runs headless on Linux, Radio Configurator included. The fallback was not needed.
    - From 2025.12 on, Silicon Labs distributes the SDK through SLT/Conan; pinning 2025.6.x on GitHub avoids that for the PoC.
-7. **Wi-SUN PHY choice.** NA/1/1b matches the shipped radio config and the Partner's band. The emulator examples use EU/2/3. Run the emulator once with NA/1/1b so the simulated and hardware set-ups are comparable.
+7. **Wi-SUN PHY choice.** NA/1/1b matches the shipped radio config and the Partner's band. The emulator examples use EU/2/3. Run the emulator once with NA/1/1b so the simulated and hardware set-ups are comparable. *Outcome:* the available kits are BRD4271A, matched for 868 MHz only, and 902–928 MHz may not be used over the air in Europe. So hardware runs use EU/1/1a (69 channels, 50 kbit/s). NA/1/1b remains a build variant for BRD4270B. To compare the emulator with the bench, run it with EU/1/1a.
 8. **Divergence between in-process and split mode** (§2.2: timestamp source, initial MTU 127 vs 2043, Enh-ACK produced in-process). The emulator stays split until S5 shows equivalence; differences are expected to be benign but must be measured.
 9. **Unbounded heap.** There is no allocation cap (D20). The BR under many concurrent joins can exhaust RAM; the 2-board PoC is unaffected. Log the heap high-water mark.
 10. **No persistence in step 1.** Every reboot is a fresh join with a new BR GTK. The frame counter is not persisted, which is acceptable for the PoC; NVM3 storage comes in S11.
