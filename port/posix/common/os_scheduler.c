@@ -12,6 +12,8 @@
 #include "os_types.h"
 #include "log.h"
 
+struct os_ctxt g_os_ctxt = { };
+
 void eventOS_scheduler_os_init(struct os_ctxt *ctxt)
 {
     pipe(ctxt->event_fd);

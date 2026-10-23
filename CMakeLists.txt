@@ -9,8 +9,9 @@ project(nanostack-generic-standalone C)
 #                               the stack's rand_* helpers (ns_rand.h)
 #   nanostack_libservice        mbed-client-libservice (ns_list, ns_trace, ...)
 #   nanostack_eventloop         nanostack-event-loop
-#   nanostack_port_linux        Linux platform layer (timers, scheduler,
-#                               critical sections, random, logging)
+#   nanostack_port_linux        POSIX platform layer in port/posix (timers,
+#                               FHSS timer, scheduler, critical sections,
+#                               random, logging)
 # Functions (a Nanostack build depends on compile-time configuration):
 #   nanostack_add_library(<name> CONFIG <nsconfig> [BORDER_ROUTER]
 #                         [DEFINITIONS <def>...])
@@ -45,6 +46,7 @@ target_include_directories(nanostack_port_api INTERFACE ${NANOSTACK_ROOT}/includ
 # wisun-mbed-simulator, so that "nanostack/...", "mbed-client-libservice/..."
 # and "nanostack-event-loop/..." style includes resolve unchanged.
 add_library(nanostack_libservice STATIC
+    source/ns_rand.c
     mbed-client-libservice/source/libBits/common_functions.c
     # Excluded mbed-client-libservice/source/libip4string
     mbed-client-libservice/source/libip6string/ip6tos.c
@@ -57,7 +59,8 @@ target_include_directories(nanostack_libservice PUBLIC
     ${NANOSTACK_ROOT}
     ${NANOSTACK_ROOT}/mbed-client-libservice/
 )
-target_link_libraries(nanostack_libservice PUBLIC nanostack_port_api)
+# ns_rand.c gets its random bytes from the port.
+target_link_libraries(nanostack_libservice PUBLIC nanostack_port_api nanostack_port_linux)
 
 add_library(nanostack_eventloop STATIC
     nanostack-event-loop/source/event.c
@@ -70,20 +73,23 @@ target_link_libraries(nanostack_eventloop PUBLIC nanostack_libservice nanostack_
 
 # Includes stay "common/xxx.h", as in the original tree.
 add_library(nanostack_port_linux STATIC
-    port/linux/common/hal_interrupt.c
-    port/linux/common/os_timer.c
-    port/linux/common/os_scheduler.c
-    port/linux/common/log.c
-    port/linux/common/rand.c
-    port/linux/common/slist.c
+    port/posix/common/fhss_timer.c
+    port/posix/common/hal_interrupt.c
+    port/posix/common/os_timer.c
+    port/posix/common/os_scheduler.c
+    port/posix/common/log.c
+    port/posix/common/random.c
+    port/posix/common/slist.c
 )
 target_include_directories(nanostack_port_linux PUBLIC
-    ${NANOSTACK_ROOT}/port/linux/
+    ${NANOSTACK_ROOT}/port/posix/
 )
+# fhss_timer.c uses the stack's nanostack/mac/fhss_config.h.
+target_include_directories(nanostack_port_linux PRIVATE ${NANOSTACK_ROOT}/nanostack/)
 target_link_libraries(nanostack_port_linux PUBLIC Threads::Threads nanostack_eventloop)
 if(BACKTRACE_FOUND)
     target_compile_definitions(nanostack_port_linux PUBLIC HAVE_BACKTRACE)
-    target_sources(nanostack_port_linux PRIVATE port/linux/common/backtrace_show.c)
+    target_sources(nanostack_port_linux PRIVATE port/posix/common/backtrace_show.c)
     target_link_libraries(nanostack_port_linux PUBLIC backtrace)
 endif()
 if(LIBDL_FOUND)

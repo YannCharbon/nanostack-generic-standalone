@@ -13,11 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+/*
+ * The stack's rand_* helpers (ns_rand.h), on top of the port's random source
+ * (ns_port/random.h). Moved out of the Linux port (GENERICITY_PLAN.md D1).
+ */
 #include <stdint.h>
-#include <stdio.h>
 #include <limits.h>
-#include "common/rand.h"
-#include "common/log.h"
+#include "ns_rand.h"
+#include "ns_port/random.h"
 
 uint8_t rand_get_8bit(void)
 {
@@ -53,13 +56,7 @@ uint64_t rand_get_64bit(void)
 
 void *rand_get_n_bytes_random(void *ptr, uint8_t count)
 {
-    static FILE *dev_urandom;
-    int ret;
-
-    if (!dev_urandom)
-        dev_urandom = fopen("/dev/urandom", "r");
-    ret = fread(ptr, 1, count, dev_urandom);
-    FATAL_ON(ret != count, 2, );
+    ns_port_random_bytes(ptr, count);
     return ptr;
 }
 

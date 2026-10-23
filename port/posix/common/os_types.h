@@ -11,21 +11,16 @@
 
 struct slist;
 
+// Port-private state of the POSIX port. The UART fields that used to live
+// here belong to the emulator's Spinel transport (GENERICITY_PLAN.md D7).
 struct os_ctxt {
-    int     trig_fd;
-    int     data_fd;
-    int     spi_recv_window;
-    bool    uart_next_frame_ready;
-    int     uart_rx_buf_len;
-    uint8_t uart_rx_buf[2048];
-
     int event_fd[2];
     struct slist *timers;
     struct slist *fhss_timers;
 };
 
 // This global variable is necessary for various API of nanostack. Beside this
-// case, please never use it.
+// case, please never use it. Defined in os_scheduler.c.
 extern struct os_ctxt g_os_ctxt;
 
 #endif
