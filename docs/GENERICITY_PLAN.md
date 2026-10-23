@@ -17,9 +17,9 @@ The workspace-level tracker is `documents/pre-study/STATUS.md` in [`mesh-emulato
 Scope: workstream "separate the stack from the emulator and make it generic".
 This builds on, and does not repeat:
 
-- `documents/pre-study/Investigation_Nanostack_Emulator.md` §4;
-- `documents/pre-study/investigation/q4_coupling.md`;
-- `documents/pre-study/investigation/q4_architecture.md`;
+- `documents/pre-study/investigation/Investigation_Nanostack_Emulator.md` §4;
+- `documents/pre-study/investigation/reports/q4_coupling.md`;
+- `documents/pre-study/investigation/reports/q4_architecture.md`;
 - `documents/pre-study/legal/MSLA_License_Review.md`.
 
 Unless noted, paths are relative to:
