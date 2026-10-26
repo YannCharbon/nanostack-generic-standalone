@@ -41,6 +41,7 @@ int eventOS_callback_timer_unregister(int id)
 int eventOS_callback_timer_start(int id, uint16_t slots) { (void)slots; return id < 0 ? -1 : 0; }
 int eventOS_callback_timer_stop(int id) { return id < 0 ? -1 : 0; }
 
+void ns_port_init(void) { events_pending = 0; }
 void eventOS_scheduler_signal(void) { events_pending = 1; }
 
 static void (*poll_hook)(void);

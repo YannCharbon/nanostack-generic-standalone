@@ -5,6 +5,7 @@
  */
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <sys/timerfd.h>
 
 #include "os_timer.h"
@@ -12,28 +13,59 @@
 #include "slist.h"
 #include "log.h"
 
+static struct callback_timer *timer_get(int ns_timer_id)
+{
+    struct os_ctxt *ctxt = &g_os_ctxt;
+    struct callback_timer *item;
+
+    SLIST_FOR_EACH_ENTRY(ctxt->timers, item, node)
+        if (item->id == ns_timer_id)
+            return item;
+    BUG("unknown callback timer %d", ns_timer_id);
+    return NULL;
+}
+
+static int timer_fd(int ns_timer_id)
+{
+    return timer_get(ns_timer_id)->fd;
+}
+
 int eventOS_callback_timer_register(void (*timer_interrupt_handler)(int, uint16_t))
 {
     struct callback_timer *item = calloc(1, sizeof(struct callback_timer));
     struct os_ctxt *ctxt = &g_os_ctxt;
+    struct callback_timer *other;
+    bool used;
 
+    // Lowest free ID
+    for (item->id = 0; ; item->id++) {
+        used = false;
+        SLIST_FOR_EACH_ENTRY(ctxt->timers, other, node)
+            if (other->id == item->id)
+                used = true;
+        if (!used)
+            break;
+    }
     item->fn = timer_interrupt_handler;
     item->fd = timerfd_create(CLOCK_MONOTONIC, 0);
     FATAL_ON(item->fd < 0, 2);
     fcntl(item->fd, F_SETFL, O_NONBLOCK);
     slist_push(&ctxt->timers, &item->node);
-    return item->fd;
+    return item->id;
 }
 
 int eventOS_callback_timer_unregister(int ns_timer_id)
 {
     struct os_ctxt *ctxt = &g_os_ctxt;
     struct callback_timer *item;
+    int id;
 
-    close(ns_timer_id);
-    item = SLIST_REMOVE(ctxt->timers, item, node, item->fd == ns_timer_id);
+    item = SLIST_REMOVE(ctxt->timers, item, node, item->id == ns_timer_id);
     BUG_ON(!item);
-    return item->fd;
+    close(item->fd);
+    id = item->id;
+    free(item);
+    return id;
 }
 
 int eventOS_callback_timer_start(int ns_timer_id, uint16_t slots)
@@ -45,7 +77,7 @@ int eventOS_callback_timer_start(int ns_timer_id, uint16_t slots)
         .it_value.tv_nsec = (slots_us % 1000000) * 1000,
     };
 
-    ret = timerfd_settime(ns_timer_id, 0, &timer, NULL);
+    ret = timerfd_settime(timer_fd(ns_timer_id), 0, &timer, NULL);
     FATAL_ON(ret < 0, 2, "timerfd_settime: %m");
     return 0;
 }
@@ -55,7 +87,7 @@ int eventOS_callback_timer_stop(int ns_timer_id)
     int ret;
     struct itimerspec timer = { };
 
-    ret = timerfd_settime(ns_timer_id, 0, &timer, NULL);
+    ret = timerfd_settime(timer_fd(ns_timer_id), 0, &timer, NULL);
     FATAL_ON(ret < 0, 2, "timerfd_settime: %m");
     return 0;
 }
@@ -63,7 +95,7 @@ int eventOS_callback_timer_stop(int ns_timer_id)
 int eventOS_callback_timer_expired(int ns_timer_id)
 {
     struct itimerspec timer = { };
-    int ret = timerfd_gettime(ns_timer_id, &timer);
+    int ret = timerfd_gettime(timer_fd(ns_timer_id), &timer);
     FATAL_ON(ret < 0, 2, "timerfd_gettime: %m");
     if(timer.it_value.tv_sec > 0) {
         return 0;
@@ -79,7 +111,7 @@ int eventOS_callback_timer_start_sec(int ns_timer_id, int sec)
         .it_value.tv_nsec = 0,
     };
 
-    ret = timerfd_settime(ns_timer_id, 0, &timer, NULL);
+    ret = timerfd_settime(timer_fd(ns_timer_id), 0, &timer, NULL);
     FATAL_ON(ret < 0, 2, "timerfd_settime: %m");
     return 0;
 }
@@ -92,7 +124,7 @@ int eventOS_callback_timer_start_usec(int ns_timer_id, int usec)
         .it_value.tv_nsec = (usec % 1000000) * 1000,
     };
 
-    ret = timerfd_settime(ns_timer_id, 0, &timer, NULL);
+    ret = timerfd_settime(timer_fd(ns_timer_id), 0, &timer, NULL);
     FATAL_ON(ret < 0, 2, "timerfd_settime: %m");
     return 0;
 }
@@ -101,7 +133,7 @@ int eventOS_callback_timer_start_usec(int ns_timer_id, int usec)
 int eventOS_callback_timer_expired_usec(int ns_timer_id)
 {
     struct itimerspec timer = { };
-    int ret = timerfd_gettime(ns_timer_id, &timer);
+    int ret = timerfd_gettime(timer_fd(ns_timer_id), &timer);
     FATAL_ON(ret < 0, 2, "timerfd_gettime: %m");
     if(timer.it_value.tv_sec > 0 || (timer.it_value.tv_nsec/1000) > 0) {
         return 0;

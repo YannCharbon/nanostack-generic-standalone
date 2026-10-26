@@ -5,20 +5,26 @@ The Nanostack network stack used by the Wi-SUN mesh emulator, extracted from
 repository of its own. The emulator that consumes it lives in
 [`mesh-emulator-orchestrator`](../mesh-emulator-orchestrator).
 
-This first step is a pure move: the code is the same as in
-`wisun-mbed-simulator`, file for file, and builds into the same machine code
-(see [Verification](#verification)). Nothing was fixed or redesigned.
+The extraction was a pure move: the code was the same as in
+`wisun-mbed-simulator`, file for file, and built into the same machine code
+(tag `baseline-2026-10-23`). Since then the stack was made portable, step by
+step, without changing the stack code itself (see [Verification](#verification)):
 
-Status (2026-10-23):
+- a porting API (`include/ns_port/`) that every port implements;
+- the Linux layer became the POSIX port (`port/posix/`), with the run loop
+  that the emulator programs used to copy;
+- the port is chosen at build time, so a firmware builds the stack with
+  `add_subdirectory()` and its own port;
+- the emulator can run nodes with the MAC in the same process.
 
-- The stack already runs unchanged on FreeRTOS on the EFR32FG25. See
-  [`nanostack-efr32fg25-freertos`](https://github.com/YannCharbon/nanostack-efr32fg25-freertos):
-  two boards form a valid Wi-SUN network.
-- Making the stack itself generic (porting API, POSIX port, in-process nodes)
-  has not started. The plan and its progress table are in
-  [`docs/GENERICITY_PLAN.md`](docs/GENERICITY_PLAN.md).
-- This is the Silicon Labs-derived Wi-SUN stack (see [Licensing](#licensing)).
-  It is not the code base for the fire-alarm protocol stack.
+The plan and its progress table are in
+[`docs/GENERICITY_PLAN.md`](docs/GENERICITY_PLAN.md). The stack runs on FreeRTOS
+on the EFR32FG25, see
+[`nanostack-efr32fg25-freertos`](https://github.com/YannCharbon/nanostack-efr32fg25-freertos).
+
+This is the Silicon Labs-derived Wi-SUN stack (see [Licensing](#licensing)). It
+is an internal tool for the emulator and our tests. It is not the code base of
+the fire-alarm protocol stack, which takes no code from it.
 
 ## Content
 
@@ -28,15 +34,41 @@ Status (2026-10-23):
 | `nanostack-event-loop/` | `nanostack-event-loop/` | Event loop and callback timers |
 | `mbed-client-libservice/` | `mbed-client-libservice/` | `ns_list`, `ns_trace`, IPv6 string helpers |
 | `rcp/mac/`, `rcp/fhss/`, `rcp/ccm/` | `app_wshwsim/mac/`, `fhss/`, `ccm/` | IEEE 802.15.4 MAC, FHSS and CCM, which run on the RCP side |
-| `port/linux/common/` | `common/` (OS parts) | Linux platform layer: timers (timerfd), scheduler, critical sections, random, logging, lists |
+| `port/posix/common/` | `common/` (OS parts) | POSIX port: timers (timerfd), FHSS timer, scheduler signal and run loop, critical sections, random, logging, lists |
+| `include/ns_port/` | — | The porting API: what a port implements |
+| `include/ns_rand.h`, `source/ns_rand.c` | `common/rand.*` | The stack's `rand_*` helpers, built on the port's random source |
+| `tests/cross/` | — | Cross-build check: Cortex-M33, stub port |
 
 `rcp/` keeps its own `mac/rf_driver_storage.h`, which differs slightly from
 `nanostack/source/mac/rf_driver_storage.h`, exactly as before.
 
-`port/linux/common/` keeps the `common/` directory name, so the stack's
-`#include "common/rand.h"` style includes are unchanged. The Spinel/UART
-transport (`bus_uart`, `spinel_buffer`) is emulator plumbing and stayed in the
-orchestrator.
+`port/posix/common/` keeps the `common/` directory name, so applications keep
+`#include "common/log.h"` style includes. The stack itself includes only
+`ns_port/*.h` and `ns_rand.h`. The Spinel/UART transport (`bus_uart`,
+`spinel_buffer`) is emulator plumbing and stayed in the orchestrator.
+
+## Porting API
+
+`include/ns_port/ns_port.h` includes everything a port provides
+(`docs/GENERICITY_PLAN.md` §3.1 has the full contract):
+
+| Header | Functions |
+| --- | --- |
+| `critical.h` | `platform_critical_init()`, `platform_enter_critical()`, `platform_exit_critical()` |
+| `timer.h` | `eventOS_callback_timer_register/unregister/start/stop()`: 50 µs slots, IDs from 0 |
+| `sched.h` | `ns_port_init()`, `eventOS_scheduler_signal()`, `ns_port_run()`, `ns_port_add_poll_hook()` |
+| `random.h` | `ns_port_random_bytes()`: must be a real TRNG on hardware, it seeds TLS |
+| `time.h` | `ns_port_time_us()`, the timebase of the radio timestamps; `ns_port_time_wall_s()` (optional) |
+| `fhss_timer.h` | `ns_port_fhss_timer`, the `fhss_timer_t` passed to `ws_management_node_init()` |
+| `trace.h` | `ns_port_trace_write()`, for `mbed_trace_print_function_set()` |
+
+The stack calls `malloc()`/`free()` directly, stores files through
+`ns_file_system_callbacks_set()` and does AES through `arm_hal_aes.h`.
+
+The POSIX port adds calls for programs with their own file descriptors
+(`port/posix/common/os_scheduler.h`): `ns_port_posix_add_fd()`,
+`ns_port_posix_add_scheduler()` and `ns_port_posix_set_busy()`. The three
+emulator programs use them instead of their own `pselect()` loops.
 
 The git history of these files was carried over with `git filter-repo`
 (paths renamed as in the table).
@@ -60,9 +92,25 @@ target_link_libraries(my_app PRIVATE nanostack_ws_router)
 
 Fixed targets:
 
+- `nanostack_port_api`: the porting API headers (interface target)
 - `nanostack_libservice`
 - `nanostack_eventloop`
-- `nanostack_port_linux`
+- `nanostack_port_posix`, only when it is the selected port
+
+Options:
+
+- `NANOSTACK_PORT` names the target that implements the porting API. The
+  default is `nanostack_port_posix`. A firmware sets it to its own target,
+  which links `nanostack_port_api`; then Threads, libbacktrace and libdl are
+  not used.
+- `NANOSTACK_FILE_NO_STDIO=ON` compiles out the stdio fallback of
+  `ns_file_system.c`, for targets without files.
+- `nanostack_add_rcp_library(<name> INPROCESS)` builds the MAC for an image
+  that also holds the upper layers: it leaves out `rcp/`'s copy of
+  `rf_driver_storage.c`.
+- mbedTLS: if `MbedTLS::mbedtls`, `MbedTLS::mbedcrypto` and `MbedTLS::mbedx509`
+  already exist (for example as aliases of the consumer's own build), they are
+  used; otherwise `find_package(MbedTLS)` looks for v3.0.0.
 
 The upper layers are built through functions because their compile-time
 configuration (`NSCONFIG`, debug defines, border-router-only files) differs
@@ -88,6 +136,16 @@ ninja -C build
 This builds the default variants listed above. It needs Threads and
 MbedTLS v3.0.0, plus libbacktrace if it is installed.
 
+The cross-build check builds the stack for a Cortex-M33 with a stub port, as a
+firmware would, and links a border router and a router image:
+
+```bash
+tests/cross/run.sh <mbedtls v3.0.0 source tree>
+```
+
+It needs `arm-none-eabi-gcc`. The GitHub workflow runs it, and the default
+build, on every push.
+
 `-std=gnu17 -fpermissive` is needed with GCC ≥ 14. GCC 15 defaults to C23 and
 turns several legacy warnings into errors, so the inherited code doesn't build
 without those flags (the same holds for `wisun-mbed-simulator`).
@@ -109,6 +167,12 @@ same compiler and flags:
   or added.
 - **Runtime:** `dag_simple` (15 nodes) runs were compared against the
   reference. See `mesh-emulator-orchestrator/MIGRATION.md`.
+
+The genericity steps S1–S5 kept those gates (`docs/GENERICITY_PLAN.md`,
+Progress): every Nanostack, event loop, libservice and MAC/FHSS/CCM object is
+still identical to the reference, and the port and emulator changes were
+checked with 5 `dag_simple` runs per step, including runs with the MAC
+in-process. The cross-build check covers the non-POSIX build.
 
 ## Licensing
 

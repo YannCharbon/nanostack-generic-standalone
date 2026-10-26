@@ -9,7 +9,10 @@
 #include "nanostack-event-loop/eventOS_callback_timer.h"
 #include "slist.h"
 
+// Timer IDs are small integers allocated by the port (ns_port/timer.h), not
+// the timerfd (D4).
 struct callback_timer {
+    int id;
     int fd;
     void (*fn)(int, uint16_t);
     struct slist node;

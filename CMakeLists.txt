@@ -17,8 +17,12 @@ project(nanostack-generic-standalone C)
 #   nanostack_add_library(<name> CONFIG <nsconfig> [BORDER_ROUTER]
 #                         [DEFINITIONS <def>...])
 #                               6LoWPAN/IPv6/RPL/MPL/Wi-SUN upper layers
-#   nanostack_add_rcp_library(<name> [DEFINITIONS <def>...])
-#                               802.15.4 MAC, FHSS and CCM (RCP side)
+#   nanostack_add_rcp_library(<name> [INPROCESS] [DEFINITIONS <def>...])
+#                               802.15.4 MAC, FHSS and CCM (RCP side).
+#                               INPROCESS: the MAC is linked into the same
+#                               image as the upper layers, so rcp/'s copy of
+#                               rf_driver_storage.c is left out and
+#                               nanostack/'s is used (D15)
 #
 # Options (GENERICITY_PLAN.md D9, D15, D18):
 #   NANOSTACK_PORT              target implementing the porting API
@@ -26,9 +30,6 @@ project(nanostack-generic-standalone C)
 #                               nanostack_port_posix. Another port is a target
 #                               of the consumer, which links nanostack_port_api;
 #                               then Threads, backtrace and libdl are not used.
-#   NANOSTACK_RCP_INPROCESS     the MAC is linked into the same image as the
-#                               upper layers: drop rcp/'s copy of
-#                               rf_driver_storage.c, nanostack/'s is used
 #   NANOSTACK_FILE_NO_STDIO     compile out the stdio fallback of
 #                               ns_file_system.c, for targets without files
 # mbedTLS: if the consumer already defines MbedTLS::mbedtls,
@@ -38,7 +39,6 @@ project(nanostack-generic-standalone C)
 set(NANOSTACK_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 set(NANOSTACK_PORT nanostack_port_posix CACHE STRING "Target implementing the Nanostack porting API")
-option(NANOSTACK_RCP_INPROCESS "MAC in the same image as the upper layers: one rf_driver_storage.c" OFF)
 option(NANOSTACK_FILE_NO_STDIO "Compile out the stdio fallback of ns_file_system.c" OFF)
 
 if(NANOSTACK_PORT STREQUAL "nanostack_port_posix")
@@ -61,8 +61,12 @@ endif()
 
 # Headers shared by the stack and every port: the porting API a port
 # implements (GENERICITY_PLAN.md §3) and the stack's rand_* helpers.
+# ns_port/timer.h and sched.h include the event loop's own declarations.
 add_library(nanostack_port_api INTERFACE)
-target_include_directories(nanostack_port_api INTERFACE ${NANOSTACK_ROOT}/include)
+target_include_directories(nanostack_port_api INTERFACE
+    ${NANOSTACK_ROOT}/include
+    ${NANOSTACK_ROOT}/nanostack-event-loop/
+)
 
 # The repository root is kept on the include path, as it was in
 # wisun-mbed-simulator, so that "nanostack/...", "mbed-client-libservice/..."
@@ -313,17 +317,18 @@ set(NANOSTACK_RCP_SOURCES
     rcp/fhss/fhss_ws.c
     # Excluded rcp/fhss/fhss_test_api.c
 )
-if(NANOSTACK_RCP_INPROCESS)
-    list(REMOVE_ITEM NANOSTACK_RCP_SOURCES rcp/mac/rf_driver_storage.c)
-endif()
 list(TRANSFORM NANOSTACK_RCP_SOURCES PREPEND ${NANOSTACK_ROOT}/)
 set(NANOSTACK_RCP_SOURCES ${NANOSTACK_RCP_SOURCES} CACHE INTERNAL "")
 
 # The RCP side has its own copy of mac/rf_driver_storage.h, so rcp/ comes
 # before nanostack/ and nanostack/source/ is not on its include path.
 function(nanostack_add_rcp_library name)
-    cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "DEFINITIONS")
-    add_library(${name} STATIC ${NANOSTACK_RCP_SOURCES})
+    cmake_parse_arguments(PARSE_ARGV 1 ARG "INPROCESS" "" "DEFINITIONS")
+    set(srcs ${NANOSTACK_RCP_SOURCES})
+    if(ARG_INPROCESS)
+        list(REMOVE_ITEM srcs ${NANOSTACK_ROOT}/rcp/mac/rf_driver_storage.c)
+    endif()
+    add_library(${name} STATIC ${srcs})
     target_include_directories(${name} PUBLIC
         ${NANOSTACK_ROOT}/rcp/
         ${NANOSTACK_ROOT}/nanostack/

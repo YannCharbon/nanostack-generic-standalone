@@ -87,6 +87,7 @@ int main(void)
     platform_critical_init();
     mbed_trace_init();
     mbed_trace_print_function_set(ns_port_trace_write);
+    ns_port_init();
     eventOS_scheduler_init();
     rf_id = arm_net_phy_register(&radio);
     arm_net_phy_mac64_set(eui64, rf_id);

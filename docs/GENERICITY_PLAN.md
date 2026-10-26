@@ -1,16 +1,20 @@
 # Making the extracted Nanostack generic: plan and specification
 
-Status: proposal written 2026-10-22; progress updated 2026-10-23. Experimental/PoC engineering, not product work.
+Proposal written 2026-10-22; progress below. Internal engineering (emulator and test tooling), not product work.
 
-## Progress (2026-10-23)
+## Progress
 
 | Steps (§6) | Status |
 | --- | --- |
-| S1–S5 (stack and emulator: port API, POSIX port, CMake, run loop, in-process nodes) | **Not started.** The stack is still the 1-to-1 extraction (`baseline-2026-10-23`) |
+| S1: porting API headers | **Done** (2026-10-23). `include/ns_port/*.h`; the stack includes them instead of the port's `common/*.h`; the `rand_*` API moved to `include/ns_rand.h`. Gate G1: all 317 stack objects identical to the reference |
+| S2: split `rand.c` and `os_types.h`, FHSS timer into the port, `port/linux` → `port/posix` | **Done** (2026-10-23). Gate G1 for the stack objects; moved functions identical apart from the intended changes; G3: 5 + 5 `dag_simple` runs, 66/70 routers ready against 64/70 for the reference, median ready time 144 s against 152 s, no parent outside the topology |
+| S3: port chosen at build time, mbedTLS from the consumer, one `rf_driver_storage.c` in-process, cross-build check | **Done** (2026-10-23). `NANOSTACK_PORT`, `NANOSTACK_FILE_NO_STDIO` (firmware patch 0001), `nanostack_add_rcp_library(... INPROCESS)` (patch 0002 in another form), `tests/cross` and a GitHub workflow. The firmware now builds the stack with `add_subdirectory()` and drops its workarounds |
+| S4: POSIX `ns_port_run()` with fd hooks, timer IDs by index | **Done** (2026-10-26). G1 for the stack objects; G3: 5 runs, 63/70 routers ready against 64/70, median 152 s against 152 s. `ns_port_init()` joined the API (§3.1.3). The three emulator programs register their inputs in their old order; wsbrd keeps its old poll timeout (`ns_port_posix_set_poll_timeout()`) |
+| S5: `wsnode-inproc`, `wsbrd-inproc` | **Done** (2026-10-26). G3: mixed runs (split BR, in-process routers) 66/70 ready, median 137 s; all in-process 66/70, median 148 s; no parent outside the topology. The emulator's default stays the split mode (§4.2). `sl_rf_driver.c` takes its context from `g_rf_host`; `sl_rf_inproc.c` creates the radio and MAC, and keeps the neighbour list the CCA uses |
 | S6–S10 (EFR32FG25 FreeRTOS firmware) | **Done** in [`nanostack-efr32fg25-freertos`](https://github.com/YannCharbon/nanostack-efr32fg25-freertos). Two BRD4271A kits (Wi-SUN EU) form a valid network on 3 cold boots. Deviations from §5 are listed in that repo's README, "Design notes" |
 | S11 (optional extras) | Not started. Measurements on two boards are done: ACK turnaround, timer lateness, drift, heap |
 
-The order constraint in §6 ("S5 before S10") was not followed: the firmware was brought up first. It worked without S1–S5, because the firmware builds the stack from this repo's source lists with its own port. S1–S3 still make the porting boundary explicit, and they absorb the firmware's proposed patches (`nanostack-efr32fg25-freertos/docs/stack-patches/`).
+The order constraint in §6 ("S5 before S10") was not followed: the firmware was brought up first, building the stack from this repo's source lists with its own port. S1–S3 then made that boundary explicit and absorbed the firmware's patches.
 
 The workspace-level tracker is `documents/pre-study/STATUS.md` in [`mesh-emulator-rework`](https://github.com/YannCharbon/mesh-emulator-rework).
 
@@ -333,6 +337,7 @@ int  eventOS_callback_timer_stop(int timer_id);
 #### 3.1.3 `ns_port/sched.h`: scheduler signal and run loop
 
 ```c
+void ns_port_init(void);                /* once, before eventOS_scheduler_init() (added in S4) */
 void eventOS_scheduler_signal(void);   /* ISR- and task-safe: "events pending" */
 /* Provided by the port, called by the application in the stack task/thread:
  * initialises the event loop and never returns. Each iteration:
@@ -350,6 +355,7 @@ void ns_port_add_poll_hook(void (*hook)(void));
 - `ns_port_run` = the `pselect` loop factored out of `wsbr.c:386-434`.
 - Apps register their extra fds (TUN, D-Bus, UART) through an fd-hook variant, `ns_port_posix_add_fd(fd, cb)`.
 - **For gate G1 the emulator apps may keep their own loops.** Factoring the loop out is a step that is verified by dag_simple runs.
+- *As built (S4):* `ns_port_posix_add_fd(fd, except, cb, pending)`, `ns_port_posix_add_scheduler(one_event)` to place the event loop among the inputs, `ns_port_posix_set_busy()` and `ns_port_posix_set_poll_timeout()` (`port/posix/common/os_scheduler.h`). Inputs run in the order they are added, then callback timers, FHSS timers and poll hooks.
 
 **FreeRTOS:**
 
