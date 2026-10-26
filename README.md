@@ -17,8 +17,13 @@ step, without changing the stack code itself (see [Verification](#verification))
   `add_subdirectory()` and its own port;
 - the emulator can run nodes with the MAC in the same process.
 
-The plan and its progress table are in
-[`docs/GENERICITY_PLAN.md`](docs/GENERICITY_PLAN.md). The stack runs on FreeRTOS
+Documentation:
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): how the stack was made
+  generic, before and after;
+- [`docs/PORTING.md`](docs/PORTING.md): how to port it to a new platform;
+- [`docs/GENERICITY_PLAN.md`](docs/GENERICITY_PLAN.md): the plan, its
+  specification and the progress table. The stack runs on FreeRTOS
 on the EFR32FG25, see
 [`nanostack-efr32fg25-freertos`](https://github.com/YannCharbon/nanostack-efr32fg25-freertos).
 
