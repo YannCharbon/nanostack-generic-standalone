@@ -1050,10 +1050,14 @@ bool ws_bootstrap_network_name_matches(const struct mcps_data_ie_list *ie_ext, c
 static void ws_bootstrap_decode_exclude_range_to_mask_by_range(void *mask_buffer, ws_excluded_channel_range_t *range_info, uint16_t number_of_channels)
 {
     uint16_t range_start, range_stop;
-    uint8_t mask_index = 0;
-    //uint8_t channel_index = 0;
     uint8_t *range_ptr = range_info->range_start;
-    uint32_t *mask_ptr = mask_buffer;
+    // The mask is read back by ws_neighbour_excluded_mask_by_mask() as
+    // big-endian 32-bit words with reversed bit order, i.e. channel c is bit
+    // (7 - c % 8) of byte c / 8. Writing native uint32_t words here
+    // (1U << (31 - c % 32)) only matched that on big-endian CPUs: on x86 and
+    // Cortex-M the excluded channels came out scrambled and unicast frames
+    // were sent on channels the neighbour does not listen on.
+    uint8_t *mask_ptr = mask_buffer;
     while (range_info->number_of_range) {
         range_start = common_read_16_bit_inverse(range_ptr);
         range_ptr += 2;
@@ -1061,14 +1065,8 @@ static void ws_bootstrap_decode_exclude_range_to_mask_by_range(void *mask_buffer
         range_ptr += 2;
         range_info->number_of_range--;
         for (uint16_t channel = 0; channel < number_of_channels; channel++) {
-
-            if (channel && (channel % 32 == 0)) {
-                mask_index++;
-                //channel_index = 0;
-            }
             if (channel >= range_start && channel <= range_stop) {
-                //mask_ptr[mask_index] |= 1U << (31 - channel_index);
-                mask_ptr[channel / 32] |= 1U << (31 - (channel % 32));
+                mask_ptr[channel / 8] |= 0x80 >> (channel % 8);
             } else if (channel > range_stop) {
                 break;
             }

@@ -175,10 +175,13 @@ The results are in the plan's progress table and in the orchestrator's
   §2.4). This is not planned: the emulator keeps one process per node and gets
   virtual time from a conductor and a simulation port instead (workspace
   decision DI2, `documents/pre-study/investigation/Virtual_Time_Study.md`).
-- **Known stack issues** found while porting are listed in the workspace
-  tracker (`documents/pre-study/STATUS.md`, GS6). The most important: the FHSS
-  broadcast-slot handler holds a critical section of up to about 600 µs
-  (`rcp/fhss/fhss_ws.c:312-429`). See [PORTING.md](PORTING.md), "Pitfalls".
+- **Stack issues found while porting** were fixed in workspace step GS6:
+  - shorter FHSS critical sections;
+  - an endianness bug that broke unicast with a channel mask;
+  - `rand_get_random_in_range()` with an empty range;
+  - an option to register the port's TRNG as a strong TLS entropy source.
+
+  See [PORTING.md](PORTING.md), "Pitfalls", and the plan's progress table.
 - **Licence.** This is the Silicon Labs-derived Nanostack, with MSLA-covered
   changes (README, Licensing). It is an internal tool for the emulator and our
   tests.

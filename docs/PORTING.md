@@ -265,10 +265,13 @@ The stack needs mbedTLS v3.0.0. Required features (GENERICITY_PLAN.md D12):
 
 On a target:
 
-- **Register a strong entropy source.** The stack registers its own source as
-  *weak*, so with `MBEDTLS_NO_PLATFORM_ENTROPY` and nothing else, every TLS
-  handshake fails ("drbg seed fail"). Define `MBEDTLS_ENTROPY_HARDWARE_ALT` and
-  implement `mbedtls_hardware_poll()` on your TRNG.
+- **Register a strong entropy source.** By default the stack registers its own
+  source (the port's random bytes) as *weak*, so with
+  `MBEDTLS_NO_PLATFORM_ENTROPY` and nothing else, every TLS handshake fails
+  ("drbg seed fail"). Either define `MBEDTLS_ENTROPY_HARDWARE_ALT` and implement
+  `mbedtls_hardware_poll()` on your TRNG (what the EFR32 firmware does), or, if
+  `ns_port_random_bytes()` is a real TRNG, build with
+  `NANOSTACK_TLS_STRONG_PORT_ENTROPY=ON` so the stack registers it as strong.
 - **Undefine `MBEDTLS_HAVE_TIME` and `MBEDTLS_HAVE_TIME_DATE`** if there is no
   real-time clock. Otherwise certificates appear "not yet valid" at 1970.
 - Remove `MBEDTLS_NET_C`, `MBEDTLS_TIMING_C`, `MBEDTLS_FS_IO` and
@@ -276,17 +279,20 @@ On a target:
 
 ## 7. Pitfalls found so far
 
-- **Long critical sections can make the radio lose a TX.** The FHSS
-  broadcast-slot handler (`rcp/fhss/fhss_ws.c:312-429`) holds a critical
-  section of up to about 600 µs, with a trace, timer restarts, a channel change
-  and random draws inside. On the EFR32 this masked RAIL's interrupts across a
-  scheduled CCA TX start. RAIL then silently dropped the TX, and the driver
-  waited for it forever. Give your driver a **TX watchdog**: if no TX event has
-  come by the start time + air time + a margin, abort, report `CCA_FAIL` and go
-  back to RX (firmware `rail_phy.c`).
-- **Don't block inside critical sections.** The same handler draws random
-  numbers. If your TRNG refills by a blocking call, keep its pool filled from a
-  poll hook, outside critical sections.
+- **Long critical sections can make the radio lose a TX.** The FHSS handlers
+  hold critical sections while they update the hopping state. Before GS6 the
+  broadcast-slot handler kept a trace and a random draw inside its section,
+  which lasted up to about 600 µs on the EFR32FG25 (Cortex-M33). That masked
+  RAIL's interrupts across a scheduled CCA TX start; RAIL then silently
+  dropped the TX, and the driver waited for it forever. The trace and the draw
+  now run after the section, as does `fhss_ws_set_parent()`'s trace. On the
+  board the longest sections are now about 170–250 µs, with one 396 µs
+  outlier at MAC start. That is still long, so give your driver a **TX
+  watchdog**: if no TX event has come by the start time + air time + a margin,
+  abort, report `CCA_FAIL` and go back to RX (firmware `rail_phy.c`).
+- **Don't block inside critical sections.** Since GS6 the stack draws no
+  random numbers inside its critical sections, but keep your TRNG non-blocking
+  anyway: a blocking refill inside any critical section has the same effect.
 - **Printf with 64-bit values.** The stack traces with `PRIu64`/`PRIi64`.
   newlib-nano cannot format them, mis-reads the following arguments and
   crashed the border router. Use full newlib, or a printf that supports them.

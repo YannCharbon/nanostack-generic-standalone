@@ -88,14 +88,18 @@ uint16_t rand_get_random_in_range(uint16_t min, uint16_t max)
      * (Bias problem clearly pretty insignificant there, but gets worse as
      * range increases).
      */
-    const unsigned int values_needed = max + 1 - min;
-    const unsigned int band_size = UINT32_MAX / values_needed;
-    const unsigned int top_of_bands = band_size * values_needed;
+    unsigned int values_needed, band_size, top_of_bands;
     unsigned int result;
 
-    /* Obvious special case */
-    if (min == max)
+    /* Obvious special case. An empty range (max < min) also returns min:
+     * values_needed would be 0 (division by zero for max == min - 1) or
+     * huge (an arbitrary 16-bit result). */
+    if (max <= min)
         return min;
+
+    values_needed = max + 1 - min;
+    band_size = UINT32_MAX / values_needed;
+    top_of_bands = band_size * values_needed;
 
     do {
         result = rand_get_32bit();

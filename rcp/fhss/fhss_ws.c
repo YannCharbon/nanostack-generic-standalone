@@ -305,6 +305,16 @@ static void fhss_broadcast_handler(const fhss_api_t *fhss_api, uint16_t delay)
 {
     (void) delay;
     int32_t next_channel;
+    // The trace and the TX queue poll timer are done after the critical
+    // section, from values captured inside it. The section masks interrupts
+    // on targets; a trace and a random draw (which may refill a TRNG pool)
+    // inside it made it last up to ~600 us on the EFR32FG25, long enough for
+    // the radio to drop a scheduled transmission.
+    uint32_t trace_timestamp;
+    uint16_t trace_bc_slot;
+    bool trace_on_bc_channel;
+    bool poll_random = false;
+    uint16_t poll_min_random = 0, poll_max_random = 0;
     fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);
     if (!fhss_structure) {
         return;
@@ -355,7 +365,9 @@ static void fhss_broadcast_handler(const fhss_api_t *fhss_api, uint16_t delay)
         fhss_structure->ws->bc_slot %= fhss_structure->number_of_bc_channels;
     }
 
-    tr_info("%"PRIu32" BC slot: %d On BC ch %d",fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api), fhss_structure->ws->bc_slot, fhss_structure->ws->is_on_bc_channel);
+    trace_timestamp = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
+    trace_bc_slot = fhss_structure->ws->bc_slot;
+    trace_on_bc_channel = fhss_structure->ws->is_on_bc_channel;
     if (fhss_structure->ws->is_on_bc_channel == false) {
         fhss_ws_start_timer(fhss_structure, MS_TO_US(fhss_structure->ws->fhss_configuration.fhss_bc_dwell_interval) - ((int64_t) delay_us * fhss_structure->platform_functions.fhss_resolution_divider), fhss_broadcast_handler);
         fhss_structure->ws->is_on_bc_channel = true;
@@ -369,9 +381,9 @@ static void fhss_broadcast_handler(const fhss_api_t *fhss_api, uint16_t delay)
              * Event timer resolution is 50us.
              */
             uint32_t bc_dwell_us = MS_TO_US(fhss_structure->ws->fhss_configuration.fhss_bc_dwell_interval);
-            uint16_t bc_min_random = (bc_dwell_us / 50) / 50;
-            uint16_t bc_max_random = (bc_dwell_us - (bc_dwell_us / 4)) / 50;
-            eventOS_callback_timer_start(fhss_structure->fhss_event_timer, rand_get_random_in_range(bc_min_random, bc_max_random));
+            poll_min_random = (bc_dwell_us / 50) / 50;
+            poll_max_random = (bc_dwell_us - (bc_dwell_us / 4)) / 50;
+            poll_random = true;
         }
     } else {
         fhss_structure->ws->unicast_start_time_us = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
@@ -403,7 +415,9 @@ static void fhss_broadcast_handler(const fhss_api_t *fhss_api, uint16_t delay)
                 uc_min_random += (txrx_slot_length_us) / 50;
                 uc_max_random += (txrx_slot_length_us) / 50;
             }
-            eventOS_callback_timer_start(fhss_structure->fhss_event_timer, rand_get_random_in_range(uc_min_random, uc_max_random));
+            poll_min_random = uc_min_random;
+            poll_max_random = uc_max_random;
+            poll_random = true;
         }
 
 #ifdef FHSS_CHANNEL_DEBUG
@@ -427,6 +441,10 @@ static void fhss_broadcast_handler(const fhss_api_t *fhss_api, uint16_t delay)
     }
 #endif
     platform_exit_critical();
+    tr_info("%"PRIu32" BC slot: %d On BC ch %d", trace_timestamp, trace_bc_slot, trace_on_bc_channel);
+    if (poll_random) {
+        eventOS_callback_timer_start(fhss_structure->fhss_event_timer, rand_get_random_in_range(poll_min_random, poll_max_random));
+    }
 }
 
 static int own_floor(float value)
@@ -1128,6 +1146,10 @@ int fhss_ws_set_parent(fhss_structure_t *fhss_structure, const uint8_t eui64[8],
     if (((uint32_t)S_TO_US(fhss_structure->ws->min_synch_interval) > (fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api) - fhss_structure->ws->synchronization_time)) && !force_synch) {
         return 0;
     }
+    // The synchronisation trace is done after the critical section, from
+    // values captured inside it (see fhss_broadcast_handler()).
+    bool trace_synch = false;
+    int32_t trace_drift_ms = 0;
     platform_enter_critical();
 
     uint16_t own_bc_slot = fhss_structure->ws->bc_slot;
@@ -1178,9 +1200,14 @@ int fhss_ws_set_parent(fhss_structure_t *fhss_structure, const uint8_t eui64[8],
 #endif
             fhss_stats_update(fhss_structure, STATS_FHSS_DRIFT_COMP, NS_TO_US((int64_t)(fhss_structure->ws->drift_per_millisecond_ns * bc_timing_info->broadcast_dwell_interval)));
         }
-        tr_debug("synch to parent: %s, drift: %"PRIi32"ms in %"PRIu64" seconds, compensation: %"PRIi32"ns per ms", trace_array(eui64, 8), true_bc_interval_offset - own_bc_interval_offset + ((int32_t)(fhss_structure->ws->bc_slot - own_bc_slot) * bc_timing_info->broadcast_interval), US_TO_S(time_since_last_synch_us), fhss_structure->ws->drift_per_millisecond_ns);
+        trace_synch = true;
+        trace_drift_ms = true_bc_interval_offset - own_bc_interval_offset + ((int32_t)(fhss_structure->ws->bc_slot - own_bc_slot) * bc_timing_info->broadcast_interval);
     }
+    int32_t trace_compensation = fhss_structure->ws->drift_per_millisecond_ns;
     platform_exit_critical();
+    if (trace_synch) {
+        tr_debug("synch to parent: %s, drift: %"PRIi32"ms in %"PRIu64" seconds, compensation: %"PRIi32"ns per ms", trace_array(eui64, 8), trace_drift_ms, US_TO_S(time_since_last_synch_us), trace_compensation);
+    }
     fhss_stats_update(fhss_structure, STATS_FHSS_SYNCH_INTERVAL, US_TO_S(time_since_last_synch_us));
     return 0;
 }

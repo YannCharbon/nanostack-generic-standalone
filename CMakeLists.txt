@@ -32,6 +32,9 @@ project(nanostack-generic-standalone C)
 #                               then Threads, backtrace and libdl are not used.
 #   NANOSTACK_FILE_NO_STDIO     compile out the stdio fallback of
 #                               ns_file_system.c, for targets without files
+#   NANOSTACK_TLS_STRONG_PORT_ENTROPY
+#                               register the port's random source as a STRONG
+#                               TLS entropy source: only if it is a real TRNG
 # mbedTLS: if the consumer already defines MbedTLS::mbedtls,
 # MbedTLS::mbedcrypto and MbedTLS::mbedx509, they are used as they are;
 # otherwise find_package(MbedTLS) looks for v3.0.0.
@@ -40,6 +43,7 @@ set(NANOSTACK_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 set(NANOSTACK_PORT nanostack_port_posix CACHE STRING "Target implementing the Nanostack porting API")
 option(NANOSTACK_FILE_NO_STDIO "Compile out the stdio fallback of ns_file_system.c" OFF)
+option(NANOSTACK_TLS_STRONG_PORT_ENTROPY "The port's random source is a TRNG: strong TLS entropy source" OFF)
 
 if(NANOSTACK_PORT STREQUAL "nanostack_port_posix")
     include(CheckIncludeFile)
@@ -287,6 +291,9 @@ function(nanostack_add_library name)
     endif()
     if(NANOSTACK_FILE_NO_STDIO)
         target_compile_definitions(${name} PRIVATE NS_FILE_NO_STDIO)
+    endif()
+    if(NANOSTACK_TLS_STRONG_PORT_ENTROPY)
+        target_compile_definitions(${name} PRIVATE NS_TLS_STRONG_PORT_ENTROPY)
     endif()
     target_link_libraries(${name} PUBLIC
         ${NANOSTACK_PORT} nanostack_eventloop nanostack_libservice

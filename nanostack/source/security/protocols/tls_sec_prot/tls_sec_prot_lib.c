@@ -139,8 +139,18 @@ int8_t tls_sec_prot_lib_init(tls_security_t *sec)
 
     sec->crl = NULL;
 
+    // The source is the port's random source (ns_port/random.h). It is
+    // registered as weak unless the build declares the port's source a true
+    // TRNG (CMake option NANOSTACK_TLS_STRONG_PORT_ENTROPY). With a weak
+    // source only, the DRBG seeding fails unless mbedTLS has a strong source
+    // of its own (platform entropy or MBEDTLS_ENTROPY_HARDWARE_ALT).
+#ifdef NS_TLS_STRONG_PORT_ENTROPY
+    if (mbedtls_entropy_add_source(&sec->entropy, tls_sec_lib_entropy_poll, NULL,
+                                   128, MBEDTLS_ENTROPY_SOURCE_STRONG) < 0) {
+#else
     if (mbedtls_entropy_add_source(&sec->entropy, tls_sec_lib_entropy_poll, NULL,
                                    128, MBEDTLS_ENTROPY_SOURCE_WEAK) < 0) {
+#endif
         tr_error("Entropy add fail");
         return -1;
     }
