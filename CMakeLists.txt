@@ -111,6 +111,8 @@ if(NANOSTACK_PORT STREQUAL "nanostack_port_posix")
         port/posix/common/log.c
         port/posix/common/random.c
         port/posix/common/slist.c
+        port/posix/common/time.c
+        port/posix/common/trace.c
     )
     target_include_directories(nanostack_port_posix PUBLIC
         ${NANOSTACK_ROOT}/port/posix/

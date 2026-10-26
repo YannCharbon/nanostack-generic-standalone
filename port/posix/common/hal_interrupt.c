@@ -5,7 +5,7 @@
  */
 #include <pthread.h>
 
-#include "hal_interrupt.h"
+#include "ns_port/critical.h"
 
 // NOTE: this mutex is probably useless
 static pthread_mutex_t irqsym_lock;

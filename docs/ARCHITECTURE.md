@@ -77,7 +77,10 @@ A port provides about ten functions, declared in seven headers:
 | `fhss_timer.h` | `ns_port_fhss_timer`, Nanostack's `fhss_timer_t` | one timerfd per callback | RAIL multitimers |
 | `trace.h` | `ns_port_trace_write()`, one trace line | stdout | UART ring buffer |
 
-The stack includes only these headers. Where Arm Nanostack already had a name
+The stack includes only these headers. The compatibility headers
+`common/rand.h` and `common/hal_interrupt.h`, which forwarded the old includes
+during the migration, were removed once nothing used them. Where Arm
+Nanostack already had a name
 (`platform_enter_critical()`, `eventOS_*`), the name was kept, so the API
 matches upstream Nanostack. New functions use the `ns_port_` prefix.
 
