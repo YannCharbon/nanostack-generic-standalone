@@ -172,7 +172,9 @@ The results are in the plan's progress table and in the orchestrator's
 - **One instance per process.** About 84 file-scope variables make the stack
   single-instance, so the emulator runs one process per node. A single-process
   simulator would need them grouped into a per-node context (GENERICITY_PLAN.md
-  §2.4).
+  §2.4). This is not planned: the emulator keeps one process per node and gets
+  virtual time from a conductor and a simulation port instead (workspace
+  decision DI2, `documents/pre-study/investigation/Virtual_Time_Study.md`).
 - **Known stack issues** found while porting are listed in the workspace
   tracker (`documents/pre-study/STATUS.md`, GS6). The most important: the FHSS
   broadcast-slot handler holds a critical section of up to about 600 µs

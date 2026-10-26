@@ -233,6 +233,8 @@ Evidence:
 
 They block only a future single-process, multi-node simulator. Examples: about 84 file-scope statics (`q4_coupling.md` §5), `mac_store` in `sw_mac.c`, `backbone_interface_id` in `ws_bbr_api.c:89`, and the static timer pool in `system_timer.c:31`. Treat them as later work: group them into a per-node context, or compile N copies with symbol prefixes.
 
+*Outcome (2026-10-26):* the workspace decided (DI2) to keep one process per node and add virtual time through a conductor and a simulation port. A single-process simulator is not planned, so this refactoring is not either.
+
 ### 2.5 Measured footprint (Cortex-M33, `-Os`, `--gc-sections`, newlib-nano)
 
 **Method:**
