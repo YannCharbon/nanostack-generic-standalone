@@ -16,10 +16,10 @@
  *      starts at 0.
  *   3. ns_port_run() runs until idle, sends "xi" (idle) with the deadline of
  *      its earliest armed timer, and blocks.
- *   4. The conductor wakes it with "xa" (advance) to a time t >= now. Any
- *      other messages the conductor wrote right after that "xa" (frames, in
- *      the program's own format) are already in the socket when the node
- *      reads it: the port hands each one to the callback the program
+ *   4. The conductor wakes it with "xa" (advance) to a time t >= now. The
+ *      "xa" says how many messages follow it (frames, in the program's own
+ *      format). The port waits for each of them in turn (blocking: they may
+ *      not have arrived yet) and hands it to the callback the program
  *      registered for this fd with ns_port_posix_add_fd(), which reads it.
  *      Then the timers due at t fire, and the node runs until idle again: 3.
  *   5. Anything the program writes to the socket while it runs (frames) is
@@ -46,7 +46,8 @@ struct nsim_welcome {
 
 struct nsim_advance {
     char magic[2];              // "xa"
-    uint16_t reserved[3];
+    uint16_t frames;            // messages that follow this one, for the program
+    uint16_t reserved[2];
     uint64_t now_us;            // new virtual time, never lower than before
 };
 
