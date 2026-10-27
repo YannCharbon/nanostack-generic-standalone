@@ -174,11 +174,21 @@ char *bytes_str(const void *in_start, size_t in_len, const void **in_done, char 
 #define __PRINT_WITH_LINE(COLOR, MSG, ...) \
     __PRINT(COLOR, "%s():%d: " MSG, __func__, __LINE__, ##__VA_ARGS__)
 
+#ifdef NS_PORT_SIM
+// Simulation port: virtual time, as the line prefix of its stdio streams.
+#include "ns_port_sim.h"
+#define __PRINT_WITH_TIME(COLOR, MSG, ...) \
+    do {                                                             \
+        uint64_t __now = ns_port_sim_now_us();                       \
+        __PRINT(COLOR, "%ju.%06ju: " MSG, (uintmax_t)(NSIM_EPOCH_S + __now / 1000000), (uintmax_t)(__now % 1000000), ##__VA_ARGS__); \
+    } while (0)
+#else
 #define __PRINT_WITH_TIME(COLOR, MSG, ...) \
     do {                                                             \
         struct timespec tp;                                          \
         clock_gettime(CLOCK_REALTIME, &tp);                          \
         __PRINT(COLOR, "%ju.%06ju: " MSG, (uintmax_t)tp.tv_sec, (uintmax_t)tp.tv_nsec / 1000, ##__VA_ARGS__); \
     } while (0)
+#endif
 
 #endif

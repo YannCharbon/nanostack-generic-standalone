@@ -40,9 +40,11 @@ the fire-alarm protocol stack, which takes no code from it.
 | `mbed-client-libservice/` | `mbed-client-libservice/` | `ns_list`, `ns_trace`, IPv6 string helpers |
 | `rcp/mac/`, `rcp/fhss/`, `rcp/ccm/` | `app_wshwsim/mac/`, `fhss/`, `ccm/` | IEEE 802.15.4 MAC, FHSS and CCM, which run on the RCP side |
 | `port/posix/common/` | `common/` (OS parts) | POSIX port: timers (timerfd), FHSS timer, scheduler signal and run loop, critical sections, random, logging, lists |
+| `port/sim/` | — | Simulation port: virtual time driven by the emulator's conductor (see [Simulation port](#simulation-port)) |
 | `include/ns_port/` | — | The porting API: what a port implements |
 | `include/ns_rand.h`, `source/ns_rand.c` | `common/rand.*` | The stack's `rand_*` helpers, built on the port's random source |
 | `tests/cross/` | — | Cross-build check: Cortex-M33, stub port |
+| `tests/port_sim/` | — | Unit tests of the simulation port |
 
 `rcp/` keeps its own `mac/rf_driver_storage.h`, which differs slightly from
 `nanostack/source/mac/rf_driver_storage.h`, exactly as before.
@@ -100,7 +102,8 @@ Fixed targets:
 - `nanostack_port_api`: the porting API headers (interface target)
 - `nanostack_libservice`
 - `nanostack_eventloop`
-- `nanostack_port_posix`, only when it is the selected port
+- `nanostack_port_posix` or `nanostack_port_sim`, only when it is the
+  selected port
 
 Options:
 
@@ -148,12 +151,51 @@ firmware would, and links a border router and a router image:
 tests/cross/run.sh <mbedtls v3.0.0 source tree>
 ```
 
-It needs `arm-none-eabi-gcc`. The GitHub workflow runs it, and the default
-build, on every push.
+It needs `arm-none-eabi-gcc`. The GitHub workflow runs it, the default
+build, the build on the simulation port and its unit tests on every push.
 
 `-std=gnu17 -fpermissive` is needed with GCC ≥ 14. GCC 15 defaults to C23 and
 turns several legacy warnings into errors, so the inherited code doesn't build
 without those flags (the same holds for `wisun-mbed-simulator`).
+
+## Simulation port
+
+`-DNANOSTACK_PORT=nanostack_port_sim` builds the stack on virtual time, for
+the emulator's batch mode (`mesh-emulator-orchestrator/docs/VIRTUAL_TIME.md`).
+The port (`port/sim/`) replaces the POSIX port's clock, callback timers, FHSS
+timer, run loop and random source, and shares its other files and headers:
+programs keep including `common/os_scheduler.h` and the other `common/`
+headers, and test `NS_PORT_SIM` (a public definition of the target) for the
+few things they do differently.
+
+The contract, in `port/sim/ns_port_sim.h`:
+
+- A conductor (`wssimserver --vtime`) runs one node at a time over one
+  `SOCK_SEQPACKET` socket. The program connects, sends its hello and calls
+  `ns_port_sim_attach(fd, node_id)`, which waits for the welcome and its seed.
+  It registers the same fd with `ns_port_posix_add_fd()`: the callback is
+  called once per frame the conductor delivers.
+- `ns_port_run()` runs the node until idle (no event signalled, no
+  `pending()` source, no timer due), sends `"xi"` with its earliest deadline
+  and blocks until `"xa"` moves time forward. Then the frames, then the
+  timers due. Code runs in zero virtual time. `"xq"` exits with status 0.
+- Timers are absolute 64-bit deadlines; a zero-length start disarms, as the
+  POSIX port's `timerfd` does, and is counted (logged at exit).
+  `ns_port_time_us()` is the low 32 bits of the virtual time plus `NSIM_CLOCK32_OFFSET_US` (it wraps 120 s into every run).
+- The random source is splitmix64 seeded from the run's seed and the node
+  ID: two runs with the same seed draw the same numbers. Drawing before
+  attach is fatal. It is not a TRNG: this port is for the emulator only.
+- `stdout` and `stderr` write whole lines, each prefixed with the virtual
+  time (`<seconds>.<µs> `, from `NSIM_EPOCH_S`), and `TRACE()` stamps virtual
+  time too. File descriptors other than the conductor's are never polled, and
+  `ns_port_posix_set_busy()` (split mode) is fatal.
+
+Unit tests (no stack and no mbedTLS needed; a fake conductor over
+`socketpair()`):
+
+```bash
+tests/port_sim/run.sh [build dir]
+```
 
 ## Verification
 
