@@ -13,6 +13,10 @@ project(nanostack-generic-standalone C)
 #                               FHSS timer, scheduler, critical sections,
 #                               random, logging). Only built when it is the
 #                               selected port (NANOSTACK_PORT)
+#   nanostack_port_sim          simulation port in port/sim: virtual time
+#                               driven by the emulator's conductor
+#                               (port/sim/ns_port_sim.h); shares the other
+#                               files of port/posix. Only built when selected
 # Functions (a Nanostack build depends on compile-time configuration):
 #   nanostack_add_library(<name> CONFIG <nsconfig> [BORDER_ROUTER]
 #                         [DEFINITIONS <def>...])
@@ -27,7 +31,8 @@ project(nanostack-generic-standalone C)
 # Options (GENERICITY_PLAN.md D9, D15, D18):
 #   NANOSTACK_PORT              target implementing the porting API
 #                               (include/ns_port/). Default
-#                               nanostack_port_posix. Another port is a target
+#                               nanostack_port_posix; nanostack_port_sim for
+#                               the emulator's virtual time. Another port is a target
 #                               of the consumer, which links nanostack_port_api;
 #                               then Threads, backtrace and libdl are not used.
 #   NANOSTACK_FILE_NO_STDIO     compile out the stdio fallback of
@@ -45,7 +50,7 @@ set(NANOSTACK_PORT nanostack_port_posix CACHE STRING "Target implementing the Na
 option(NANOSTACK_FILE_NO_STDIO "Compile out the stdio fallback of ns_file_system.c" OFF)
 option(NANOSTACK_TLS_STRONG_PORT_ENTROPY "The port's random source is a TRNG: strong TLS entropy source" OFF)
 
-if(NANOSTACK_PORT STREQUAL "nanostack_port_posix")
+if(NANOSTACK_PORT MATCHES "^nanostack_port_(posix|sim)$")
     include(CheckIncludeFile)
     include(CheckSymbolExists)
     check_include_file(backtrace.h BACKTRACE_FOUND)
@@ -128,6 +133,38 @@ if(NANOSTACK_PORT STREQUAL "nanostack_port_posix")
     if(LIBDL_FOUND)
         target_compile_definitions(nanostack_port_posix PRIVATE HAVE_LIBDL)
         target_link_libraries(nanostack_port_posix PUBLIC ${CMAKE_DL_LIBS})
+    endif()
+elseif(NANOSTACK_PORT STREQUAL "nanostack_port_sim")
+    # Virtual time (port/sim/ns_port_sim.h): its own clock, timers, FHSS
+    # timer, run loop, random source and stdio; the rest is the POSIX port's.
+    add_library(nanostack_port_sim STATIC
+        port/sim/sim_fhss_timer.c
+        port/sim/sim_random.c
+        port/sim/sim_scheduler.c
+        port/sim/sim_stdio.c
+        port/sim/sim_time.c
+        port/sim/sim_timer.c
+        port/posix/common/hal_interrupt.c
+        port/posix/common/log.c
+        port/posix/common/slist.c
+        port/posix/common/trace.c
+    )
+    target_include_directories(nanostack_port_sim PUBLIC
+        ${NANOSTACK_ROOT}/port/posix/
+        ${NANOSTACK_ROOT}/port/sim/
+    )
+    target_include_directories(nanostack_port_sim PRIVATE ${NANOSTACK_ROOT}/nanostack/)
+    # Programs test it to talk to the conductor.
+    target_compile_definitions(nanostack_port_sim PUBLIC NS_PORT_SIM)
+    target_link_libraries(nanostack_port_sim PUBLIC Threads::Threads nanostack_eventloop)
+    if(BACKTRACE_FOUND)
+        target_compile_definitions(nanostack_port_sim PUBLIC HAVE_BACKTRACE)
+        target_sources(nanostack_port_sim PRIVATE port/posix/common/backtrace_show.c)
+        target_link_libraries(nanostack_port_sim PUBLIC backtrace)
+    endif()
+    if(LIBDL_FOUND)
+        target_compile_definitions(nanostack_port_sim PRIVATE HAVE_LIBDL)
+        target_link_libraries(nanostack_port_sim PUBLIC ${CMAKE_DL_LIBS})
     endif()
 endif()
 

@@ -77,4 +77,9 @@ uint64_t ns_port_sim_seed(void);
 // ns_port_time_us() is the low 32 bits of it).
 uint64_t ns_port_sim_now_us(void);
 
+// Number of zero-length timer starts so far (callback timers + FHSS timers).
+// Such a start disarms the timer, as timerfd_settime() does in the POSIX
+// port; the count is also logged at exit.
+unsigned long ns_port_sim_zero_starts(void);
+
 #endif
