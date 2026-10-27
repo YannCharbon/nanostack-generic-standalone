@@ -181,7 +181,7 @@ The contract, in `port/sim/ns_port_sim.h`:
   timers due. Code runs in zero virtual time. `"xq"` exits with status 0.
 - Timers are absolute 64-bit deadlines; a zero-length start disarms, as the
   POSIX port's `timerfd` does, and is counted (logged at exit).
-  `ns_port_time_us()` is the low 32 bits of the virtual time.
+  `ns_port_time_us()` is the low 32 bits of the virtual time plus `NSIM_CLOCK32_OFFSET_US` (it wraps 120 s into every run).
 - The random source is splitmix64 seeded from the run's seed and the node
   ID: two runs with the same seed draw the same numbers. Drawing before
   attach is fatal. It is not a TRNG: this port is for the emulator only.
