@@ -65,6 +65,12 @@ struct nsim_quit {
 // timestamps), so that runs are identical whenever they are made.
 #define NSIM_EPOCH_S 1700000000ULL
 
+// The 32-bit µs clock of the porting API (ns_port_time_us(), the FHSS
+// timestamp) is virtual time plus this offset. On the POSIX port it starts at
+// an arbitrary uptime; here it starts 120 s before its wrap, so that every run
+// crosses it early and no code sees a timestamp of 0.
+#define NSIM_CLOCK32_OFFSET_US ((1ULL << 32) - 120000000ULL)
+
 // Called once by the program, after it has connected fd to the conductor and
 // sent its hello. Blocks until the welcome. The program must also register
 // fd with ns_port_posix_add_fd() for its own messages.
@@ -74,7 +80,7 @@ void ns_port_sim_attach(int fd, int node_id);
 uint64_t ns_port_sim_seed(void);
 
 // Virtual time in µs since the start of the run (64 bits; the porting API's
-// ns_port_time_us() is the low 32 bits of it).
+// ns_port_time_us() is the low 32 bits of it plus NSIM_CLOCK32_OFFSET_US).
 uint64_t ns_port_sim_now_us(void);
 
 // Number of zero-length timer starts so far (callback timers + FHSS timers).

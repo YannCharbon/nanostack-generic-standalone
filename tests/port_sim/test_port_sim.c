@@ -456,7 +456,7 @@ static void fhss_probe_cb(int id, uint16_t slots)
 {
     const struct fhss_timer *t = &ns_port_fhss_timer;
 
-    NODE_CHECK(t->fhss_get_timestamp(NULL) == 400);
+    NODE_CHECK(t->fhss_get_timestamp(NULL) == (uint32_t)(400 + NSIM_CLOCK32_OFFSET_US));
     NODE_CHECK(t->fhss_get_remaining_slots(fhss_cb1, NULL) == 600);
     NODE_CHECK(t->fhss_get_remaining_slots(fhss_cb2, NULL) == 0);   // stopped
     t->fhss_timer_stop(fhss_cb1, NULL);
@@ -495,19 +495,26 @@ static void cond_fhss(void)
     c_quit();
 }
 
-// 32-bit wrap of ns_port_time_us(); deadlines stay 64-bit.
+// 32-bit wrap of ns_port_time_us() (offset: it wraps at 120 s of virtual
+// time) and of the 64-bit time's low half; deadlines stay 64-bit.
 #define WRAP_T ((1ULL << 32) + 7)
 
 static void wrap_cb(int id, uint16_t slots)
 {
+    if (ns_port_sim_now_us() == 120000007) {
+        NODE_CHECK(ns_port_time_us() == 7);        // the 32-bit clock wrapped
+        eventOS_callback_timer_start_sec(id, 4174);        // 4294.000007 s
+        report("wrap32");
+        return;
+    }
     if (ns_port_sim_now_us() < WRAP_T) {
         eventOS_callback_timer_start_usec(id, WRAP_T - ns_port_sim_now_us());
         report("pre");
         return;
     }
     NODE_CHECK(ns_port_sim_now_us() == WRAP_T);
-    NODE_CHECK(ns_port_time_us() == 7);
-    NODE_CHECK(ns_port_fhss_timer.fhss_get_timestamp(NULL) == 7);
+    NODE_CHECK(ns_port_time_us() == (uint32_t)(WRAP_T + NSIM_CLOCK32_OFFSET_US));
+    NODE_CHECK(ns_port_fhss_timer.fhss_get_timestamp(NULL) == ns_port_time_us());
     NODE_CHECK(ns_port_time_wall_s() == NSIM_EPOCH_S + WRAP_T / 1000000);
     eventOS_callback_timer_start(id, 100);
     report("wrap");
@@ -517,9 +524,9 @@ static void node_wrap(int fd)
 {
     int id = eventOS_callback_timer_register(wrap_cb);
 
-    NODE_CHECK(ns_port_time_us() == 0);
+    NODE_CHECK(ns_port_time_us() == (uint32_t)NSIM_CLOCK32_OFFSET_US);
     NODE_CHECK(ns_port_time_wall_s() == NSIM_EPOCH_S);
-    eventOS_callback_timer_start_sec(id, 4294);   // just before 2^32 µs
+    eventOS_callback_timer_start_usec(id, 120000007);   // just past the 32-bit wrap
     node_attach(fd, 1);
     ns_port_run();
 }
@@ -527,8 +534,11 @@ static void node_wrap(int fd)
 static void cond_wrap(void)
 {
     c_welcome(1);
-    CHECK_U64(c_idle(), 4294000000ULL);
-    c_advance(4294000000ULL, 0, NULL);
+    CHECK_U64(c_idle(), 120000007);
+    c_advance(120000007, 0, NULL);
+    CHECK_U64(c_idle(), 4294000007ULL);
+    EXPECT("wrap32");
+    c_advance(4294000007ULL, 0, NULL);
     CHECK_U64(c_idle(), WRAP_T);
     EXPECT("pre");
     c_advance(WRAP_T, 0, NULL);

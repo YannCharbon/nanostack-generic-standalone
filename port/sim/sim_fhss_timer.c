@@ -9,6 +9,7 @@
 #include "common/fhss_timer.h"
 #include "common/log.h"
 #include "common/utils.h"
+#include "ns_port/time.h"
 #include "ns_port_sim.h"
 #include "sim_internal.h"
 
@@ -44,8 +45,9 @@ static int fhss_timer_start(uint32_t slots_us, void (*callback)(const fhss_api_t
         FATAL_ON(fhss_timers_len >= SIM_FHSS_TIMERS_MAX, 2, "too many FHSS timers");
         item = &fhss_timers[fhss_timers_len++];
         item->fn = callback;
-        item->arg = api;
     }
+    // The stack may re-create its fhss_api_t: always call back with the latest
+    item->arg = api;
     // A zero length disarms, as timerfd_settime() does in the POSIX port.
     if (!slots_us) {
         g_sim_zero_starts_fhss++;
@@ -81,7 +83,7 @@ static uint32_t fhss_get_remaining_slots(void (*callback)(const fhss_api_t *api,
 
 static uint32_t fhss_get_timestamp(const fhss_api_t *api)
 {
-    return (uint32_t)ns_port_sim_now_us();
+    return ns_port_time_us();
 }
 
 const struct fhss_timer ns_port_fhss_timer = {
