@@ -24,6 +24,26 @@ jobs:
                 -DCMAKE_C_FLAGS="-std=gnu17 -fpermissive"
           ninja -C build
 
+  # Simulation port (virtual time): its unit tests, then the stack on it.
+  sim:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - name: Unit tests of the simulation port
+        run: tests/port_sim/run.sh build-port-sim-tests
+      - name: Build mbedTLS v3.0.0
+        run: |
+          git clone --depth 1 --branch v3.0.0 https://github.com/Mbed-TLS/mbedtls.git ../mbedtls
+          cmake -S ../mbedtls -B ../mbedtls -G Ninja -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF -DMBEDTLS_FATAL_WARNINGS=OFF
+          ninja -C ../mbedtls
+      - name: Build the stack on the simulation port
+        run: |
+          cmake -S . -B build-sim -G Ninja -DNANOSTACK_PORT=nanostack_port_sim \
+                -DCMAKE_PREFIX_PATH=$PWD/../mbedtls -DCMAKE_C_FLAGS="-std=gnu17 -fpermissive"
+          ninja -C build-sim
+
   # Cortex-M33 with a stub port, mbedTLS from the consumer, MAC in-process,
   # no stdio file system; links a border router and a router (tests/cross).
   cross:
