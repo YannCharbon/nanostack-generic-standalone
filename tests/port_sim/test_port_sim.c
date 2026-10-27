@@ -692,7 +692,14 @@ static void cond_until_idle(void)
     c_quit();
 }
 
-// Random: splitmix64 seeded with seed ^ 0x9E3779B97F4A7C15 × (node ID + 1).
+// Random: splitmix64 seeded with mix64(seed + mix64(node ID + 1)).
+static uint64_t ref_mix64(uint64_t z)
+{
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
 static uint64_t ref_splitmix64(uint64_t *s)
 {
     uint64_t z = (*s += 0x9E3779B97F4A7C15ULL);
@@ -740,7 +747,7 @@ static void test_random(void)
     run_test("random", node_random, cond_random);
     memcpy(first, g_draws, sizeof(first));
     // Against the reference: first draw's low 3 bytes, then the 2nd draw
-    s = 42 ^ (0x9E3779B97F4A7C15ULL * 8);
+    s = ref_mix64(42 + ref_mix64(8));
     v = ref_splitmix64(&s);
     snprintf(want[0], sizeof(want[0]), "%02x%02x%02x",
              (unsigned)(v & 0xff), (unsigned)(v >> 8 & 0xff), (unsigned)(v >> 16 & 0xff));

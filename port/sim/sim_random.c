@@ -16,9 +16,21 @@
 static uint64_t state;
 static bool seeded;
 
+// splitmix64's output function, used to spread the seeds.
+static uint64_t mix64(uint64_t z)
+{
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+// Each node's start state is hashed from the run's seed and the node ID. A
+// plain combination such as seed ^ (GOLDEN_GAMMA * (id + 1)) would put nodes
+// on the same sequence, shifted by a few draws, since the state steps by
+// GOLDEN_GAMMA.
 void sim_random_seed(uint64_t seed, int node_id)
 {
-    state = seed ^ (GOLDEN_GAMMA * (uint64_t)(node_id + 1));
+    state = mix64(seed + mix64((uint64_t)node_id + 1));
     seeded = true;
 }
 
