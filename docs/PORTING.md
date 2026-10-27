@@ -162,6 +162,17 @@ void ns_port_trace_write(const char *line);   /* one complete line, no newline *
   context. The stack traces a lot during joins; drop and count lines rather
   than stall. Set `MBED_TRACE_MAX_LEVEL` to bound flash use.
 
+### Example: the simulation port
+
+`port/sim/` is a second implementation of this API on the host, for the
+emulator's virtual time (README, "Simulation port"; contract in
+`port/sim/ns_port_sim.h`). It shows how little of the API depends on a real
+clock: timers are deadlines in a table, `eventOS_scheduler_signal()` sets a
+flag, `ns_port_run()` runs until idle and then asks an external conductor for
+the next point in time, and `ns_port_time_us()` returns the virtual time. It
+reuses the POSIX port's critical sections, log, trace and lists. It must
+never be used on hardware: its random source is a seeded PRNG.
+
 ## 4. The radio driver
 
 The MAC talks to the radio through Nanostack's `phy_device_driver_s`
