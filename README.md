@@ -113,9 +113,9 @@ Options:
   not used.
 - `NANOSTACK_FILE_NO_STDIO=ON` compiles out the stdio fallback of
   `ns_file_system.c`, for targets without files.
-- `NANOSTACK_EVENTLOOP_TICKLESS` (default ON): the event loop's 10 ms tick
-  timer runs only when an event timer is due (`docs/PORTING.md`, "Tickless
-  event loop"). `OFF` gives the periodic tick of the reference.
+- `NANOSTACK_EVENTLOOP_SKIP_IDLE_TICKS` (default ON): the event loop's 10 ms tick
+  timer runs only when an event timer is due (`docs/PORTING.md`, "Idle-tick
+  skipping"). `OFF` gives the periodic tick of the reference.
 - `nanostack_add_rcp_library(<name> INPROCESS)` builds the MAC for an image
   that also holds the upper layers: it leaves out `rcp/`'s copy of
   `rf_driver_storage.c`.
@@ -200,7 +200,7 @@ Unit tests (no stack and no mbedTLS needed; a fake conductor over
 tests/port_sim/run.sh [build dir]
 ```
 
-The event loop's timers, periodic tick against tickless, on a fake port:
+The event loop's timers, periodic tick against idle-tick skipping, on a fake port:
 
 ```bash
 tests/eventloop/run.sh [build dir]

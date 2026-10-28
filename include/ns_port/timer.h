@@ -22,7 +22,7 @@
 /* Optional: a port whose callback timers have µs resolution defines
  * NS_PORT_TIMER_USEC for its consumers (a PUBLIC compile definition of the
  * port target) and implements this one-shot relative start (0 may disarm).
- * The tickless event loop (NS_EVENTLOOP_TICKLESS) then arms its tick exactly
+ * The event loop with idle-tick skipping (NS_EVENTLOOP_SKIP_IDLE_TICKS) then arms its tick exactly
  * on the 10 ms grid; without it, a tick armed from between two 50 µs slots
  * fires up to one slot late. */
 #ifdef NS_PORT_TIMER_USEC

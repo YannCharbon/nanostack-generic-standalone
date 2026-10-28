@@ -58,8 +58,8 @@ extern uint32_t eventOS_event_timer_ticks(void);
 /**
  * Time until the earliest pending event timer expires.
  *
- * For a port that sleeps between events: with the tickless event loop
- * (NS_EVENTLOOP_TICKLESS) the tick timer already follows this deadline, so a
+ * For a port that sleeps between events: with idle-tick skipping
+ * (NS_EVENTLOOP_SKIP_IDLE_TICKS) the tick timer already follows this deadline, so a
  * port normally needs only its callback timers' deadlines.
  *
  * \return milliseconds until the earliest event timer is due, at least 1

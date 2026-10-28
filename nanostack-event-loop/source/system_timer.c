@@ -23,7 +23,7 @@
 #include "nanostack-event-loop/eventOS_event_timer.h"
 #include "event.h"
 #include "nanostack-event-loop/eventOS_callback_timer.h"
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
 #include "ns_port/time.h"
 #include "ns_port/timer.h"
 #endif
@@ -50,13 +50,13 @@ static sys_timer_struct_s *sys_timer_dynamically_allocate(void);
 static void timer_sys_interrupt(void);
 static void timer_sys_add(sys_timer_struct_s *timer);
 
-#if defined NS_EVENTLOOP_TICKLESS && defined NS_EVENTLOOP_USE_TICK_TIMER
-#error "NS_EVENTLOOP_TICKLESS needs the eventOS callback timer tick (no NS_EVENTLOOP_USE_TICK_TIMER)"
+#if defined NS_EVENTLOOP_SKIP_IDLE_TICKS && defined NS_EVENTLOOP_USE_TICK_TIMER
+#error "NS_EVENTLOOP_SKIP_IDLE_TICKS needs the eventOS callback timer tick (no NS_EVENTLOOP_USE_TICK_TIMER)"
 #endif
 
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
 /*
- * Tickless event loop (docs/PORTING.md, "Tickless event loop"). The ticks
+ * Idle-tick skipping (docs/PORTING.md, "Idle-tick skipping"). The ticks
  * keep their 10 ms grid, but the tick timer only runs when an event timer is
  * due: it is armed for the grid point at which the earliest one expires, and
  * not at all when there is none. The elapsed ticks are counted from
@@ -80,12 +80,12 @@ static void timer_sys_add(sys_timer_struct_s *timer);
 static uint32_t tick_grid_us;       // ns_port_time_us() of tick number timer_sys_ticks
 static bool tick_armed;
 static uint32_t tick_armed_us;      // when the armed tick timer fires
-static void tickless_catch_up(uint32_t now);
-static void tickless_rearm(uint32_t now);
+static void idle_ticks_catch_up(uint32_t now);
+static void idle_ticks_rearm(uint32_t now);
 #endif
 
 #ifndef NS_EVENTLOOP_USE_TICK_TIMER
-#ifndef NS_EVENTLOOP_TICKLESS
+#ifndef NS_EVENTLOOP_SKIP_IDLE_TICKS
 static int8_t platform_tick_timer_start(uint32_t period_ms);
 #endif
 /* Implement platform tick timer using eventOS timer */
@@ -100,7 +100,7 @@ static void tick_timer_eventOS_callback(int timer_id, uint16_t slots)
     (void)slots;
     // Call the tick timer callback
     if (tick_timer_callback != NULL && timer_id == tick_timer_id) {
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
         // Re-armed by timer_sys_interrupt(), only if a timer is pending
         tick_armed = false;
 #else
@@ -117,7 +117,7 @@ static int8_t platform_tick_timer_register(void (*tick_timer_cb)(void))
     return tick_timer_id;
 }
 
-#ifndef NS_EVENTLOOP_TICKLESS
+#ifndef NS_EVENTLOOP_SKIP_IDLE_TICKS
 static int8_t platform_tick_timer_start(uint32_t period_ms)
 {
     return eventOS_callback_timer_start(tick_timer_id, TIMER_SLOTS_PER_MS * period_ms);
@@ -135,7 +135,7 @@ void timer_sys_init(void)
     }
 
     platform_tick_timer_register(timer_sys_interrupt);
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
     // Tick 0 is now; the tick timer starts with the first timer request
     tick_grid_us = ns_port_time_us();
     tick_armed = false;
@@ -150,23 +150,23 @@ void timer_sys_init(void)
 
 static void timer_sys_interrupt(void)
 {
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
     platform_enter_critical();
     uint32_t now = ns_port_time_us();
-    tickless_catch_up(now);
-    tickless_rearm(now);
+    idle_ticks_catch_up(now);
+    idle_ticks_rearm(now);
     platform_exit_critical();
 #else
     system_timer_tick_update(1);
 #endif
 }
 
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
 /* Counts the grid points passed since tick_grid_us, a point at exactly now
  * included, and expires the timers they make due. With a periodic tick, a
  * request made at a grid point mostly comes after that point's tick
  * (the tick timer fires before the work it triggers), so it is counted. */
-static void tickless_catch_up(uint32_t now)
+static void idle_ticks_catch_up(uint32_t now)
 {
     uint32_t elapsed = now - tick_grid_us;
     uint32_t n;
@@ -181,7 +181,7 @@ static void tickless_catch_up(uint32_t now)
 /* Arms the tick timer for the grid point of the earliest pending timer, unless
  * it is already armed for that point or an earlier one (an earlier wake finds
  * nothing due and re-arms). No pending timer: the tick timer stays off. */
-static void tickless_rearm(uint32_t now)
+static void idle_ticks_rearm(uint32_t now)
 {
     sys_timer_struct_s *first = ns_list_get_first(&system_timer_list);
     uint32_t ticks, target_us, delta_us;
@@ -265,9 +265,9 @@ void timer_sys_event_free(arm_event_storage_t *event)
         // Non-periodic - return to free list
         ns_list_add_to_start(&system_timer_free, timer);
     } else {
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
         uint32_t now = ns_port_time_us();
-        tickless_catch_up(now);
+        idle_ticks_catch_up(now);
 #endif
         // Periodic - check due time of next launch
         timer->launch_time += timer->period;
@@ -277,8 +277,8 @@ void timer_sys_event_free(arm_event_storage_t *event)
         } else {
             // add back to timer queue for the future
             timer_sys_add(timer);
-#ifdef NS_EVENTLOOP_TICKLESS
-            tickless_rearm(now);
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
+            idle_ticks_rearm(now);
 #endif
         }
     }
@@ -350,15 +350,15 @@ arm_event_storage_t *eventOS_event_timer_request_every(const arm_event_t *event,
     }
 
     platform_enter_critical();
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
     uint32_t now = ns_port_time_us();
-    tickless_catch_up(now);
+    idle_ticks_catch_up(now);
 #endif
 
     arm_event_storage_t *ret = eventOS_event_timer_request_at_(event, timer_sys_ticks + period, period);
 
-#ifdef NS_EVENTLOOP_TICKLESS
-    tickless_rearm(now);
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
+    idle_ticks_rearm(now);
 #endif
     platform_exit_critical();
 
@@ -391,13 +391,13 @@ int8_t eventOS_event_timer_request(uint8_t event_id, uint8_t event_type, int8_t 
     }
 
     platform_enter_critical();
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
     uint32_t now = ns_port_time_us();
-    tickless_catch_up(now);
+    idle_ticks_catch_up(now);
 #endif
     arm_event_storage_t *ret = eventOS_event_timer_request_at_(&event, timer_sys_ticks + time, 0);
-#ifdef NS_EVENTLOOP_TICKLESS
-    tickless_rearm(now);
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
+    idle_ticks_rearm(now);
 #endif
     platform_exit_critical();
     return ret ? 0 : -1;
@@ -432,7 +432,7 @@ uint32_t eventOS_event_timer_shortest_active_timer(void)
     platform_enter_critical();
     sys_timer_struct_s *first = ns_list_get_first(&system_timer_list);
     uint32_t ticks = timer_sys_ticks;
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
     // The ticks passed since the last count, without expiring anything
     ticks += (ns_port_time_us() - tick_grid_us) / TICK_US;
 #endif

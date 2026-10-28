@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Unit test of the event loop's timers, periodic tick or tickless
- * (docs/PORTING.md, "Tickless event loop"). Built three times from this
- * file: with the periodic tick, tickless with µs timers (NS_PORT_TIMER_USEC)
- * and tickless with 50 µs slots only, on a fake port: a virtual µs clock and
+ * Unit test of the event loop's timers, periodic tick or with idle-tick skipping
+ * (docs/PORTING.md, "Idle-tick skipping"). Built three times from this
+ * file: with the periodic tick, idle-tick skipping with µs timers (NS_PORT_TIMER_USEC)
+ * and idle-tick skipping with 50 µs slots only, on a fake port: a virtual µs clock and
  * callback timers with absolute deadlines, as the simulation port has.
  *
  * Each program runs the same pseudo-random schedule: one-shot and periodic
@@ -11,9 +11,9 @@
  * from event handlers), cancellations, long idle gaps (longer than the tick
  * timer's 3.28 s range) and a 32-bit clock wrap. It prints one line per
  * delivered event ("<µs> <type> <id>"); run.sh checks that the periodic and
- * the µs tickless programs print the same lines (with 50 µs slots, a tick may
+ * the µs idle-tick skipping programs print the same lines (with 50 µs slots, a tick may
  * land up to one slot late, which can reorder it against the schedule's other
- * actions). The tickless programs also check their own invariants:
+ * actions). The idle-tick skipping programs also check their own invariants:
  * no tick timer while no event timer is pending, far fewer tick wakes, and
  * eventOS_event_timer_shortest_active_timer().
  *
@@ -137,7 +137,7 @@ static void handler(arm_event_t *ev)
         return;
     delivered++;
     printf("%" PRIu64 " %u %u\n", now_us, ev->event_type, ev->event_id);
-#if defined NS_EVENTLOOP_TICKLESS && !defined NS_PORT_TIMER_USEC
+#if defined NS_EVENTLOOP_SKIP_IDLE_TICKS && !defined NS_PORT_TIMER_USEC
     // 50 µs slots: a tick lands up to one slot after its grid point
     CHECK(now_us % 10000 < 50);
 #else
@@ -221,7 +221,7 @@ static void run_instant(void)
     CHECK(critical_depth == 0);
 }
 
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
 // Nothing pending: the tick timer is off
 static void check_tick_off_when_idle(void)
 {
@@ -243,7 +243,7 @@ int main(void)
     tasklet = eventOS_event_handler_create(handler, ARM_LIB_TASKLET_INIT_EVENT);
     CHECK(tasklet >= 0);
     run_instant();
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
     CHECK(eventOS_event_timer_shortest_active_timer() == 0);
     CHECK(!timers[tick_id].armed);
     // A request arms the tick for the grid point it expires on: 25 ms -> 3 ticks
@@ -291,21 +291,21 @@ int main(void)
             now_us = next;
             run_instant();
         }
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
         check_tick_off_when_idle();
 #endif
     }
     fprintf(stderr, "%s: %lu events delivered, %lu tick timer callbacks in %" PRIu64 " s\n",
-#if defined NS_EVENTLOOP_TICKLESS && defined NS_PORT_TIMER_USEC
-            "tickless",
-#elif defined NS_EVENTLOOP_TICKLESS
-            "tickless, 50 us slots",
+#if defined NS_EVENTLOOP_SKIP_IDLE_TICKS && defined NS_PORT_TIMER_USEC
+            "idle-tick skipping",
+#elif defined NS_EVENTLOOP_SKIP_IDLE_TICKS
+            "idle-tick skipping, 50 us slots",
 #else
             "periodic",
 #endif
             delivered, timer_fires[tick_id], end_us / 1000000);
     CHECK(delivered > 1000);
-#ifdef NS_EVENTLOOP_TICKLESS
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
     // A periodic tick would fire 90 000 times
     CHECK(timer_fires[tick_id] < end_us / 10000 / 2);
 #else
