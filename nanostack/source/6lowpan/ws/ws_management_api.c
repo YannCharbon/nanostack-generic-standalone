@@ -28,6 +28,8 @@
 #include "6lowpan/ws/ws_common.h"
 #include "6lowpan/ws/ws_bootstrap.h"
 #include "6lowpan/ws/ws_cfg_settings.h"
+#include "6lowpan/ws/ws_common_defines.h"
+#include "6lowpan/mac/mac_helper.h"
 
 #define TRACE_GROUP "wsmg"
 
@@ -1001,3 +1003,60 @@ int ws_management_phy_capability_set(
 }
 
 
+
+int ws_management_fan_version_set(int8_t interface_id, uint8_t version)
+{
+    protocol_interface_info_entry_t *cur = protocol_stack_interface_info_get_by_id(interface_id);
+
+    if (!cur || !ws_info(cur)) {
+        return -1;
+    }
+    if (version != WS_FAN_VERSION_1_0 && version != WS_FAN_VERSION_1_1) {
+        return -2;
+    }
+#ifndef HAVE_WS_VERSION_1_1
+    if (version != WS_FAN_VERSION_1_0) {
+        return -2;
+    }
+#endif
+    // As ws_test_version_set(): the default for interfaces created later too
+    test_pan_version = version;
+    cur->ws_info->version = version;
+    cur->ws_info->pan_information.version = ws_version_1_1(cur) ? WS_FAN_VERSION_1_1 : WS_FAN_VERSION_1_0;
+    return 0;
+}
+
+int ws_management_fan_version_get(int8_t interface_id, uint8_t *version)
+{
+    protocol_interface_info_entry_t *cur = protocol_stack_interface_info_get_by_id(interface_id);
+
+    if (!cur || !ws_info(cur) || !version) {
+        return -1;
+    }
+    *version = ws_version_1_1(cur) ? WS_FAN_VERSION_1_1 : WS_FAN_VERSION_1_0;
+    return 0;
+}
+
+int ws_management_rx_on_when_idle_set(int8_t interface_id, bool rx_on)
+{
+    protocol_interface_info_entry_t *cur = protocol_stack_interface_info_get_by_id(interface_id);
+
+    if (!cur || !ws_info(cur)) {
+        return -1;
+    }
+    if (cur->ws_info->rx_off_when_idle == !rx_on) {
+        return 0;
+    }
+    cur->ws_info->rx_off_when_idle = !rx_on;
+    // Before the MAC starts this is only stored: ws_bootstrap_fhss_activate()
+    // applies it. Afterwards the MAC applies it at once.
+    if (cur->mac_api && (cur->lowpan_info & INTERFACE_NWK_ACTIVE)) {
+        mac_helper_pib_boolean_set(cur, macRxOnWhenIdle, rx_on);
+        if (rx_on) {
+            cur->lowpan_info &= ~INTERFACE_NWK_CONF_MAC_RX_OFF_IDLE;
+        } else {
+            cur->lowpan_info |= INTERFACE_NWK_CONF_MAC_RX_OFF_IDLE;
+        }
+    }
+    return 0;
+}

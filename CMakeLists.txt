@@ -40,6 +40,14 @@ project(nanostack-generic-standalone C)
 #   NANOSTACK_TLS_STRONG_PORT_ENTROPY
 #                               register the port's random source as a STRONG
 #                               TLS entropy source: only if it is a real TRNG
+#   NANOSTACK_EVENTLOOP_TICKLESS
+#                               tickless event loop (docs/PORTING.md,
+#                               "Tickless event loop"): the 10 ms tick timer
+#                               runs only when an event timer is due.
+#                               Default ON; OFF gives the periodic tick of
+#                               the reference. Defines
+#                               NS_EVENTLOOP_TICKLESS for nanostack_eventloop
+#                               and its consumers (a port can test it)
 # mbedTLS: if the consumer already defines MbedTLS::mbedtls,
 # MbedTLS::mbedcrypto and MbedTLS::mbedx509, they are used as they are;
 # otherwise find_package(MbedTLS) looks for v3.0.0.
@@ -49,6 +57,7 @@ set(NANOSTACK_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 set(NANOSTACK_PORT nanostack_port_posix CACHE STRING "Target implementing the Nanostack porting API")
 option(NANOSTACK_FILE_NO_STDIO "Compile out the stdio fallback of ns_file_system.c" OFF)
 option(NANOSTACK_TLS_STRONG_PORT_ENTROPY "The port's random source is a TRNG: strong TLS entropy source" OFF)
+option(NANOSTACK_EVENTLOOP_TICKLESS "Tickless event loop: the 10 ms tick runs only when an event timer is due" ON)
 
 if(NANOSTACK_PORT MATCHES "^nanostack_port_(posix|sim)$")
     include(CheckIncludeFile)
@@ -105,6 +114,9 @@ target_include_directories(nanostack_eventloop PUBLIC
     ${NANOSTACK_ROOT}/nanostack-event-loop/
 )
 target_link_libraries(nanostack_eventloop PUBLIC nanostack_libservice ${NANOSTACK_PORT})
+if(NANOSTACK_EVENTLOOP_TICKLESS)
+    target_compile_definitions(nanostack_eventloop PUBLIC NS_EVENTLOOP_TICKLESS)
+endif()
 
 if(NANOSTACK_PORT STREQUAL "nanostack_port_posix")
     # Includes stay "common/xxx.h", as in the original tree.
@@ -125,6 +137,8 @@ if(NANOSTACK_PORT STREQUAL "nanostack_port_posix")
     # fhss_timer.c uses the stack's nanostack/mac/fhss_config.h.
     target_include_directories(nanostack_port_posix PRIVATE ${NANOSTACK_ROOT}/nanostack/)
     target_link_libraries(nanostack_port_posix PUBLIC Threads::Threads nanostack_eventloop)
+    # eventOS_callback_timer_start_usec() (ns_port/timer.h)
+    target_compile_definitions(nanostack_port_posix PUBLIC NS_PORT_TIMER_USEC)
     if(BACKTRACE_FOUND)
         target_compile_definitions(nanostack_port_posix PUBLIC HAVE_BACKTRACE)
         target_sources(nanostack_port_posix PRIVATE port/posix/common/backtrace_show.c)
@@ -156,7 +170,7 @@ elseif(NANOSTACK_PORT STREQUAL "nanostack_port_sim")
     )
     target_include_directories(nanostack_port_sim PRIVATE ${NANOSTACK_ROOT}/nanostack/)
     # Programs test it to talk to the conductor.
-    target_compile_definitions(nanostack_port_sim PUBLIC NS_PORT_SIM)
+    target_compile_definitions(nanostack_port_sim PUBLIC NS_PORT_SIM NS_PORT_TIMER_USEC)
     target_link_libraries(nanostack_port_sim PUBLIC Threads::Threads nanostack_eventloop)
     if(BACKTRACE_FOUND)
         target_compile_definitions(nanostack_port_sim PUBLIC HAVE_BACKTRACE)

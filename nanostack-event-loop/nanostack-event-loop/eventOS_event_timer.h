@@ -55,6 +55,19 @@ static inline uint32_t eventOS_event_timer_ms_to_ticks(uint32_t ms)
  */
 extern uint32_t eventOS_event_timer_ticks(void);
 
+/**
+ * Time until the earliest pending event timer expires.
+ *
+ * For a port that sleeps between events: with the tickless event loop
+ * (NS_EVENTLOOP_TICKLESS) the tick timer already follows this deadline, so a
+ * port normally needs only its callback timers' deadlines.
+ *
+ * \return milliseconds until the earliest event timer is due, at least 1
+ *         if one is pending (1 if it is due now); 0 if no event timer is
+ *         pending.
+ */
+extern uint32_t eventOS_event_timer_shortest_active_timer(void);
+
 /* Comparison macros handling wrap efficiently (assuming a conventional compiler
  * which converts 0x80000000 to 0xFFFFFFFF to negative when casting to int32_t).
  */

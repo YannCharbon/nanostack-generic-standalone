@@ -80,10 +80,54 @@ int eventOS_callback_timer_stop(int timer_id);
 - The callback runs in the stack context, never in the ISR. Its second
   argument is 0.
 - The event loop's 10 ms system tick is one of these timers, so they must work
-  before `eventOS_scheduler_init()`.
+  before `eventOS_scheduler_init()`. With the tickless event loop (below) it
+  runs only when an event timer is due.
+- Optional, `eventOS_callback_timer_start_usec(id, usec)`: a port whose timers
+  have µs resolution implements it and defines `NS_PORT_TIMER_USEC` for its
+  consumers (a PUBLIC compile definition of the port target). The POSIX and
+  simulation ports do. The tickless tick then lands exactly on its 10 ms grid;
+  without it, a tick armed from between two slots fires up to 50 µs late.
 - Pattern: the hardware timer ISR sets `expired[id]` and notifies; the run loop
   calls `cb(id, 0)`. A zero delay, or a deadline already in the past, expires
   immediately.
+
+### The tickless event loop
+
+`NANOSTACK_EVENTLOOP_TICKLESS` (CMake, default ON; it defines
+`NS_EVENTLOOP_TICKLESS` for `nanostack_eventloop` and its consumers, so a port
+can test it) changes only `nanostack-event-loop/source/system_timer.c`:
+
+- The event timers keep their 10 ms ticks and their rounding, but the tick
+  timer runs only when one is due. It is armed for the grid point at which the
+  earliest event timer expires, and not at all when there is none.
+- The elapsed ticks are counted from `ns_port_time_us()` at each tick and
+  before each timer request (a grid point at exactly now counts), so a request
+  is relative to the current tick, as with a periodic tick.
+- `ns_port_time_us()` must therefore run on the same clock as the callback
+  timers, or close to it: a tick that comes a little early counts nothing and
+  re-arms for the remaining µs.
+- The tick timer is armed at most 3.28 s ahead (16-bit slots), or 2^30 µs with
+  `NS_PORT_TIMER_USEC`; a longer wait wakes once in between and re-arms. While
+  no event timer is pending, nothing reads the tick count, so a wait longer
+  than the 32-bit clock's 71.6 min is harmless.
+- `eventOS_event_timer_shortest_active_timer()` gives the time to the earliest
+  event timer (ms, 0 if none), for a port's sleep decision.
+
+What a port must change: nothing in its API, but **its run loop must not rely
+on the tick to wake up**. A timeout on its wait becomes a periodic wake of its
+own. The FG25 firmware keeps its 100 ms safety timeout until the tickless loop
+is validated on the boards; `FW_RUNLOOP_SAFETY_MS=0` in its CMake removes it.
+
+What it does not remove: the protocol timer (50 ms, `protocol_timer.c`) and the
+FHSS timers have callback timers of their own. On a Wi-SUN FFN in the emulator
+the wakes go from about 115 to about 39 per second once joined (emulator
+`docs/POWER_MODEL.md`).
+
+Checks: `tests/eventloop/run.sh` runs one schedule of event timers (one-shot,
+periodic, chained from handlers, cancelled, long idle gaps, the 32-bit clock
+wrap) with the periodic tick and tickless, on a fake port, and requires the
+same deliveries at the same µs. `OFF` gives the periodic tick of the
+reference.
 
 ### `sched.h`: scheduler signal and run loop
 

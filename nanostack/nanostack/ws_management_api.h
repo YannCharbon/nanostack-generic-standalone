@@ -27,6 +27,7 @@
 #ifndef WS_MANAGEMENT_API_H_
 #define WS_MANAGEMENT_API_H_
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef struct fhss_timer fhss_timer_t;
 
@@ -920,5 +921,44 @@ int ws_device_min_sens_set(
 int ws_management_phy_capability_set(
     int8_t interface_id,
     ws_management_pcap_info_t *pcap_list);
+
+/**
+ * Set the Wi-SUN FAN version at run time (LFN study U1).
+ *
+ * Call it before arm_nwk_interface_up(). The default is FAN 1.0. FAN 1.1
+ * needs HAVE_WS_VERSION_1_1 at build time; the LFN features of FAN 1.1 are
+ * not implemented yet (GS8).
+ *
+ * \param interface_id Network interface ID.
+ * \param version 1 for FAN 1.0, 2 for FAN 1.1 (the PAN-IE "FAN TPS version").
+ *
+ * \return 0 OK, -1 unknown interface, -2 unsupported version.
+ */
+int ws_management_fan_version_set(int8_t interface_id, uint8_t version);
+
+/**
+ * Read the Wi-SUN FAN version of an interface: 1 for FAN 1.0, 2 for FAN 1.1.
+ *
+ * \return 0 OK, -1 unknown interface or NULL pointer.
+ */
+int ws_management_fan_version_get(int8_t interface_id, uint8_t *version);
+
+/**
+ * Receiver on when the MAC is idle (macRxOnWhenIdle).
+ *
+ * True by default, as an FFN must be. With false, the MAC turns the radio
+ * off whenever it is idle, and on only to send (and for the ACK that
+ * follows): the node then hears nothing else. This is the radio-off path for
+ * low-power nodes (GS8 stage 1); on its own it does not make an LFN.
+ *
+ * Before the network starts the value is stored and applied when the MAC
+ * starts; afterwards it applies at once.
+ *
+ * \param interface_id Network interface ID.
+ * \param rx_on true: receiver on when idle; false: off.
+ *
+ * \return 0 OK, -1 unknown interface.
+ */
+int ws_management_rx_on_when_idle_set(int8_t interface_id, bool rx_on);
 
 #endif /* WS_MANAGEMENT_API_H_ */

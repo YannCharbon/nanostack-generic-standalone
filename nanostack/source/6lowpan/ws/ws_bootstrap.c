@@ -1989,6 +1989,12 @@ void ws_bootstrap_fhss_activate(protocol_interface_info_entry_t *cur)
     cur->lowpan_info &=  ~INTERFACE_NWK_CONF_MAC_RX_OFF_IDLE;
     ws_bootstrap_mac_security_enable(cur);
     ws_bootstrap_mac_activate(cur, cur->ws_info->cfg->fhss.fhss_uc_fixed_channel, cur->ws_info->network_pan_id, true);
+    if (cur->ws_info->rx_off_when_idle) {
+        // Only for a node that asked for it: an FFN keeps its receiver on.
+        // Set after the start, which turns RX on for a PAN coordinator.
+        mac_helper_pib_boolean_set(cur, macRxOnWhenIdle, false);
+        cur->lowpan_info |= INTERFACE_NWK_CONF_MAC_RX_OFF_IDLE;
+    }
     return;
 }
 

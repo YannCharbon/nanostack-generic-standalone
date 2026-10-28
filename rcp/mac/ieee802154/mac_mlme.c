@@ -189,6 +189,27 @@ int8_t mac_mlme_reset(protocol_interface_rf_mac_setup_s *rf_mac_setup, const mlm
 }
 
 
+/* macRxOnWhenIdle changed on a started MAC (LFN study M1): the radio follows
+ * at once if the MAC is idle. Otherwise the end of the current exchange
+ * turns it off (mac_data_poll_radio_disable_check() at the data confirm), and
+ * the next transmission turns it on. */
+static void mac_mlme_rx_on_idle_apply(protocol_interface_rf_mac_setup_s *rf_mac_setup)
+{
+    if (!rf_mac_setup->macUpState || !rf_mac_setup->dev_driver || !rf_mac_setup->dev_driver->phy_driver) {
+        return;
+    }
+    if (rf_mac_setup->macCapRxOnIdle) {
+        mac_mlme_mac_radio_enable(rf_mac_setup);
+        return;
+    }
+    if (rf_mac_setup->macTxProcessActive || rf_mac_setup->macRfRadioTxActive ||
+            rf_mac_setup->active_pd_data_request || rf_mac_setup->mac_ack_tx_active ||
+            rf_mac_setup->macWaitingData) {
+        return;
+    }
+    mac_mlme_mac_radio_disabled(rf_mac_setup);
+}
+
 static int8_t mac_mlme_boolean_set(protocol_interface_rf_mac_setup_s *rf_mac_setup, mlme_attr_t attribute, bool value)
 {
     switch (attribute) {
@@ -197,7 +218,10 @@ static int8_t mac_mlme_boolean_set(protocol_interface_rf_mac_setup_s *rf_mac_set
             break;
 
         case macRxOnWhenIdle:
-            rf_mac_setup->macCapRxOnIdle = value;
+            if (rf_mac_setup->macCapRxOnIdle != value) {
+                rf_mac_setup->macCapRxOnIdle = value;
+                mac_mlme_rx_on_idle_apply(rf_mac_setup);
+            }
             break;
 
         case macEdfeForceStop:

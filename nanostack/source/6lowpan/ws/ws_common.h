@@ -152,6 +152,7 @@ typedef struct ws_info_s {
     struct fhss_timer *fhss_timer_ptr; // Platform adaptation for FHSS timers.
     struct fhss_api *fhss_api;
     ws_regulation_t regulation_ctxt;  /**< Regional regulation context. */
+    bool rx_off_when_idle;            /**< MAC radio off when idle (ws_management_rx_on_when_idle_set()) */
 } ws_info_t;
 
 
