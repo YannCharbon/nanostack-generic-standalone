@@ -13,6 +13,7 @@ set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 add_executable(test_port_sim
     test_port_sim.c
     ${ROOT}/port/sim/sim_fhss_timer.c
+    ${ROOT}/port/sim/sim_power.c
     ${ROOT}/port/sim/sim_random.c
     ${ROOT}/port/sim/sim_scheduler.c
     ${ROOT}/port/sim/sim_stdio.c

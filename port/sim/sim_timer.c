@@ -144,6 +144,8 @@ void sim_timer_fire_due(uint64_t now)
     while ((id = timer_first_due(now)) >= 0) {
         timers[id].armed = false;
         fn = timers[id].fn;
+        if (g_sim_power)
+            sim_power_timer_fired((const void *)fn, false);
         fn(id, 0);
     }
 }

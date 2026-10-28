@@ -118,6 +118,8 @@ void sim_fhss_fire_due(uint64_t now)
 
     while ((i = fhss_first_due(now)) >= 0) {
         fhss_timers[i].armed = false;
+        if (g_sim_power)
+            sim_power_timer_fired(NULL, true);
         fhss_timers[i].fn(fhss_timers[i].arg, 0);
     }
 }

@@ -168,6 +168,7 @@ void ns_port_sim_attach(int fd, int node_id)
              "conductor: protocol version %u, expected %u",
              msg.welcome.version, NSIM_PROTO_VERSION);
     sim.seed = msg.welcome.seed;
+    g_sim_power = msg.welcome.flags & NSIM_WELCOME_POWER;
     sim_random_seed(sim.seed, node_id);
     atexit(sim_report);
 }
@@ -228,7 +229,13 @@ static void sim_wait_advance(void)
 static void sim_send_idle(void)
 {
     struct nsim_idle idle = { .magic = { 'x', 'i' } };
+    struct nsim_wake wake;
     uint64_t t, f;
+
+    if (g_sim_power) {
+        sim_power_take(&wake);
+        sim_send(&wake, sizeof(wake));
+    }
 
     t = sim_timer_next();
     f = sim_fhss_next();
@@ -262,6 +269,7 @@ static bool sim_idle(void)
 static void sim_iterate(void)
 {
     const struct os_source *src;
+    unsigned int events;
     int i;
 
     for (i = 0; i < sim.sources_count; i++) {
@@ -270,10 +278,17 @@ static void sim_iterate(void)
             if (!sim.signalled)
                 continue;
             sim.signalled = false;
-            if (!src->one_event)
-                eventOS_scheduler_run_until_idle();
-            else if (eventOS_scheduler_dispatch_event())
+            events = 0;
+            if (!src->one_event) {
+                // eventOS_scheduler_run_until_idle(), counting the events
+                while (eventOS_scheduler_dispatch_event())
+                    events++;
+            } else if (eventOS_scheduler_dispatch_event()) {
+                events++;
                 eventOS_scheduler_signal();
+            }
+            if (g_sim_power)
+                sim_power_events(events);
         } else if (src->fd != sim.fd && src->pending && src->pending()) {
             src->cb();
         }

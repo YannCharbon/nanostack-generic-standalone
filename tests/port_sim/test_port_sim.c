@@ -692,6 +692,80 @@ static void cond_until_idle(void)
     c_quit();
 }
 
+// Power recording: with NSIM_WELCOME_POWER, an "xc" comes right before each
+// "xi", with the timer callbacks of that wake per cause (no symbol table
+// here: callback timers are "other", FHSS platform timers "fhss") and the
+// events dispatched. Without the flag no "xc" is sent (the other tests).
+static void node_power(int fd)
+{
+    int id = eventOS_callback_timer_register(timer_cb);
+
+    eventOS_callback_timer_start(id, 20);                       // 1000
+    ns_port_fhss_timer.fhss_timer_start(1000, fhss_cb1, NULL);  // 1000
+    ns_port_posix_add_fd(fd, false, frame_signal_cb, NULL);
+    node_attach(fd, 1);
+    NODE_CHECK(ns_port_sim_power());
+    ns_port_run();
+}
+
+// Like c_idle(), and also returns the "xc" that must come just before "xi".
+static uint64_t c_idle_power(struct nsim_wake *wake)
+{
+    char buf[256];
+    bool seen = false;
+    ssize_t n;
+
+    c_nreports = 0;
+    for (;;) {
+        n = recv(c_fd, buf, sizeof(buf) - 1, 0);
+        if (n <= 0) {
+            FAIL("node closed the socket while the conductor waited for \"xi\"");
+            return 0;
+        }
+        buf[n] = '\0';
+        if (!memcmp(buf, "xi", 2)) {
+            if (!seen)
+                FAIL("\"xi\" without \"xc\" before it");
+            return ((struct nsim_idle *)buf)->next_us;
+        }
+        if (!memcmp(buf, "xc", 2)) {
+            if (n != sizeof(*wake))
+                FAIL("\"xc\" of %zd bytes", n);
+            memcpy(wake, buf, sizeof(*wake));
+            seen = true;
+            continue;
+        }
+        if (seen)
+            FAIL("a message between \"xc\" and \"xi\"");
+        if (c_nreports < REPORTS_MAX)
+            strcpy(c_reports[c_nreports++], buf + 2);
+    }
+}
+
+static void cond_power(void)
+{
+    struct nsim_welcome w = { .magic = { 'x', 'w' }, .version = NSIM_PROTO_VERSION,
+                              .flags = NSIM_WELCOME_POWER, .seed = 1 };
+    struct nsim_wake wake;
+    int i;
+
+    c_send(&w, sizeof(w));
+    CHECK_U64(c_idle_power(&wake), 1000);
+    CHECK_U64(wake.events, 0);
+    for (i = 0; i < NSIM_CAUSE_COUNT; i++)
+        CHECK_U64(wake.timers[i], 0);
+    c_advance(1000, 1, "a", NULL);
+    CHECK_U64(c_idle_power(&wake), NEVER);
+    EXPECT("frame a 1000", "event 1000", "timer 0 1000", "fhss1 1000");
+    CHECK_U64(wake.timers[NSIM_CAUSE_OTHER], 1);
+    CHECK_U64(wake.timers[NSIM_CAUSE_FHSS], 1);
+    CHECK_U64(wake.timers[NSIM_CAUSE_TICK], 0);
+    // The stub's dispatch returns false after its last event, so the port
+    // counts one event fewer than the stub reports: 0 here.
+    CHECK_U64(wake.events, 0);
+    c_quit();
+}
+
 // Random: splitmix64 seeded with mix64(seed + mix64(node ID + 1)).
 static uint64_t ref_mix64(uint64_t z)
 {
@@ -920,6 +994,7 @@ int main(void)
     run_test("frames: late, none, queued", node_frames, cond_frames_late);
     run_test("event loop until idle by default", node_until_idle, cond_until_idle);
     run_test("idle reports", node_idle, cond_idle);
+    run_test("power: \"xc\" before each \"xi\"", node_power, cond_power);
     test_random();
     run_test("random before attach is fatal", node_random_early, cond_fatal);
     run_test("set_busy is fatal", node_busy, cond_fatal);

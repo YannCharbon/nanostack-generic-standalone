@@ -139,6 +139,7 @@ elseif(NANOSTACK_PORT STREQUAL "nanostack_port_sim")
     # timer, run loop, random source and stdio; the rest is the POSIX port's.
     add_library(nanostack_port_sim STATIC
         port/sim/sim_fhss_timer.c
+        port/sim/sim_power.c
         port/sim/sim_random.c
         port/sim/sim_scheduler.c
         port/sim/sim_stdio.c

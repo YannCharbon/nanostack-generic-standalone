@@ -26,21 +26,30 @@
  *      read by the conductor before the "xi" that follows it.
  *   6. "xq" (quit): the port exits the program with status 0.
  *
+ * Power recording (mesh-emulator-orchestrator docs/POWER_MODEL.md): when the
+ * welcome has NSIM_WELCOME_POWER, the port also sends "xc" (what this wake
+ * did: timer callbacks per cause, events dispatched) right before each "xi",
+ * and programs may send messages of their own for the conductor's power
+ * ledger (the emulated radio's state). Without the flag nothing changes.
+ *
  * Idle means: no event-loop event signalled, no timer due, no pending()
  * callback returning true. Code runs in zero virtual time.
  */
 #ifndef NS_PORT_SIM_H
 #define NS_PORT_SIM_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #define NSIM_PROTO_VERSION 1
 #define NSIM_NEVER UINT64_MAX   // "xi": no timer armed
 
+#define NSIM_WELCOME_POWER 0x0001 // the conductor records power: send "xc"
+
 struct nsim_welcome {
     char magic[2];              // "xw"
     uint16_t version;           // NSIM_PROTO_VERSION
-    uint32_t reserved;
+    uint32_t flags;             // NSIM_WELCOME_*
     uint64_t seed;              // the run's base seed
 };
 
@@ -59,6 +68,28 @@ struct nsim_idle {
 
 struct nsim_quit {
     char magic[2];              // "xq"
+};
+
+// Why the CPU woke: the timer callbacks that fired, by what they serve. The
+// port tells them apart by the callback's symbol name (the stack's timers are
+// static functions); FHSS platform timers are all NSIM_CAUSE_FHSS. Frames are
+// counted by the conductor, which delivered them.
+enum nsim_cause {
+    NSIM_CAUSE_TICK,            // the event loop's 10 ms tick (system_timer.c)
+    NSIM_CAUSE_PROTOCOL,        // the 50 ms protocol timer (protocol_timer.c)
+    NSIM_CAUSE_MAC,             // MAC timers (mac_mlme.c, mac_timer.c, ...)
+    NSIM_CAUSE_FHSS,            // FHSS timers (callback and platform timers)
+    NSIM_CAUSE_RADIO,           // the emulated radio driver's timers (_rf_*)
+    NSIM_CAUSE_OTHER,           // anything else, or no symbol table
+    NSIM_CAUSE_COUNT
+};
+
+// "xc": what the wake that ends with the next "xi" did. Sent only with
+// NSIM_WELCOME_POWER. Counts saturate at UINT16_MAX.
+struct nsim_wake {
+    char magic[2];              // "xc"
+    uint16_t events;            // event-loop events dispatched
+    uint16_t timers[NSIM_CAUSE_COUNT]; // timer callbacks fired, per cause
 };
 
 // Virtual time 0 is this wall-clock date (ns_port_time_wall_s(), and the log
@@ -87,5 +118,10 @@ uint64_t ns_port_sim_now_us(void);
 // Such a start disarms the timer, as timerfd_settime() does in the POSIX
 // port; the count is also logged at exit.
 unsigned long ns_port_sim_zero_starts(void);
+
+// True when the conductor records power (NSIM_WELCOME_POWER). Valid after
+// ns_port_sim_attach(); programs then report what the conductor's power
+// ledger needs (the emulated radio's state changes).
+bool ns_port_sim_power(void);
 
 #endif

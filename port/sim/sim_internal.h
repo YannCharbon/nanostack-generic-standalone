@@ -28,4 +28,12 @@ void sim_random_seed(uint64_t seed, int node_id);
 // sim_stdio.c
 void sim_stdio_install(void);
 
+// sim_power.c: the "xc" report of each wake, when the conductor records
+// power (g_sim_power, from the welcome)
+struct nsim_wake;
+extern bool g_sim_power;
+void sim_power_timer_fired(const void *fn, bool fhss);
+void sim_power_events(unsigned int n);
+void sim_power_take(struct nsim_wake *out);
+
 #endif
