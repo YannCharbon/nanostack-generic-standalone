@@ -358,6 +358,18 @@ static void  mac_sap_cca_fail_cb(protocol_interface_rf_mac_setup_s *rf_ptr, uint
     } else {
 
         rf_ptr->macRfRadioTxActive = false;
+        if (rf_ptr->active_pd_data_request && rf_ptr->active_pd_data_request->lfn_dst &&
+                rf_ptr->mac_cca_retry <= rf_ptr->macMaxCSMABackoffs) {
+            // FAN 1.1 LFN destination: its window is short, so a busy channel
+            // (or a late start) means the next window, not a backoff now
+            timer_mac_stop(rf_ptr);
+            if (rf_ptr->fhss_api) {
+                // Back to our own channel (also after a late start)
+                rf_ptr->fhss_api->data_tx_done(rf_ptr->fhss_api, false, false, rf_ptr->active_pd_data_request->msduHandle);
+            }
+            mac_tx_done_state_set(rf_ptr, MAC_RETURN_TO_QUEUE);
+            return;
+        }
         if (rf_ptr->mac_cca_retry > rf_ptr->macMaxCSMABackoffs || (rf_ptr->active_pd_data_request && rf_ptr->active_pd_data_request->asynch_request)) {
             //Send MAC_CCA_FAIL
             mac_tx_done_state_set(rf_ptr, MAC_CCA_FAIL);
@@ -404,6 +416,11 @@ static void mac_sap_no_ack_cb(protocol_interface_rf_mac_setup_s *rf_ptr)
             mac_csma_BE_update(rf_ptr);
         }
         rf_ptr->mac_tx_status.retry++;
+        if (rf_ptr->active_pd_data_request && rf_ptr->active_pd_data_request->lfn_dst) {
+            // FAN 1.1 LFN destination: the retry goes in its next window
+            mac_tx_done_state_set(rf_ptr, MAC_RETURN_TO_QUEUE);
+            return;
+        }
         /*Send retry using random interval*/
         if (mcps_pd_data_rebuild(rf_ptr, rf_ptr->active_pd_data_request)) {
             mac_tx_done_state_set(rf_ptr, MAC_CCA_FAIL);

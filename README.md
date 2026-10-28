@@ -45,6 +45,8 @@ the fire-alarm protocol stack, which takes no code from it.
 | `include/ns_rand.h`, `source/ns_rand.c` | `common/rand.*` | The stack's `rand_*` helpers, built on the port's random source |
 | `tests/cross/` | — | Cross-build check: Cortex-M33, stub port |
 | `tests/port_sim/` | — | Unit tests of the simulation port |
+| `tests/eventloop/` | — | Event loop timers: periodic tick against idle-tick skipping |
+| `tests/fhss_lfn/` | — | FAN 1.1 LFN unicast mechanics in the FHSS ([docs/LFN_MAC.md](docs/LFN_MAC.md)) |
 
 `rcp/` keeps its own `mac/rf_driver_storage.h`, which differs slightly from
 `nanostack/source/mac/rf_driver_storage.h`, exactly as before.
@@ -204,6 +206,15 @@ The event loop's timers, periodic tick against idle-tick skipping, on a fake por
 
 ```bash
 tests/eventloop/run.sh [build dir]
+```
+
+The FAN 1.1 LFN unicast mechanics in the FHSS (listen windows, the parent's
+hold and release, LUTT-IE), the real FHSS on a fake port and MAC
+([docs/LFN_MAC.md](docs/LFN_MAC.md)); the two-node end-to-end check is in the
+emulator (`sim_utils/vtime/test_lfn_mac.sh`):
+
+```bash
+tests/fhss_lfn/run.sh [build dir]
 ```
 
 ## Verification

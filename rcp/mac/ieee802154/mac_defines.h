@@ -208,6 +208,11 @@ typedef struct protocol_interface_rf_mac_setup {
     bool macRfRadioTxActive: 1;
     bool rf_csma_extension_supported: 1;
     bool rf_pd_ack_buffer_is_in_use: 1;
+    /* Timed receive windows (FAN 1.1 LFN, GS8): the FHSS runs a listen
+     * schedule; the receiver is on in its windows only (macRxOnWhenIdle
+     * false). Both false otherwise, and nothing changes. */
+    bool mac_rx_windows: 1;
+    bool mac_rx_window_open: 1;
     uint16_t mac_short_address;
     uint16_t pan_id;
     uint8_t mac64[8];

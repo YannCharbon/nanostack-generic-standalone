@@ -173,6 +173,8 @@ int ns_sw_mac_fhss_register(mac_api_t *mac_api, fhss_api_t *fhss_api)
     callbacks.tx_poll = &mac_poll_tx_queue;
     callbacks.broadcast_notify = &mac_broadcast_notification;
     callbacks.read_coord_mac_address = &mac_get_coordinator_mac_address;
+    callbacks.read_synch_info = NULL;
+    callbacks.rx_window = &mac_rx_window_cb;
     mac_setup->fhss_api->init_callbacks(mac_setup->fhss_api, &callbacks);
     return 0;
 }

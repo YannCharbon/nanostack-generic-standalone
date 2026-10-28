@@ -78,7 +78,8 @@ typedef enum {
     PHY_EXTENSION_SET_CCA_THRESHOLD, /**<  Set CCA threshold which is given as percentage of maximum threshold. 0 is the lowest(strictest) possible threshold and 100 is the highest possible threshold */
     PHY_EXTENSION_SET_CHANNEL_CCA_THRESHOLD, /**<  Set CCA threshold which is given as dBm. This value is set in PHY_LINK_CCA_PREPARE callback and PHY driver should update the CCA threshold configuration */
     PHY_EXTENSION_SET_DATA_WHITENING, /**<  Enable or disable data whitening. Boolean true for enable, false for disable */
-    PHY_EXTENSION_SET_802_15_4_MODE /**<  Set IEEE 802.15.4 mode as defined by phy_802_15_4_mode_t*/
+    PHY_EXTENSION_SET_802_15_4_MODE, /**<  Set IEEE 802.15.4 mode as defined by phy_802_15_4_mode_t*/
+    PHY_EXTENSION_READ_RX_ACTIVE /**<  Read whether a frame is being received (sync word detected, frame not yet complete): one uint8_t, 1 or 0. Optional: a driver that does not support it returns -1, and the MAC then assumes 0. Used to close a timed receive window (FAN 1.1 LFN) only after the frame in progress */
 } phy_extension_type_e;
 
 /** Address types */

@@ -17,6 +17,7 @@
 #ifndef FHSS_WS_H_
 #define FHSS_WS_H_
 #include "nanostack/mac/fhss_ws_extension.h"
+#include "fhss_ws_lfn.h"
 
 // TX slot length is optimised to this packet length
 #define OPTIMAL_PACKET_LENGTH               500
@@ -37,6 +38,29 @@
 // TX poll interval used when channel schedules are not yet started (50us slots)
 #define DEFAULT_POLL_PERIOD    (10000 / 50)
 typedef struct fhss_ws fhss_ws_t;
+
+/* Wi-SUN FAN 1.1 LFN state (GS8 stage 2, docs/LFN_MAC.md). Both roles off:
+ * the FHSS is the FAN 1.0 one. One FHSS timer callback serves both roles
+ * (fhss_ws_lfn_timer_handler): at most three distinct FHSS timer callbacks
+ * in all (unicast, broadcast, LFN). */
+struct fhss_ws_lfn {
+    /* LFN role: own unicast listen schedule */
+    bool listen_enabled;            // configured (ns_fhss_ws_lfn_listen_set)
+    bool listen_running;            // started (FHSS synchronized)
+    bool window_open;
+    fhss_ws_lfn_listen_t listen_cfg;
+    fhss_lfn_sched_t own;           // own schedule: anchor = slot 0 start
+    uint16_t slot;                  // current (open) or next slot
+    uint32_t slot_start;            // its start time
+    uint8_t window_channel;
+    uint16_t close_retries;
+    /* Parent role */
+    bool parent_enabled;
+    fhss_ws_lfn_parent_t parent_cfg;
+    bool poll_armed;                // TX queue poll armed for a held frame
+    uint32_t poll_time;             // its time
+    fhss_ws_lfn_stats_t stats;
+};
 
 struct fhss_ws {
     uint8_t bc_channel;
@@ -59,6 +83,7 @@ struct fhss_ws {
     fhss_ws_tx_allow_level ef_tx_level;
     struct fhss_ws_configuration fhss_configuration;
     fhss_get_neighbor_info *get_neighbor_info;
+    struct fhss_ws_lfn lfn;
 };
 
 fhss_structure_t *fhss_ws_enable(fhss_api_t *fhss_api, const fhss_ws_configuration_t *fhss_configuration, const fhss_timer_t *fhss_timer);
@@ -69,5 +94,7 @@ int fhss_ws_configuration_set(fhss_structure_t *fhss_structure, const fhss_ws_co
 int fhss_ws_set_hop_count(fhss_structure_t *fhss_structure, const uint8_t hop_count);
 int fhss_ws_set_tx_allowance_level(fhss_structure_t *fhss_structure, const fhss_ws_tx_allow_level global_level, const fhss_ws_tx_allow_level ef_level);
 void fhss_set_txrx_slot_length(fhss_structure_t *fhss_structure);
+int fhss_ws_lfn_listen_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_listen_t *cfg);
+int fhss_ws_lfn_parent_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_parent_t *cfg);
 
 #endif /*FHSS_WS_H_*/

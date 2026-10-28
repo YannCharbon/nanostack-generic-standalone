@@ -195,8 +195,10 @@ extern const struct fhss_timer ns_port_fhss_timer;   /* Nanostack's fhss_timer_t
 - Fill in `fhss_timer_start(us, cb, api)`, `fhss_timer_stop(cb, api)`,
   `fhss_get_remaining_slots(cb, api)` (in µs), `fhss_get_timestamp(api)`
   (= `ns_port_time_us()`), `fhss_resolution_divider = 1`.
-- One pending timeout **per distinct callback**: the FHSS uses 2–3. Starting
-  one that is already armed replaces it. Callbacks run in the stack context.
+- One pending timeout **per distinct callback**: the FHSS uses up to 3
+  (unicast, broadcast, and the FAN 1.1 LFN timer of `docs/LFN_MAC.md`).
+  Starting one that is already armed replaces it. Callbacks run in the stack
+  context.
 - The application passes it to `ws_management_node_init()`.
 
 ### `trace.h`
@@ -246,6 +248,15 @@ GENERICITY_PLAN.md §3.2. The essentials:
   `ns_port_time_us()` base.
 - **Channels:** `PHY_EXTENSION_SET_CHANNEL` changes the RX channel when idle,
   receiving or waiting for CSMA. Otherwise store it and return -1.
+- **Radio off:** `state_control(PHY_INTERFACE_DOWN)` turns the receiver off
+  (a TX in progress ends first); `PHY_INTERFACE_UP` turns it on, on the given
+  channel. A FAN 1.0 FFN never asks for off; a node with RX off when idle
+  (GS8 stage 1) and an LFN (`docs/LFN_MAC.md`) do.
+- **Optional, for an LFN:** `PHY_EXTENSION_READ_RX_ACTIVE` writes one byte, 1
+  while a frame is being received (sync word seen, frame not complete). The
+  MAC then closes an LFN receive window only after that frame. Without it
+  (return -1) the window closes on time and a frame arriving at its end is
+  lost.
 - The EFR32 driver also documents the RAIL specifics: scheduled-TX lead time,
   `CCA_OK` reporting, radio config (firmware README, "Design notes").
 

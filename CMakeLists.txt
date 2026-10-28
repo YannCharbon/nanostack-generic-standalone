@@ -376,6 +376,7 @@ set(NANOSTACK_RCP_SOURCES
     rcp/fhss/fhss_configuration_interface.c
     rcp/fhss/fhss_statistics.c
     rcp/fhss/fhss_ws.c
+    rcp/fhss/fhss_ws_lfn.c
     # Excluded rcp/fhss/fhss_test_api.c
 )
 list(TRANSFORM NANOSTACK_RCP_SOURCES PREPEND ${NANOSTACK_ROOT}/)

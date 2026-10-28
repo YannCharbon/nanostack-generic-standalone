@@ -35,6 +35,8 @@ jobs:
         run: tests/port_sim/run.sh build-port-sim-tests
       - name: Event loop timers, periodic tick against idle-tick skipping
         run: tests/eventloop/run.sh build-eventloop-tests
+      - name: FAN 1.1 LFN unicast mechanics in the FHSS
+        run: tests/fhss_lfn/run.sh build-fhss-lfn-tests
       - name: Build mbedTLS v3.0.0
         run: |
           git clone --depth 1 --branch v3.0.0 https://github.com/Mbed-TLS/mbedtls.git ../mbedtls

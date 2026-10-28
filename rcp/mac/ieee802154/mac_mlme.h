@@ -24,6 +24,8 @@
 #ifndef MAC_MLME_H_
 #define MAC_MLME_H_
 
+#include "nanostack/mac/fhss_api.h"
+
 struct protocol_interface_rf_mac_setup;
 struct arm_event_s;
 struct arm_device_driver_list;
@@ -64,6 +66,11 @@ void mac_mlme_poll_process_confirm(struct protocol_interface_rf_mac_setup *rf_ma
  */
 void mac_mlme_mac_radio_disabled(struct protocol_interface_rf_mac_setup *rf_mac_setup);
 void mac_mlme_mac_radio_enable(struct protocol_interface_rf_mac_setup *rf_mac_set);
+
+/* Timed receive windows for the FHSS's LFN listen schedule (fhss_api.h,
+ * mac_rx_window). Returns 1 when a close is deferred (frame being received,
+ * ACK being sent), 0 otherwise. */
+int mac_mlme_rx_window(struct protocol_interface_rf_mac_setup *rf_mac_setup, fhss_rx_window_e event, uint8_t channel);
 
 /**
  * Initialize MAC channel selection sequence

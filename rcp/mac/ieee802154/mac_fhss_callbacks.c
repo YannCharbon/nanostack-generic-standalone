@@ -129,3 +129,12 @@ int mac_get_coordinator_mac_address(const fhss_api_t *fhss_api, uint8_t *mac_add
     memcpy(mac_address, mac_setup->coord_long_address, 8);
     return 0;
 }
+
+int mac_rx_window_cb(const fhss_api_t *fhss_api, fhss_rx_window_e event, uint8_t channel)
+{
+    protocol_interface_rf_mac_setup_s *mac_setup = get_sw_mac_ptr_by_fhss_api(fhss_api);
+    if (!mac_setup) {
+        return -1;
+    }
+    return mac_mlme_rx_window(mac_setup, event, channel);
+}

@@ -61,6 +61,21 @@ typedef struct broadcast_timing_info {
 } broadcast_timing_info_t;
 
 /**
+ * @brief lfn_unicast_timing_info LFN unicast listen schedule of a neighbour
+ * (Wi-SUN FAN 1.1, GS8): what an LFN parent needs to reach the LFN in its
+ * listen windows. Filled by the upper layer from the LFN's LUS-IE and
+ * LUTT-IE. listen_interval_ms 0 means the neighbour is not an LFN (FAN 1.0
+ * neighbours keep it 0). The LFN's channel function and channel list are
+ * those of uc_timing_info and uc_channel_list.
+ */
+typedef struct lfn_unicast_timing_info {
+    uint32_t listen_interval_ms;                /**< LUS-IE listen interval (ms); 0: no LFN schedule */
+    uint16_t slot_number;                       /**< LUTT-IE unicast slot number */
+    uint_fast24_t interval_offset_ms;           /**< LUTT-IE unicast interval offset (ms into the slot) */
+    uint32_t lutt_rx_timestamp;                 /**< LUTT-IE reception timestamp (µs) */
+} lfn_unicast_timing_info_t;
+
+/**
  * @brief fhss_ws_neighbor_timing_info Neighbor timing/hopping schedule information structure.
  */
 typedef struct fhss_ws_neighbor_timing_info {
@@ -70,6 +85,7 @@ typedef struct fhss_ws_neighbor_timing_info {
     broadcast_timing_info_t bc_timing_info;     /**< Neighbor broadcast timing info */
     ws_channel_mask_t uc_channel_list;          /**< Neighbor Unicast channel list */
     uint32_t *excluded_channels;                /**< Neighbor excluded channels (bit mask) */
+    lfn_unicast_timing_info_t lfn_uc_timing_info; /**< Neighbor LFN unicast schedule (FAN 1.1); zero for an FFN */
 } fhss_ws_neighbor_timing_info_t;
 
 /**
@@ -151,5 +167,93 @@ typedef enum {
  * @return 0 on success, -1 on fail.
  */
 extern int ns_fhss_ws_set_tx_allowance_level(const fhss_api_t *fhss_api, const fhss_ws_tx_allow_level global_level, const fhss_ws_tx_allow_level ef_level);
+
+/*
+ * Wi-SUN FAN 1.1 LFN unicast mechanics in the FHSS (GS8 stage 2; design in
+ * docs/LFN_MAC.md). Both roles are off by default, and with both off the
+ * FHSS behaves exactly as before (FAN 1.0). All times are user settings;
+ * the defaults below are only starting points.
+ */
+
+/** Defaults of fhss_ws_lfn_listen_t (ns_fhss_ws_lfn_listen_defaults()). */
+#define FHSS_LFN_LISTEN_INTERVAL_MS_DEFAULT     1000u   /**< Listen interval */
+#define FHSS_LFN_RX_WINDOW_US_DEFAULT           5000u   /**< Receive window length */
+#define FHSS_LFN_RX_GUARD_US_DEFAULT            1000u   /**< Window opens this long before the slot start */
+#define FHSS_LFN_CLOSE_RETRY_US_DEFAULT         2000u   /**< Retry period of a close the MAC deferred (frame being received or ACK being sent) */
+#define FHSS_LFN_FIRST_SLOT_DELAY_US_DEFAULT    10000u  /**< Start of slot 0 after the schedule starts */
+
+/**
+ * @brief LFN role: the node's own unicast listen schedule (LUS-IE). The
+ * receiver is on only in a window around the start of each slot, on the
+ * channel of the node's unicast channel function for that slot number:
+ * [start - rx_guard_us, start - rx_guard_us + rx_window_us). Outside the
+ * windows the radio is off, except to transmit (and wait for the ACK).
+ */
+typedef struct fhss_ws_lfn_listen {
+    uint32_t listen_interval_ms;    /**< Listen interval (ms), 1 .. 2147483 (32-bit clock, LFN study M11) */
+    uint32_t rx_window_us;          /**< Window length (µs), 1 .. interval */
+    uint32_t rx_guard_us;           /**< Window opening before the slot start (µs), < rx_window_us */
+    uint32_t close_retry_us;        /**< Retry period of a deferred close (µs), >= 1 */
+    uint32_t first_slot_delay_us;   /**< Slot 0 starts this long after the schedule starts (µs), > rx_guard_us */
+} fhss_ws_lfn_listen_t;
+
+/** Defaults of fhss_ws_lfn_parent_t (ns_fhss_ws_lfn_parent_defaults()). */
+#define FHSS_LFN_TX_OFFSET_US_DEFAULT           0u      /**< TX start after the LFN's slot start */
+#define FHSS_LFN_TX_LEAD_US_DEFAULT             20000u  /**< Frame released to the MAC this long before its TX time */
+#define FHSS_LFN_TX_MIN_PREP_US_DEFAULT         2000u   /**< Shortest time from release to TX; a closer window is skipped */
+#define FHSS_LFN_TX_TTL_INTERVALS_DEFAULT       20u     /**< Frame dropped after waiting this many listen intervals */
+
+/**
+ * @brief LFN parent role: unicast frames to a neighbour with an LFN unicast
+ * schedule (lfn_unicast_timing_info_t) are held until its next listen slot
+ * and sent at slot start + tx_offset_us, on the LFN's channel for that slot,
+ * whatever the parent's own TX/RX slots and broadcast dwell. A failed attempt
+ * (no ACK, busy channel, too late) waits for the next slot; the MAC's retry
+ * limits still apply.
+ */
+typedef struct fhss_ws_lfn_parent {
+    uint32_t tx_offset_us;          /**< TX start after the LFN's slot start (µs) */
+    uint32_t tx_lead_us;            /**< Release this long before the TX time (µs), <= 60000 (PHY TX time limit) */
+    uint32_t tx_min_prep_us;        /**< Shortest release-to-TX time (µs), <= tx_lead_us */
+    uint16_t tx_ttl_intervals;      /**< Frame TTL in the LFN's listen intervals, >= 1 */
+} fhss_ws_lfn_parent_t;
+
+/**
+ * @brief Counters of the LFN mechanics (ns_fhss_ws_lfn_stats_get()).
+ */
+typedef struct fhss_ws_lfn_stats {
+    uint32_t windows_opened;        /**< LFN: receive windows opened */
+    uint32_t windows_skipped;       /**< LFN: slots skipped because the FHSS timer fired late */
+    uint32_t closes_deferred;       /**< LFN: window closes the MAC deferred (receiving, sending an ACK) */
+    uint32_t tx_released;           /**< Parent: frames released for an LFN window */
+    uint32_t tx_held;               /**< Parent: checks that held a frame for a later window */
+    uint32_t tx_expired;            /**< Parent: frames dropped after their TTL */
+} fhss_ws_lfn_stats_t;
+
+/** Fill *cfg with the FHSS_LFN_*_DEFAULT values. */
+extern void ns_fhss_ws_lfn_listen_defaults(fhss_ws_lfn_listen_t *cfg);
+extern void ns_fhss_ws_lfn_parent_defaults(fhss_ws_lfn_parent_t *cfg);
+
+/**
+ * @brief Start (cfg) or stop (NULL) the LFN unicast listen schedule.
+ *
+ * While it runs, the FFN unicast hopping and the FFN broadcast schedule are
+ * stopped, ns_fhss_ws_set_parent() is ignored, and the TX queue is not polled
+ * periodically. The MAC should have macRxOnWhenIdle false. If the FHSS is not
+ * synchronized yet (MLME-START), the schedule starts when it is. Stopping it
+ * restarts the FFN unicast hopping.
+ * @return 0 OK, -1 no FHSS or the MAC has no timed windows, -2 invalid cfg,
+ *         -3 the LFN parent role is on.
+ */
+extern int ns_fhss_ws_lfn_listen_set(const fhss_api_t *fhss_api, const fhss_ws_lfn_listen_t *cfg);
+
+/**
+ * @brief Enable (cfg) or disable (NULL) the LFN parent role.
+ * @return 0 OK, -1 no FHSS, -2 invalid cfg, -3 the LFN listen schedule runs.
+ */
+extern int ns_fhss_ws_lfn_parent_set(const fhss_api_t *fhss_api, const fhss_ws_lfn_parent_t *cfg);
+
+/** @brief Read the LFN counters. @return 0 OK, -1 no FHSS. */
+extern int ns_fhss_ws_lfn_stats_get(const fhss_api_t *fhss_api, fhss_ws_lfn_stats_t *stats);
 
 #endif // FHSS_WS_EXT_H

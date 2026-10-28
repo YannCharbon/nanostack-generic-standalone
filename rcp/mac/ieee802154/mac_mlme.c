@@ -956,6 +956,70 @@ void mac_mlme_mac_radio_enable(protocol_interface_rf_mac_setup_s *rf_mac_setup)
     platform_exit_critical();
 }
 
+/* Timed receive windows (FAN 1.1 LFN, GS8 stage 2; docs/LFN_MAC.md §3). The
+ * FHSS's listen schedule opens and closes them; between windows the radio is
+ * off (macRxOnWhenIdle false), except to transmit and wait for the ACK. */
+static bool mac_mlme_phy_rx_active(protocol_interface_rf_mac_setup_s *rf_mac_setup)
+{
+    phy_device_driver_s *dev_driver = rf_mac_setup->dev_driver->phy_driver;
+    uint8_t active = 0;
+
+    if (!dev_driver->extension || dev_driver->extension(PHY_EXTENSION_READ_RX_ACTIVE, &active) != 0) {
+        return false;
+    }
+    return active != 0;
+}
+
+int mac_mlme_rx_window(protocol_interface_rf_mac_setup_s *rf_mac_setup, fhss_rx_window_e event, uint8_t channel)
+{
+    if (!rf_mac_setup || !rf_mac_setup->dev_driver || !rf_mac_setup->dev_driver->phy_driver) {
+        return -1;
+    }
+    switch (event) {
+        case FHSS_RX_WINDOWS_START:
+            rf_mac_setup->mac_rx_windows = true;
+            rf_mac_setup->mac_rx_window_open = false;
+            return 0;
+        case FHSS_RX_WINDOWS_STOP:
+            rf_mac_setup->mac_rx_windows = false;
+            rf_mac_setup->mac_rx_window_open = false;
+            return 0;
+        case FHSS_RX_WINDOW_OPEN:
+            rf_mac_setup->mac_rx_window_open = true;
+            if (!rf_mac_setup->macUpState) {
+                return 0;
+            }
+            // During a transmission (a data frame or an ACK) the channel
+            // stays: the FHSS's TX done moves to the window's channel
+            // afterwards, and the radio, on for the transmission, stays on
+            // while the window is open. (macTxProcessActive is not a test:
+            // it stays set after an ACK.)
+            if (!rf_mac_setup->active_pd_data_request && !rf_mac_setup->mac_ack_tx_active) {
+                mac_mlme_rf_channel_change(rf_mac_setup, channel);
+            }
+            mac_mlme_mac_radio_enable(rf_mac_setup);
+            return 0;
+        case FHSS_RX_WINDOW_CLOSE:
+            rf_mac_setup->mac_rx_window_open = false;
+            if (rf_mac_setup->macCapRxOnIdle || !rf_mac_setup->macUpState) {
+                return 0;
+            }
+            // A frame being received, or our ACK to it: off afterwards
+            if (rf_mac_setup->mac_ack_tx_active || mac_mlme_phy_rx_active(rf_mac_setup)) {
+                return 1;
+            }
+            // A data frame of our own (CSMA, TX, waiting for its ACK) ends
+            // with its confirm, which turns the radio off
+            // (mac_data_poll_radio_disable_check()).
+            if (rf_mac_setup->active_pd_data_request || rf_mac_setup->macWaitingData) {
+                return 0;
+            }
+            mac_mlme_mac_radio_disabled(rf_mac_setup);
+            return 0;
+    }
+    return -1;
+}
+
 static int8_t mac_mlme_rf_disable(protocol_interface_rf_mac_setup_s *rf_mac_setup)
 {
     int8_t ret_val = 0;

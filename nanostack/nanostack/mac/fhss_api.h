@@ -171,6 +171,31 @@ typedef int16_t fhss_write_synch_info(const fhss_api_t *api, uint8_t *ptr, uint8
 typedef int fhss_init_callbacks(const fhss_api_t *api, fhss_callback_t *callbacks);
 
 /**
+ * @brief Result of fhss_lfn_tx_check (Wi-SUN FAN 1.1 LFN parent, GS8).
+ */
+typedef enum {
+    FHSS_LFN_TX_NOT_LFN = 0,    /**< Not an LFN destination: the usual FHSS rules apply. */
+    FHSS_LFN_TX_NOW,            /**< LFN destination: send now, starting at *tx_time (its next listen window). */
+    FHSS_LFN_TX_WAIT,           /**< LFN destination: hold the frame; the FHSS polls the TX queue before the window. */
+    FHSS_LFN_TX_EXPIRED         /**< LFN destination: the frame waited longer than its TTL; drop it as timed out. */
+} fhss_lfn_tx_e;
+
+/**
+ * @brief Check whether a unicast frame goes to an LFN, and when it may be sent.
+ *
+ * Called by the MAC for every acknowledged unicast frame with a 64-bit
+ * destination before it is sent or taken from the queue. Optional: may be
+ * NULL. Returns FHSS_LFN_TX_NOT_LFN unless LFN parenting is enabled in the
+ * FHSS and the destination has an LFN unicast schedule.
+ * @param api FHSS instance.
+ * @param destination_address Destination MAC address (64-bit).
+ * @param queued_since_us Timestamp of the frame's first request (its TTL starts there).
+ * @param tx_time Written with FHSS_LFN_TX_NOW: absolute timestamp (µs) to start the transmission.
+ * @return See fhss_lfn_tx_e.
+ */
+typedef fhss_lfn_tx_e fhss_lfn_tx_check(const fhss_api_t *api, const uint8_t *destination_address, uint32_t queued_since_us, uint32_t *tx_time);
+
+/**
  * \brief Struct fhss_api defines interface between software MAC and FHSS.
  * Application creates fhss_api_s object by calling FHSS creator function.
  * Then object is passed to software MAC which then initialises it's own callback functions.
@@ -188,6 +213,7 @@ struct fhss_api {
     fhss_get_retry_period *get_retry_period;            /**< Get retransmission period. */
     fhss_write_synch_info *write_synch_info;            /**< Write synchronization info to TX frame*/
     fhss_init_callbacks *init_callbacks;                /**< Initialize MAC functions. */
+    fhss_lfn_tx_check *lfn_tx_check;                    /**< LFN destination check (FAN 1.1 parent). Optional, may be NULL. */
 };
 
 /**
@@ -269,6 +295,29 @@ typedef int mac_read_coordinator_mac_address(const fhss_api_t *fhss_api, uint8_t
 typedef int mac_read_synch_info(const fhss_api_t *fhss_api, uint8_t *info_ptr, uint8_t *mac_address, int info_type, uint32_t rx_timestamp);
 
 /**
+ * @brief Events of the timed receive windows (Wi-SUN FAN 1.1 LFN, GS8).
+ */
+typedef enum {
+    FHSS_RX_WINDOWS_START,  /**< The FHSS runs an LFN listen schedule: the receiver is on only in windows. */
+    FHSS_RX_WINDOWS_STOP,   /**< Back to the usual behaviour (macRxOnWhenIdle decides). */
+    FHSS_RX_WINDOW_OPEN,    /**< Open a receive window on the given channel now. */
+    FHSS_RX_WINDOW_CLOSE    /**< Close the open window: radio off unless the MAC is busy. */
+} fhss_rx_window_e;
+
+/**
+ * @brief Timed receive window: the FHSS opens and closes it at the times of
+ * its listen schedule (FHSS timers), the MAC turns the radio on and off.
+ * @param fhss_api FHSS instance.
+ * @param event See fhss_rx_window_e.
+ * @param channel Channel of the window (FHSS_RX_WINDOW_OPEN only).
+ * @return 0 Done.
+ * @return 1 FHSS_RX_WINDOW_CLOSE only: the radio is receiving or sending an
+ *           ACK, so it stays on; the FHSS asks again a little later.
+ * @return -1 Fail.
+ */
+typedef int mac_rx_window(const fhss_api_t *fhss_api, fhss_rx_window_e event, uint8_t channel);
+
+/**
  * \brief Struct fhss_callback defines functions that software MAC needs to implement.
  * Function pointers are passed to FHSS using fhss_init_callbacks function.
  */
@@ -282,6 +331,7 @@ struct fhss_callback {
     mac_broadcast_notify *broadcast_notify;                     /**< Broadcast channel notification from FHSS. */
     mac_read_coordinator_mac_address *read_coord_mac_address;   /**< Read coordinator MAC address. */
     mac_read_synch_info *read_synch_info;                       /**< Read information element for a specific MAC address. */
+    mac_rx_window *rx_window;                                   /**< Timed receive windows (FAN 1.1 LFN). May be NULL. */
 };
 
 #endif // FHSS_API_H

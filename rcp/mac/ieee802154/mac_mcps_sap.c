@@ -118,7 +118,8 @@ static bool mac_data_request_confirmation_finish(protocol_interface_rf_mac_setup
 
 static void mac_data_poll_radio_disable_check(protocol_interface_rf_mac_setup_s *rf_mac_setup)
 {
-    if (rf_mac_setup->macCapRxOnIdle || rf_mac_setup->macWaitingData) {
+    // An open LFN receive window keeps the radio on until it closes
+    if (rf_mac_setup->macCapRxOnIdle || rf_mac_setup->macWaitingData || rf_mac_setup->mac_rx_window_open) {
         return;
     }
 
@@ -681,8 +682,9 @@ static int8_t mac_data_sap_rx_handler(mac_pre_parsed_frame_t *buf, protocol_inte
     data_ind->msduLength = buf->mac_payload_length;
     data_ind->msdu_ptr = buf->macPayloadPtr;
 
-    /* Validate Polling device */
-    if (!rf_mac_setup->macCapRxOnIdle) {
+    /* Validate Polling device. Not for an LFN's timed receive windows: it
+     * does not poll, and accepts whatever its windows receive. */
+    if (!rf_mac_setup->macCapRxOnIdle && !rf_mac_setup->mac_rx_windows) {
         if (mac_data_interface_host_accept_data(data_ind, rf_mac_setup) != 0) {
             //tr_debug("Drop by not Accept");
             goto DROP_PACKET;
@@ -848,8 +850,42 @@ static void mac_mcps_asynch_finish(protocol_interface_rf_mac_setup_s *rf_mac_set
     }
 }
 
+/* FAN 1.1 LFN parent (GS8 stage 2, docs/LFN_MAC.md §4): asks the FHSS
+ * whether an acknowledged unicast frame goes to an LFN, and when. Without
+ * fhss_api->lfn_tx_check, or with LFN parenting off in the FHSS, every frame
+ * is FHSS_LFN_TX_NOT_LFN and nothing changes. */
+static fhss_lfn_tx_e mcps_lfn_tx_check(protocol_interface_rf_mac_setup_s *rf_mac_setup, mac_pre_build_frame_t *buffer)
+{
+    uint32_t tx_time = 0;
+    fhss_lfn_tx_e ret;
+
+    buffer->lfn_dst = false;
+    buffer->lfn_tx_time_set = false;
+    buffer->lfn_expired = false;
+    if (!rf_mac_setup->fhss_api || !rf_mac_setup->fhss_api->lfn_tx_check || buffer->asynch_request ||
+            !mac_is_ack_request_set(buffer) || buffer->fcf_dsn.DstAddrMode != MAC_ADDR_MODE_64_BIT) {
+        return FHSS_LFN_TX_NOT_LFN;
+    }
+    ret = rf_mac_setup->fhss_api->lfn_tx_check(rf_mac_setup->fhss_api, buffer->DstAddr, buffer->request_start_time_us, &tx_time);
+    if (ret == FHSS_LFN_TX_NOT_LFN) {
+        return ret;
+    }
+    buffer->lfn_dst = true;
+    if (ret == FHSS_LFN_TX_NOW) {
+        buffer->lfn_tx_time_set = true;
+        buffer->lfn_tx_time = tx_time;
+    } else if (ret == FHSS_LFN_TX_EXPIRED) {
+        buffer->lfn_expired = true;
+    }
+    return ret;
+}
+
 static bool mcps_sap_check_buffer_timeout(protocol_interface_rf_mac_setup_s *rf_mac_setup, mac_pre_build_frame_t *buffer)
 {
+    // A frame for an LFN waits for its windows: its own TTL (FHSS)
+    if (buffer->lfn_dst) {
+        return buffer->lfn_expired;
+    }
     // Convert from 1us slots to seconds
     uint32_t buffer_age_s = (mac_mcps_sap_get_phy_timestamp(rf_mac_setup) - buffer->request_start_time_us) / 1000000;
     // Do not timeout broadcast frames. Broadcast interval could be very long.
@@ -1358,6 +1394,11 @@ static void mcps_data_confirm_handle(protocol_interface_rf_mac_setup_s *rf_ptr, 
                     buffer->fhss_retry_count += rf_ptr->mac_tx_status.retry;
                 }
                 buffer->fhss_cca_retry_count += rf_ptr->mac_tx_status.cca_cnt;
+                if (rf_ptr->mac_rx_windows) {
+                    // LFN: the radio is off while the frame waits for its
+                    // restart (outside a window); the restart turns it on
+                    mac_data_poll_radio_disable_check(rf_ptr);
+                }
                 mcps_sap_pd_req_queue_write(rf_ptr, buffer);
                 return;
             }
@@ -1549,6 +1590,9 @@ static int8_t mcps_generic_packet_build(protocol_interface_rf_mac_setup_s *rf_pt
     uint8_t *mhr_start = ptr;
     if (buffer->ExtendedFrameExchange && buffer->fcf_dsn.SrcAddrMode == MAC_ADDR_MODE_NONE) {
         buffer->tx_time = mac_mcps_sap_get_phy_timestamp(rf_ptr) + 300; //Send 300 us later
+    } else if (buffer->lfn_tx_time_set && rf_ptr->rf_csma_extension_supported) {
+        // In the LFN's listen window, not after a random backoff
+        buffer->tx_time = buffer->lfn_tx_time;
     } else {
         buffer->tx_time = mcps_generic_backoff_calc(rf_ptr);
     }
@@ -2092,7 +2136,13 @@ void mcps_sap_pd_req_queue_write(protocol_interface_rf_mac_setup_s *rf_mac_setup
         }
         if (rf_mac_setup->fhss_api && (buffer->asynch_request == false)) {
             uint16_t frame_length = buffer->mac_payload_length + buffer->headerIeLength + buffer->payloadsIeLength;
-            if ((mcps_check_packet_blacklist(rf_mac_setup, buffer) == true) || rf_mac_setup->fhss_api->check_tx_conditions(rf_mac_setup->fhss_api, !mac_is_ack_request_set(buffer),
+            fhss_lfn_tx_e lfn_tx = mcps_lfn_tx_check(rf_mac_setup, buffer);
+            if (lfn_tx != FHSS_LFN_TX_NOT_LFN) {
+                // An LFN destination: now if its window is near, else queued
+                if (lfn_tx != FHSS_LFN_TX_NOW || mcps_check_packet_blacklist(rf_mac_setup, buffer) == true) {
+                    goto push_to_queue;
+                }
+            } else if ((mcps_check_packet_blacklist(rf_mac_setup, buffer) == true) || rf_mac_setup->fhss_api->check_tx_conditions(rf_mac_setup->fhss_api, !mac_is_ack_request_set(buffer),
                                                                                                                            buffer->msduHandle, mac_convert_frame_type_to_fhss(buffer->fcf_dsn.frametype), frame_length,
                                                                                                                            rf_mac_setup->dev_driver->phy_driver->phy_header_length, rf_mac_setup->dev_driver->phy_driver->phy_tail_length) == false) {
                 if (buffer->ExtendedFrameExchange) {
@@ -2202,10 +2252,13 @@ static mac_pre_build_frame_t *mcps_sap_pd_req_queue_read(protocol_interface_rf_m
      */
     if (rf_mac_setup->fhss_api) {
         while (buffer) {
+            // FHSS_LFN_TX_NOT_LFN for every frame unless LFN parenting is on
+            fhss_lfn_tx_e lfn_tx = mcps_lfn_tx_check(rf_mac_setup, buffer);
             if (mcps_sap_check_buffer_timeout(rf_mac_setup, buffer) ||
                     buffer->asynch_request ||
                     (flush == true) ||
-                    ((mcps_check_packet_blacklist(rf_mac_setup, buffer) == false) &&
+                    ((mcps_check_packet_blacklist(rf_mac_setup, buffer) == false) && (lfn_tx == FHSS_LFN_TX_NOW)) ||
+                    ((lfn_tx == FHSS_LFN_TX_NOT_LFN) && (mcps_check_packet_blacklist(rf_mac_setup, buffer) == false) &&
                      (rf_mac_setup->fhss_api->check_tx_conditions(rf_mac_setup->fhss_api, !mac_is_ack_request_set(buffer),
                                                                   buffer->msduHandle, mac_convert_frame_type_to_fhss(buffer->fcf_dsn.frametype), buffer->mac_payload_length,
                                                                   rf_mac_setup->dev_driver->phy_driver->phy_header_length, rf_mac_setup->dev_driver->phy_driver->phy_tail_length) == true))) {

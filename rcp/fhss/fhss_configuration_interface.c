@@ -132,3 +132,48 @@ int ns_fhss_ws_set_tx_allowance_level(const fhss_api_t *fhss_api, const fhss_ws_
     }
     return fhss_ws_set_tx_allowance_level(fhss_structure, global_level, ef_level);
 }
+
+void ns_fhss_ws_lfn_listen_defaults(fhss_ws_lfn_listen_t *cfg)
+{
+    cfg->listen_interval_ms = FHSS_LFN_LISTEN_INTERVAL_MS_DEFAULT;
+    cfg->rx_window_us = FHSS_LFN_RX_WINDOW_US_DEFAULT;
+    cfg->rx_guard_us = FHSS_LFN_RX_GUARD_US_DEFAULT;
+    cfg->close_retry_us = FHSS_LFN_CLOSE_RETRY_US_DEFAULT;
+    cfg->first_slot_delay_us = FHSS_LFN_FIRST_SLOT_DELAY_US_DEFAULT;
+}
+
+void ns_fhss_ws_lfn_parent_defaults(fhss_ws_lfn_parent_t *cfg)
+{
+    cfg->tx_offset_us = FHSS_LFN_TX_OFFSET_US_DEFAULT;
+    cfg->tx_lead_us = FHSS_LFN_TX_LEAD_US_DEFAULT;
+    cfg->tx_min_prep_us = FHSS_LFN_TX_MIN_PREP_US_DEFAULT;
+    cfg->tx_ttl_intervals = FHSS_LFN_TX_TTL_INTERVALS_DEFAULT;
+}
+
+int ns_fhss_ws_lfn_listen_set(const fhss_api_t *fhss_api, const fhss_ws_lfn_listen_t *cfg)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);
+    if (!fhss_structure || !fhss_structure->ws) {
+        return -1;
+    }
+    return fhss_ws_lfn_listen_set(fhss_structure, cfg);
+}
+
+int ns_fhss_ws_lfn_parent_set(const fhss_api_t *fhss_api, const fhss_ws_lfn_parent_t *cfg)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);
+    if (!fhss_structure || !fhss_structure->ws) {
+        return -1;
+    }
+    return fhss_ws_lfn_parent_set(fhss_structure, cfg);
+}
+
+int ns_fhss_ws_lfn_stats_get(const fhss_api_t *fhss_api, fhss_ws_lfn_stats_t *stats)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);
+    if (!fhss_structure || !fhss_structure->ws || !stats) {
+        return -1;
+    }
+    *stats = fhss_structure->ws->lfn.stats;
+    return 0;
+}
