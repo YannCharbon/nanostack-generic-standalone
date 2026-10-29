@@ -23,10 +23,14 @@
  * channel plan) and is answered by a unicast LPA in the LFN's next window
  * (the MAC holds it), with an LTO-IE that snaps its interval to a multiple or
  * divisor of the LFN broadcast interval and spreads its offset; an LPCS is
- * answered by an LPC (LFN version, LGTK hash). Until the LFN broadcast
- * schedule exists (stage 4), the sync frames are unicast LPCs to each LFN
- * child every sync period, and an LGTK event sends one LPC to each child at
- * once.
+ * answered by an LPC (LFN version, LGTK hash).
+ *
+ * LFN broadcast schedule (stage 4): while the border router has an LFN
+ * child, the slot of every sync period carries a sync frame: an LTS, or a
+ * broadcast LPC for maintain_parent_time sync periods after the schedule
+ * starts and after each LGTK event, whose LPC goes in the next slot [M:
+ * black-box items 32, 48, §5.2; S: wsbrd ws_mngt.c]. The FHSS holds these
+ * frames for their slot and writes their LBT-IE.
  */
 
 #include <string.h>
@@ -38,6 +42,7 @@
 #include "nanostack-event-loop/eventOS_event.h"
 #include "nanostack/mac/fhss_ws_extension.h"
 #include "nanostack/mac/mac_api.h"
+#include "nanostack/mac/sw_mac.h"
 #include "nanostack/mac/mac_mcps.h"
 #include "6lowpan/mac/mpx_api.h"
 #include "nanostack/ws_management_api.h"
@@ -147,12 +152,15 @@ static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t 
     req.wh_requested_ie_list.nr_ie = true;
     req.wh_requested_ie_list.panid_ie = true;
     req.wh_requested_ie_list.lbs_ie = true;
+    req.wh_requested_ie_list.lbt_ie = true;
     if (c->lto) {
         uint32_t ivl = ws_lfn_adjusted_interval(c->bc_interval_ms, proposed_ms, nr->listen_interval_min, nr->listen_interval_max);
         req.wh_requested_ie_list.lto_ie = true;
         req.lto.adjusted_listening_interval = ivl;
+        // The phase of its slots against our LFN broadcast slots; the FHSS
+        // converts it to an offset against the LFN's slot at TX time
         req.lto.offset = ws_lfn_offset(ivl, c->bc_interval_ms);
-        tr_info("LPA to %s: LTO offset %"PRIu32" ms, interval %"PRIu32" ms (proposed %"PRIu32")",
+        tr_info("LPA to %s: LTO phase %"PRIu32" ms, interval %"PRIu32" ms (proposed %"PRIu32")",
                 trace_array(dst, 8), (uint32_t)req.lto.offset, ivl, proposed_ms);
     }
     req.wp_requested_nested_ie_list.us_ie = true;
@@ -174,8 +182,30 @@ static void ws_lfn_lpc_send(protocol_interface_info_entry_t *cur, const uint8_t 
     req.wh_requested_ie_list.utt_ie = true;
     req.wh_requested_ie_list.bt_ie = true;
     req.wh_requested_ie_list.lbs_ie = true;
+    req.wh_requested_ie_list.lbt_ie = true;
     req.wp_requested_nested_ie_list.lfn_gtk_version_ie = true;
     ws_lfn_lgtk_security_set(cur, &req);
+    ws_llc_asynch_request(cur, &req);
+}
+
+/* A sync frame for the next LFN broadcast slot: an LTS (UTT, BT, LBT), or an
+ * LPC (also LBS, LFN version and LGTK hash), under the active LGTK */
+static void ws_lfn_bc_send(protocol_interface_info_entry_t *cur, uint8_t message_type, uint16_t slot)
+{
+    asynch_request_t req;
+
+    memset(&req, 0, sizeof(req));
+    req.message_type = message_type;
+    req.lfn_broadcast = true;
+    req.wh_requested_ie_list.utt_ie = true;
+    req.wh_requested_ie_list.bt_ie = true;
+    req.wh_requested_ie_list.lbt_ie = true;
+    if (message_type == WS_FT_LPC) {
+        req.wh_requested_ie_list.lbs_ie = true;
+        req.wp_requested_nested_ie_list.lfn_gtk_version_ie = true;
+    }
+    ws_lfn_lgtk_security_set(cur, &req);
+    tr_debug("LFN broadcast slot %u: %s", slot, message_type == WS_FT_LPC ? "LPC" : "LTS");
     ws_llc_asynch_request(cur, &req);
 }
 
@@ -320,35 +350,64 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
     return true;
 }
 
-static void ws_lfn_lpc_round(protocol_interface_info_entry_t *cur)
+static bool ws_lfn_has_child(protocol_interface_info_entry_t *cur)
 {
     ns_list_foreach(mac_neighbor_table_entry_t, n, &mac_neighbor_info(cur)->neighbour_list) {
-        if (n->trusted_device && ws_lfn_is_child(cur, n, NULL)) {
-            ws_lfn_lpc_send(cur, n->mac64);
+        if (ws_lfn_is_child(cur, n, NULL)) {
+            return true;
         }
     }
+    return false;
 }
+
+/* Queue the sync frame of the next LFN broadcast slot once it is less than
+ * WS_LFN_BC_QUEUE_AHEAD_US away (this timer runs every second); the MAC holds
+ * it until the slot. */
+#define WS_LFN_BC_QUEUE_AHEAD_US 2000000
 
 void ws_lfn_parent_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seconds)
 {
     ws_lfn_state_t *st = &cur->ws_info->lfn;
-    uint32_t period = (cur->ws_info->lfn_cfg.bc_interval_ms * cur->ws_info->lfn_cfg.bc_sync_period + 999) / 1000;
+    const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
+    uint16_t slot;
+    uint32_t start;
 
+    (void)seconds;
     if (!cur->ws_info->lfn_parent || st->test_silent) {
         return;
     }
-    if (st->lpc_pending) {
-
-        // An LGTK event: an LPC to every LFN child now
+    if (!ws_lfn_has_child(cur)) {
+        // No sync frames without an LFN child [M item 32]; the first ones
+        // after a child appears are LPCs
+        st->bc_lpc_left = c->maintain_parent_time;
         st->lpc_pending = 0;
-        ws_lfn_lpc_round(cur);
-    }
-    if (st->lpc_timer_s > seconds) {
-        st->lpc_timer_s -= seconds;
         return;
     }
-    st->lpc_timer_s = period ? period : 1;
-    ws_lfn_lpc_round(cur);
+    if (ns_fhss_ws_lfn_bc_next(cur->ws_info->fhss_api, &slot, &start)) {
+        return;
+    }
+    if ((int32_t)(start - ns_sw_mac_read_current_timestamp(cur->mac_api)) > WS_LFN_BC_QUEUE_AHEAD_US ||
+            (st->bc_slot_queued_valid && st->bc_slot_queued == slot)) {
+        return;
+    }
+    if (st->lpc_pending) {
+        // An LGTK event: an LPC in the next slot, then LPCs instead of LTSs
+        // for maintain_parent_time sync periods [M item 48]
+        st->lpc_pending = 0;
+        st->bc_lpc_left = c->maintain_parent_time;
+        ws_lfn_bc_send(cur, WS_FT_LPC, slot);
+    } else if (!(slot % c->bc_sync_period)) {
+        if (st->bc_lpc_left) {
+            st->bc_lpc_left--;
+            ws_lfn_bc_send(cur, WS_FT_LPC, slot);
+        } else {
+            ws_lfn_bc_send(cur, WS_FT_LTS, slot);
+        }
+    } else {
+        return;
+    }
+    st->bc_slot_queued = slot;
+    st->bc_slot_queued_valid = true;
 }
 
 /* A link-local all-nodes multicast (ff02::1) from the border router: one
@@ -425,8 +484,8 @@ uint8_t ws_lfn_parent_tx_key_index(protocol_interface_info_entry_t *cur, const u
 
 /* Border router: an LGTK event (installed, activated, expired). The LGTK
  * hash and active index for the LPC (LGTKHASH-IE), the LFN version up by
- * one, and an LPC to every LFN child at the next second (black-box item 48:
- * each event bumps the LFN version and triggers an LPC). */
+ * one, and a broadcast LPC in the next LFN broadcast slot (black-box item
+ * 48: each event bumps the LFN version and triggers an LPC). */
 void ws_lfn_parent_lgtk_update(protocol_interface_info_entry_t *cur, sec_prot_gtk_keys_t *lgtks, int8_t active_index, const char *event)
 {
     ws_lfn_lgtk_t *g = &cur->ws_info->lfngtk;

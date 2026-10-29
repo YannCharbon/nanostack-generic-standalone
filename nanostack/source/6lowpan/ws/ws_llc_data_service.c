@@ -322,6 +322,7 @@ static llc_message_t *llc_message_allocate(uint16_t ie_buffer_size, llc_data_bas
     }
     message->ack_requested = false;
     message->eapol_temporary = false;
+    message->lto_sent = false;
     message->priority = MAC_DATA_NORMAL_PRIORITY;
     return message;
 }
@@ -408,12 +409,16 @@ static uint16_t ws_wh_headers_length(wh_ie_sub_list_t requested_list, llc_ie_par
     if (requested_list.lbs_ie) {
         length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_lbs_length();
     }
+    if (requested_list.lbt_ie) {
+        length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_lbt_length();
+    }
 
     return length;
 }
 
-/* FAN 1.1 LFN header IEs (GS8 stage 3), in the order LUTT, NR, LUS, LND,
- * LTO, PANID, LBS. Values from the interface's LFN settings and state. */
+/* FAN 1.1 LFN header IEs (GS8 stages 3-4), in the order LUTT, NR, LUS, LND,
+ * LTO, PANID, LBS, LBT. Values from the interface's LFN settings and state;
+ * the FHSS writes LBT and converts the LTO offset at TX time. */
 static uint8_t *ws_llc_lfn_wh_write(uint8_t *ptr, llc_data_base_t *base, wh_ie_sub_list_t list, uint8_t message_type, const ws_lto_ie_t *lto)
 {
     protocol_interface_info_entry_t *cur = base->interface_ptr;
@@ -455,6 +460,9 @@ static uint8_t *ws_llc_lfn_wh_write(uint8_t *ptr, llc_data_base_t *base, wh_ie_s
         lbs.broadcast_secheduler_id = ws->hopping_schedule.fhss_bsi;
         lbs.broadcast_sync_period = ws->lfn_cfg.bc_sync_period;
         ptr = ws_wh_lbs_write(ptr, &lbs);
+    }
+    if (list.lbt_ie) {
+        ptr = ws_wh_lbt_write(ptr);
     }
     return ptr;
 }
@@ -685,7 +693,7 @@ static void ws_llc_mac_confirm_cb(const mac_api_t *api, const mcps_data_conf_t *
         }
 
     }
-    if (messsage_type >= WS_FT_LPA && messsage_type <= WS_FT_LPCS) {
+    if (messsage_type >= WS_FT_LPA && messsage_type <= WS_FT_LTS) {
         tr_debug("LFN frame %u to %s: status %u", messsage_type, trace_array(message->dst_address, 8), data->status);
     }
     // FAN 1.1: an LTO-IE the LFN acknowledged moves its schedule
@@ -1052,7 +1060,12 @@ static void ws_llc_asynch_indication(const mac_api_t *api, const mcps_data_ind_t
     ws_wp_nested.id = WS_WP_NESTED_IE;
     if (mac_ie_payload_discover(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &ws_wp_nested) < 2) {
         // NO WS_WP_NESTED_IE Payload
-        return;
+        if (ws_utt.message_type != WS_FT_LTS) {
+            return;
+        }
+        // An LFN Time Sync has header IEs only
+        ws_wp_nested.content_ptr = NULL;
+        ws_wp_nested.length = 0;
     }
 
     switch (ws_utt.message_type) {
@@ -1104,7 +1117,7 @@ static void ws_llc_mac_indication_cb(const mac_api_t *api, const mcps_data_ind_t
     }
 
     if (ws_utt.message_type < WS_FT_DATA ||
-            (ws_utt.message_type >= WS_FT_LPA && ws_utt.message_type <= WS_FT_LPCS)) {
+            (ws_utt.message_type >= WS_FT_LPA && ws_utt.message_type <= WS_FT_LTS)) {
         ws_llc_asynch_indication(api, data, ie_ext, ws_utt);
     } else if (ws_utt.message_type == WS_FT_DATA) {
         ws_llc_data_indication_cb(api, data, ie_ext, ws_utt);
@@ -2062,6 +2075,11 @@ int8_t ws_llc_asynch_request(struct protocol_interface_info_entry *interface, as
             message->lto_sent = true;
             message->lto = request->lto;
         }
+    } else if (request->lfn_broadcast) {
+        // FAN 1.1 LFN parent (LTS, LPC): broadcast, held by the MAC for the
+        // next LFN broadcast slot
+        data_req.LfnBroadcast = true;
+        data_req.PanIdSuppressed = true;
     }
 
     uint8_t *ptr = ws_message_buffer_ptr_get(message);
@@ -2071,6 +2089,9 @@ int8_t ws_llc_asynch_request(struct protocol_interface_info_entry *interface, as
 
     message->ie_ext.headerIeVectorList = &message->ie_vector_list[0];
     message->ie_ext.headerIovLength = 1;
+    // No payload IE unless written below (an LTS has none)
+    message->ie_ext.payloadIeVectorList = NULL;
+    message->ie_ext.payloadIovLength = 0;
 
 
     //Write UTT
@@ -2155,7 +2176,8 @@ int8_t ws_llc_asynch_request(struct protocol_interface_info_entry *interface, as
 
     }
 
-    base->interface_ptr->mac_api->mcps_data_req_ext(base->interface_ptr->mac_api, &data_req, &message->ie_ext, request->unicast ? NULL : &request->channel_list, message->priority, 0);
+    base->interface_ptr->mac_api->mcps_data_req_ext(base->interface_ptr->mac_api, &data_req, &message->ie_ext,
+                                                    (request->unicast || request->lfn_broadcast) ? NULL : &request->channel_list, message->priority, 0);
 
     return 0;
 }

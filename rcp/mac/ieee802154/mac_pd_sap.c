@@ -316,7 +316,7 @@ void mac_pd_sap_state_machine(protocol_interface_rf_mac_setup_s *rf_mac_setup)
                 }
                 // Change to destination channel and write synchronization info to Beacon frames here
                 int tx_handle_retval = rf_mac_setup->fhss_api->tx_handle(rf_mac_setup->fhss_api, !mac_is_ack_request_set(active_buf),
-                                                                         active_buf->DstAddr, mac_convert_frame_type_to_fhss(active_buf->fcf_dsn.frametype),
+                                                                         active_buf->DstAddr, mac_fhss_frame_type(active_buf),
                                                                          active_buf->mac_payload_length, rf_mac_setup->dev_driver->phy_driver->phy_header_length,
                                                                          rf_mac_setup->dev_driver->phy_driver->phy_tail_length, active_buf->tx_time);
                 // When FHSS TX handle returns -1, transmission of the packet is currently not allowed -> restart CCA timer
@@ -510,7 +510,7 @@ static int8_t mac_data_interface_tx_done_cb(protocol_interface_rf_mac_setup_s *r
 
             // Change to destination channel and write synchronization info to Beacon frames here
             int tx_handle_retval = rf_ptr->fhss_api->tx_handle(rf_ptr->fhss_api, !mac_is_ack_request_set(active_buf),
-                                                               active_buf->DstAddr, mac_convert_frame_type_to_fhss(active_buf->fcf_dsn.frametype),
+                                                               active_buf->DstAddr, mac_fhss_frame_type(active_buf),
                                                                active_buf->mac_payload_length, rf_ptr->dev_driver->phy_driver->phy_header_length,
                                                                rf_ptr->dev_driver->phy_driver->phy_tail_length, active_buf->tx_time);
             // When FHSS TX handle returns -1, transmission of the packet is currently not allowed -> restart CCA timer

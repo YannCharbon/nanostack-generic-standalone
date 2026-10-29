@@ -1,6 +1,6 @@
 # Wi-SUN FAN 1.1 LFN unicast mechanics in the MAC and FHSS
 
-GS8 stage 2 (root repo: `documents/pre-study/investigation/LFN_FAN11_Study.md` §5, items M3, M4, M6, M8, M9, E3). This note describes what the MAC and the FHSS do for a Limited Function Node (LFN) and for its parent, the interfaces, the settings, the sources each rule comes from, and how it is tested. The upper layers (LLC, LFN state machine, LGTK, 6LoWPAN-ND for LFNs) are stage 3 and later: here the MAC and FHSS are driven through their APIs.
+GS8 stages 2 and 4 (root repo: `documents/pre-study/investigation/LFN_FAN11_Study.md` §5, items M3–M6, M8–M10, E3, E4). This note describes what the MAC and the FHSS do for a Limited Function Node (LFN) and for its parent, the interfaces, the settings, the sources each rule comes from, and how it is tested. The upper layers (LLC, LFN state machine, LGTK, 6LoWPAN-ND for LFNs) are stage 3 and later: here the MAC and FHSS are driven through their APIs.
 
 Tags: **[S]** a public source (listed in §7); **[M]** observed on Silicon Labs' LFN (root repo, `HW5_BlackBox_Phase1_Results.md`); **[I]** our inference, to check against a capture of a Silicon Labs LFN (black-box phase 2).
 
@@ -22,7 +22,7 @@ and the LFN listens around each slot start [M: every downlink frame of Silicon L
 
 **Channel of a slot [I].** The LFN uses its unicast channel function (DH1CF, TR51 or fixed) with the slot number as the channel-sequence index, as an FFN does with its dwell-interval index; the parent computes the same from the LFN's channel plan (its US-IE / LCP-IE in stage 3). No public source states it; it is the natural reading of the 16-bit slot number in LUTT. To check against a capture (black-box phase 2).
 
-**Window.** The LFN listens in `[start(n) - rx_guard_us, start(n) - rx_guard_us + rx_window_us)`. The parent starts its frame at `start(n) + tx_offset_us`. Silicon Labs' LFN listens about 4 ms per wake and widens the window with the time since its last sync (2.9 to 5.5 ms over 50 s) [M]; drift and widening are stage 4 (LFN broadcast and sync, EM3 step 5). Here the clocks are the emulator's, without drift.
+**Window.** The LFN listens in `[start(n) - rx_guard_us - w, start(n) - rx_guard_us + rx_window_us + w)`, where the widening `w` is `drift_ppm` µs per second since the last sync with the parent (§2.3), at most `widening_max_us`, and 0 before the first sync. The parent starts its frame at `start(n) + tx_offset_us`. Silicon Labs' LFN listens about 4 ms per wake and widens the window by about 0.11 ms per second since the last LTS [M].
 
 **Offset rounding.** The LFN writes the offset rounded to the nearest ms, so the parent's anchor is within ±0.5 ms; with the default guard of 1 ms the frame still starts inside the window.
 
@@ -34,13 +34,31 @@ An LTO-IE carries an offset (24 bits, ms) and an adjusted listening interval (24
 
 Both ends compute it: the LFN with `ns_fhss_ws_lfn_timing_set(api, offset_ms, interval_ms, rx_timestamp)`, the parent, once the LTO frame is acknowledged, with `ns_fhss_ws_lfn_neighbor_lto(api, eui64, offset_ms, interval_ms, tx_timestamp)`, which rewrites the neighbour's `lfn_uc_timing_info`. A grid point still ahead (slot *n* itself, when the offset is larger than the time since *s_n*) is a slot like any other. An open window stays open; the next one follows the new grid. The same call with offset 0 changes the interval alone (the LFN shortens it during EAPOL [M]). The LFN's next LUTT/LUS re-synchronises the parent in any case. To check against a capture (black-box phase 2).
 
+### 2.2 The parent's LFN broadcast schedule [S, M, I]
+
+The parent's LFN broadcast slots start every LFN broadcast interval *B* (LBS-IE, 10 s by default) and are numbered from 0, the first one *B* after `ns_fhss_ws_lfn_bc_set()`. Slot *k* is on the channel of the parent's broadcast channel function (its BS-IE) for slot number *k* and the LFN broadcast schedule identifier (LBS-IE) [I: as for the FFN broadcast schedule]. An LBT-IE gives the slot number and the offset into it (ms) at the frame's TX time [S: `ws_ie_lib.c`, Wireshark's dissector]; the FHSS writes it at TX time on every frame that has one, as it writes the BT-IE.
+
+- **Frames for the slots.** The upper layer marks a broadcast frame `LfnBroadcast` (`mcps_data_req_t`): the MAC keeps it in the unicast queue and asks `lfn_tx_check` with no destination; it is released for the next slot as a frame to an LFN is for the LFN's window (§4), sent at slot start + `tx_offset_us` on the slot's channel (`tx_handle` with frame type `FHSS_LFN_BC_FRAME`), and a busy channel or a late start sends it back to the queue for the next slot.
+- **LTO-IE offset [S, I].** `wisun-br-linux`'s RCP converts the LTO offset "relative to the destination LFN's unicast schedule" at TX time [S: `HIF.md`]. Here the upper layer gives the phase it wants for the LFN's slots against the broadcast slots (a multiple of 300 ms), and the FHSS writes the offset that puts the LFN's slot nearest to the frame at that phase, modulo the smaller of the new interval and *B* (§2.1). The acknowledgement applies the offset as written (`ns_fhss_ws_lfn_neighbor_lto()`).
+- **32-bit clock.** The schedule is re-anchored near the current time by every use and by the FFN broadcast timer.
+
+### 2.3 Sync and drift on the LFN [S, M, I]
+
+`ns_fhss_ws_lfn_bc_sync()` takes the values of a frame from the parent with an LBT-IE (LPA, LPC, LTS) and the LBS-IE values the LFN keeps: the slot's start on the LFN's clock is the reception time minus the offset.
+
+- **Which frames.** The LBT offset is in ms: a frame sent within a slot (LPA, unicast LPC) gives the slot start to ±0.5 ms, one sent at the slot start (offset 0: LTS, broadcast LPC) to the TX timing. The first sync may come from any frame; after it, only frames with offset 0 correct the phase and measure the rate [I].
+- **Rate.** The rate of the LFN's clock against the parent's is measured between a reference sync and the current one, at least one sync period apart and less than 2^30 µs (the 32-bit clock); a sync further away becomes the new reference and the rate is kept. Measured values beyond ±500 ppm are ignored. The parent's slots, on the LFN's clock, are *B* × (1 + rate) apart.
+- **The LFN's own slots follow the parent's time base [I].** The parent's view of the LFN's unicast slots comes from the LFN's last LUTT-IE and runs on the parent's clock. At every sync the LFN moves its own slots by the error measured on the broadcast slot, and runs its listen interval on its clock at *I* × (1 + rate). Its slots then stay where the parent expects them between uplinks, however long it stays silent. Silicon Labs' LFN widens its unicast windows from its last LTS too, which fits the same model [M].
+- **Windows.** The LFN listens in every parent broadcast slot (`bc_rx_window_us` from `rx_guard_us` before the slot start, widened like the unicast windows), or only in the slots that carry sync frames (slot number a multiple of the sync period) with `bc_sync_only` [M: Silicon Labs' LFN wakes in every slot, even with its "LTS only" setting]. When a unicast and a broadcast window meet, the one opened first keeps the radio and the other is skipped (counted); the parent's LTO phase keeps them at least 300 ms apart.
+- **Stop.** `ns_fhss_ws_lfn_bc_stop()` (parent lost) stops the broadcast windows and the rate correction.
+
 ## 3. LFN role
 
 ### FHSS (`rcp/fhss/fhss_ws.c`, `fhss_ws_lfn.c`)
 
 - `ns_fhss_ws_lfn_listen_set(api, &cfg)` stores the schedule; it starts at MLME-START (FHSS synchronized), or at once if the MAC already runs. Slot 0 starts `first_slot_delay_us` later. `NULL` stops it and restarts the FFN unicast hopping.
 - While it runs: no FFN unicast hop timer, no FFN broadcast schedule (`ns_fhss_ws_set_parent()` is ignored), no periodic TX queue poll (a frame queued behind another goes from the MAC's TX confirm). Broadcast frames go at once on the current channel.
-- One FHSS timer callback (`fhss_ws_lfn_timer_handler`) opens and closes the windows. A port needs at most three distinct FHSS timer callbacks in all (unicast, broadcast, LFN).
+- One FHSS timer callback (`fhss_ws_lfn_timer_handler`) opens and closes the unicast windows, another (`fhss_ws_lfn_bc_timer_handler`) the broadcast windows (§2.3). A port needs at most four distinct FHSS timer callbacks in all (unicast, broadcast, LFN, LFN broadcast).
 - A late timer skips the slots whose window has passed (counted in `windows_skipped`); the phase is kept.
 - The own schedule is re-anchored at every window, so it runs indefinitely on the 32-bit clock.
 - **Uplinks avoid the parent's broadcast dwell.** `ns_fhss_ws_set_parent()` on an LFN stores the parent's broadcast schedule (interval, dwell, BT-IE timing) without following it. A unicast frame whose airtime plus `uplink_guard_us` would meet a dwell is held: `check_tx_conditions` returns false, and at TX time `tx_handle` returns -3 (back to the queue); the FHSS polls the queue at the dwell's end (the event timer). Counted in `uplink_deferred`. A frame that cannot fit between two dwells is never held [I: an FFN does not listen on its unicast channel during its dwell, FAN 1.0].
@@ -101,6 +119,11 @@ All in `fhss_ws_extension.h`; `ns_fhss_ws_lfn_listen_defaults()` and `ns_fhss_ws
 | `close_retry_us` | 2000 | LFN | Retry period of a deferred close |
 | `first_slot_delay_us` | 10000 | LFN | Slot 0 start after the schedule starts |
 | `uplink_guard_us` | 5000 | LFN | Time after an uplink's airtime kept clear of the parent's broadcast dwell (ACK) |
+| `drift_ppm` | 50 | LFN | Window widening per side, µs per second since the last sync (Silicon Labs' LFN: about 55 [M]) |
+| `widening_max_us` | 100000 | LFN | Upper bound of the widening, per side |
+| `bc_rx_window_us` | 5000 | LFN | Window length in the parent's broadcast slots |
+| `bc_sync_only` | false | LFN | Listen only in the broadcast slots of the sync frames |
+| `fhss_ws_lfn_bc_t.interval_ms`, `.bsi` | (upper layer) | parent | LFN broadcast interval and schedule identifier (LBS-IE) |
 | `tx_offset_us` | 0 | parent | TX start after the LFN's slot start |
 | `tx_lead_us` | 20000 | parent | Release before the TX time (≤ 60 ms: the PHY's scheduled-TX limit is 65 ms) |
 | `tx_min_prep_us` | 2000 | parent | Shortest release-to-TX time; a closer slot is skipped |
@@ -117,6 +140,7 @@ Silicon Labs' profiles use 6 s (Test), 60 s (Balanced) and up to 16 777 s (Eco) 
 | Test | What |
 | --- | --- |
 | `tests/fhss_lfn/run.sh` | The real FHSS on a fake port and MAC (virtual µs clock across the 32-bit wrap): slot arithmetic and re-anchoring; LTO arithmetic and its application in and outside a window; uplinks held during and before the parent's broadcast dwell; windows at the right times and channels for 200 slots; deferred close; late timer; LUTT written at TX time; 50 min of schedule; the parent's TX time inside the LFN's window and on its channel, from a LUTT the LFN wrote; held frames polled before their window; TTL; a silent LFN for 45 min; invalid settings |
+| `tests/fhss_lfn/run.sh`, stage 4 | The parent's broadcast slots (first slot, frames held and released, channel, LBT-IE, 50 min of schedule), the LTO-IE conversion and its application on the ACK; the LFN synced by LBT-IEs from a parent whose clock is 30 ppm off: rate measured within 200 ppb, phase error from 1.5 ms (before the rate is known) to under 50 µs, broadcast windows at the predicted starts with the widening and on the parent's channels, its unicast windows at the parent's interval on its own clock, sync-only listening, stop. 985 checks in all |
 | Emulator `sim_utils/vtime/test_lfn_mac.sh` | Two nodes in virtual time with the MAC in-process on the emulated radio (`wslfntest-inproc`, no upper layers): the LFN solicits on every channel with LUTT/LUS; the parent learns its schedule and answers in a window; then traffic both ways. The parent's frames carry a BT-IE, and optionally an LTO-IE in its answer (`--lto-offset-ms`, `--lto-interval-ms`). Checks from the logs and the EM2 power ledger: every frame the LFN receives starts in a window (on the LTO's grid after it); no uplink starts in, or runs into, the parent's broadcast dwell; the radio does not listen during the LFN's backoffs; the parent sends on the LFN's channel of the slot; downlink frames delivered within one interval (one attempt per window on retries); uplink TX → ACK → radio off; the LFN's radio on only in windows and around its own transmissions; MCU in deep sleep most of the time |
 
 Non-regression (both roles off, FAN 1.0): `dag_simple` in virtual time, 10 seeds, logs byte-identical to those of the previous stack commit (emulator `compare_logs.py --mask-pointers`); `test_radio_off.sh`, `tests/eventloop`, `tests/cross` pass.
@@ -132,5 +156,5 @@ Non-regression (both roles off, FAN 1.0): `dag_simple` in virtual time, 10 seeds
 ## 8. Not done here (later stages)
 
 - **Stage 3:** the LLC sends and parses LUTT/LUS/NR/LND/LTO and fills `lfn_uc_timing_info`; the LFN state machine; calling the FHSS APIs from `ws_management_*` and the config files.
-- **Stage 4:** the LFN broadcast schedule (LBS/LBT), the LFN's sync and window widening with drift (EM3 step 5).
+- **Stage 4:** done (§2.2, §2.3).
 - **HW8:** the FG25 port maps `PHY_EXTENSION_READ_RX_ACTIVE` and `PHY_EXTENSION_SET_BACKOFF_RX_OFF` (RAIL idle during the backoff) and, optionally, opens windows with `RAIL_ScheduleRx`; its FHSS timer table (4 entries) is enough.

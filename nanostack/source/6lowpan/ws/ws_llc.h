@@ -52,6 +52,7 @@ typedef struct wh_ie_sub_list_s {
     bool lto_ie: 1;  /**< LFN Timing Offset (asynch_request_t.lto) */
     bool panid_ie: 1; /**< PAN ID */
     bool lbs_ie: 1;  /**< LFN Broadcast Schedule */
+    bool lbt_ie: 1;  /**< LFN Broadcast Timing (written by the FHSS at TX time) */
 } wh_ie_sub_list_t;
 
 /**
@@ -73,8 +74,9 @@ typedef struct wp_nested_ie_sub_list_s {
  * @brief asynch_request_t Asynch message request parameters
  */
 typedef struct asynch_request_s {
-    uint8_t message_type;                                   /**< Asynch message type: WS_FT_PAN_ADVERT, WS_FT_PAN_ADVERT_SOL, WS_FT_PAN_CONF, WS_FT_PAN_CONF_SOL, or FAN 1.1 WS_FT_LPA..WS_FT_LPCS */
+    uint8_t message_type;                                   /**< Asynch message type: WS_FT_PAN_ADVERT, WS_FT_PAN_ADVERT_SOL, WS_FT_PAN_CONF, WS_FT_PAN_CONF_SOL, or FAN 1.1 WS_FT_LPA..WS_FT_LTS */
     bool unicast;                                           /**< FAN 1.1 LFN management frame sent as an acknowledged unicast to dst_address (no channel list) */
+    bool lfn_broadcast;                                     /**< FAN 1.1 LFN parent: a broadcast frame for the next LFN broadcast slot (LTS, LPC; GS8 stage 4) */
     uint8_t dst_address[8];                                 /**< Its destination */
     ws_lto_ie_t lto;                                        /**< LTO-IE values when wh_requested_ie_list.lto_ie */
     wh_ie_sub_list_t wh_requested_ie_list;                  /**< WH-IE header list to message. */

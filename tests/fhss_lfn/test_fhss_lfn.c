@@ -16,6 +16,11 @@
  *      frames wait (with a queue poll before the window), are released, and
  *      expire after their TTL; an FFN neighbour and a disabled parent role
  *      give NOT_LFN.
+ *   4. LFN broadcast schedule (GS8 stage 4): the parent's slots, frames held
+ *      for them, their channel, the LBT-IE and the LTO-IE conversion; the
+ *      LFN's sync from LBT-IEs with a parent clock 30 ppm off: rate, phase,
+ *      broadcast windows on the parent's channels, widened for drift; its
+ *      own unicast slots follow the parent's time base; sync-only listening.
  *
  *   tests/fhss_lfn/run.sh [build dir]
  */
@@ -703,12 +708,245 @@ static void test_lfn_long(void)
     CHECK(ns_fhss_delete(api) == 0);
 }
 
+/* ------------------------------------------- 4. LFN broadcast schedule */
+
+static int write_wh_ie(uint8_t *buf, uint8_t sub_id, const uint8_t *content, int len)
+{
+    uint16_t hdr = ((len + 1) & 0x7f) | (0x2a << 7);
+    buf[0] = hdr & 0xff;
+    buf[1] = hdr >> 8;
+    buf[2] = sub_id;
+    memcpy(buf + 3, content, len);
+    return 3 + len;
+}
+
+static uint32_t rd24(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16; }
+
+static int bc_channel(uint16_t slot, uint16_t bsi)
+{
+    return dh1cf_get_bc_channel_index(slot, bsi, 35);
+}
+
+static void test_bc_parent(void)
+{
+    const uint32_t bc_ms = 10000, uc_ms = 5000;
+    fhss_ws_lfn_parent_t pcfg;
+    fhss_ws_lfn_bc_t bc = { .interval_ms = bc_ms, .bsi = 0x55 };
+    fhss_ws_lfn_stats_t st;
+    fhss_api_t *api;
+    uint32_t tx_time, start;
+    uint16_t slot;
+
+    reset_fakes();
+    api = create_fhss(parent_mac, 255, 1020, 255);
+    ns_fhss_set_neighbor_info_fp(api, get_neighbor);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    CHECK(ns_fhss_ws_lfn_bc_set(api, &bc) == -1);          // needs the parent role
+    ns_fhss_ws_lfn_parent_defaults(&pcfg);
+    CHECK(ns_fhss_ws_lfn_parent_set(api, &pcfg) == 0);
+    CHECK(api->lfn_tx_check(api, NULL, ts(), &tx_time) == FHSS_LFN_TX_EXPIRED);    // no schedule
+    fhss_ws_lfn_bc_t bad = bc;
+    bad.interval_ms = 0;
+    CHECK(ns_fhss_ws_lfn_bc_set(api, &bad) == -2);
+    uint64_t t0 = now_us;
+    CHECK(ns_fhss_ws_lfn_bc_set(api, &bc) == 0);
+    // Slot 0 starts one interval later
+    CHECK(ns_fhss_ws_lfn_bc_next(api, &slot, &start) == 0);
+    CHECK(slot == 0 && start == (uint32_t)(t0 + bc_ms * 1000ull + CLOCK32_OFFSET_US));
+    // A broadcast frame waits for the slot, polled tx_lead before it
+    CHECK(api->lfn_tx_check(api, NULL, ts(), &tx_time) == FHSS_LFN_TX_WAIT);
+    while (step(t0 + bc_ms * 1000ull)) {
+    }
+    CHECK(now_us == t0 + bc_ms * 1000ull - pcfg.tx_lead_us);
+    CHECK(tx_polls == 0);   // queue empty in the fake: nothing to poll
+    CHECK(api->lfn_tx_check(api, NULL, ts(), &tx_time) == FHSS_LFN_TX_NOW);
+    CHECK(tx_time == start + pcfg.tx_offset_us);
+    // Its channel: the broadcast channel function of slot 0 with the LFN BSI,
+    // whatever the FFN schedule
+    CHECK(api->tx_handle(api, true, NULL, FHSS_LFN_BC_FRAME, 50, 4, 2, tx_time) == 0);
+    CHECK(mac_channel == bc_channel(0, 0x55));
+    CHECK(api->use_broadcast_queue(api, true, FHSS_LFN_BC_FRAME) == false);
+    CHECK(api->use_broadcast_queue(api, true, FHSS_DATA_FRAME) == true);
+    // LBT-IE at TX time: slot, offset (ms, rounded)
+    uint8_t ie[32], zero[8] = { 0 };
+    int len = write_wh_ie(ie, 11, zero, 5);
+    api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, tx_time);
+    CHECK((ie[3] | ie[4] << 8) == 0 && rd24(ie + 5) == 0);
+    api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, start + 3 * bc_ms * 1000 + 4321600);
+    CHECK((ie[3] | ie[4] << 8) == 3 && rd24(ie + 5) == 4322);
+    // Long after the start (32-bit clock): still the right slot. The FFN
+    // broadcast timer keeps the anchor near.
+    uint64_t later = now_us + 3000ull * 1000000;     // 50 min
+    while (step(later)) {
+    }
+    now_us = later;
+    CHECK(ns_fhss_ws_lfn_bc_next(api, &slot, &start) == 0);
+    CHECK(slot == 300 && start == (uint32_t)(t0 + 301ull * bc_ms * 1000 + CLOCK32_OFFSET_US));
+
+    // LTO-IE to an LFN: the phase against the broadcast slots becomes an
+    // offset against the LFN's slot nearest to the frame
+    lfn_neighbor_known = true;
+    memset(&lfn_neighbor, 0, sizeof(lfn_neighbor));
+    lfn_neighbor.uc_timing_info.unicast_channel_function = WS_DH1CF;
+    lfn_neighbor.uc_timing_info.unicast_number_of_channels = 35;
+    lfn_neighbor.uc_channel_list.channel_count = 35;
+    for (int i = 0; i < 35; i++) {
+        lfn_neighbor.uc_channel_list.channel_mask[i / 32] |= 1u << (i % 32);
+    }
+    lfn_neighbor.lfn_uc_timing_info.listen_interval_ms = 6000;
+    lfn_neighbor.lfn_uc_timing_info.slot_number = 7;
+    lfn_neighbor.lfn_uc_timing_info.interval_offset_ms = 1234;
+    lfn_neighbor.lfn_uc_timing_info.lutt_rx_timestamp = ts();
+    uint32_t lfn_slot7 = ts() - 1234000;
+    // Released for its next window
+    uint64_t until = now_us + 20000000;
+    fhss_lfn_tx_e r;
+    while ((r = api->lfn_tx_check(api, lfn_mac, ts(), &tx_time)) == FHSS_LFN_TX_WAIT && step(until)) {
+    }
+    CHECK(r == FHSS_LFN_TX_NOW);
+    uint8_t lto[6] = { 0 };
+    const uint32_t phase_ms = 900;
+    lto[0] = phase_ms & 0xff; lto[1] = phase_ms >> 8; lto[2] = 0;
+    lto[3] = uc_ms & 0xff; lto[4] = (uc_ms >> 8) & 0xff; lto[5] = uc_ms >> 16;
+    len = write_wh_ie(ie, 14, lto, 6);
+    api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, tx_time);
+    uint32_t offset_ms = rd24(ie + 3);
+    CHECK(offset_ms < uc_ms);
+    // The LFN's slot nearest to the frame, moved by the offset, is 900 ms
+    // after a broadcast slot start modulo the new interval (5 s divides 10 s)
+    uint32_t s_n = lfn_slot7 + (uint32_t)(((uint32_t)(tx_time - lfn_slot7) + 3000000) / 6000000) * 6000000;
+    uint32_t moved = s_n + offset_ms * 1000;
+    uint32_t bc0 = (uint32_t)(t0 + bc_ms * 1000ull + CLOCK32_OFFSET_US);
+    uint32_t phase = (uint32_t)(moved - bc0 - phase_ms * 1000) % (uc_ms * 1000);
+    CHECK(phase < 1000 || phase > uc_ms * 1000 - 1000);
+    // Applied on the ACK with the offset as written
+    CHECK(ns_fhss_ws_lfn_neighbor_lto(api, lfn_mac, phase_ms, uc_ms, tx_time) == 0);
+    CHECK(lfn_neighbor.lfn_uc_timing_info.listen_interval_ms == uc_ms);
+    CHECK((uint32_t)(lfn_neighbor.lfn_uc_timing_info.lutt_rx_timestamp - moved) == 0);
+    CHECK(ns_fhss_ws_lfn_stats_get(api, &st) == 0 && st.bc_tx_released == 1);
+    lfn_neighbor_known = false;
+    CHECK(ns_fhss_delete(api) == 0);
+}
+
+static void test_bc_lfn(bool sync_only)
+{
+    const uint32_t bc_ms = 10000, uc_ms = 5000, guard = 1000, bc_window = 5000;
+    const int32_t r_ppb = 30000;           // our clock against the parent's
+    fhss_ws_lfn_listen_t cfg;
+    fhss_ws_lfn_stats_t st;
+    fhss_api_t *api;
+
+    reset_fakes();
+    api = create_fhss(lfn_mac, 255, 0, 0);
+    ns_fhss_ws_lfn_listen_defaults(&cfg);
+    CHECK(cfg.drift_ppm == FHSS_LFN_DRIFT_PPM_DEFAULT && cfg.bc_rx_window_us == FHSS_LFN_BC_RX_WINDOW_US_DEFAULT);
+    cfg.listen_interval_ms = uc_ms;
+    cfg.rx_guard_us = guard;
+    cfg.bc_rx_window_us = bc_window;
+    cfg.bc_sync_only = sync_only;
+    fhss_ws_lfn_bc_sync_t sy = { .interval_ms = bc_ms, .bsi = 0x77, .sync_period = 5, .channel_function = WS_DH1CF };
+    CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == -1);       // not an LFN yet
+    CHECK(ns_fhss_ws_lfn_listen_set(api, &cfg) == 0);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    // The parent's slot k starts at P0 + k x B on its clock, at
+    // L0 + k x B x (1 + r) on ours
+    uint64_t L0 = now_us + 3000000;
+    #define PSTART(k) (L0 + (uint64_t)(k) * bc_ms * 1000 + (uint64_t)(k) * bc_ms * (r_ppb / 1000) / 1000)
+    // First sync: an LPA-like frame within slot 3 (offset in ms)
+    now_us = PSTART(3) + 4321000;
+    sy.slot = 3;
+    sy.offset_ms = 4321;
+    sy.rx_timestamp_us = ts();
+    CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+    sy.offset_ms = 10000;
+    CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == -2);
+    // Exact syncs (offset 0) at slots 5, 10, 15: the rate is measured from
+    // slot 5 on; the phase error falls to the rounding
+    int32_t err[3];
+    for (int i = 0; i < 3; i++) {
+        uint16_t k = 5 + 5 * i;
+        while (step(PSTART(k) - 1)) {
+        }
+        now_us = PSTART(k) + 500;          // received 500 µs into the slot (TX timing)
+        sy.slot = k;
+        sy.offset_ms = 0;
+        sy.rx_timestamp_us = ts();
+        CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+        CHECK(ns_fhss_ws_lfn_stats_get(api, &st) == 0);
+        err[i] = st.last_sync_error_us;
+    }
+    CHECK(st.rate_ppb > r_ppb - 200 && st.rate_ppb < r_ppb + 200);
+    CHECK(err[1] > 1400 && err[1] < 1600);           // 5 slots at 30 ppm, no rate yet
+    CHECK(err[2] > -50 && err[2] < 50);
+    // From now on: broadcast windows at the predicted slot starts, widened
+    // by drift_ppm per second since the last sync, on the parent's channel
+    uint64_t t_sync = now_us - 500;      // the slot start, our clock
+    nevs = 0;
+    while (step(PSTART(26))) {
+    }
+    int bc_opens = 0, uc_opens = 0;
+    uint64_t prev_uc = 0;
+    for (int i = 0; i < nevs; i++) {
+        const struct ev *e = &evs[i];
+        if (e->e != FHSS_RX_WINDOW_OPEN) {
+            continue;
+        }
+        // broadcast window: near a parent slot start
+        int k = (int)((e->t - L0 + 5000000) / (bc_ms * 1000ull));
+        int64_t d = (int64_t)PSTART(k) + 500 - (int64_t)e->t;   // slot start (as received) - open time
+        if (d > 0 && d < 10000) {
+            uint64_t widening = (PSTART(k) - t_sync) * cfg.drift_ppm / 1000000;
+            CHECK(d > (int64_t)(guard + widening) - 100 && d < (int64_t)(guard + widening) + 100);
+            CHECK(e->channel == bc_channel((uint16_t)k, 0x77));
+            CHECK(!sync_only || k % 5 == 0);
+            bc_opens++;
+        } else {
+            // unicast window: the parent's interval on our clock
+            if (prev_uc) {
+                int64_t gap = (int64_t)(e->t - prev_uc);
+                int64_t want = (int64_t)uc_ms * 1000 + (int64_t)uc_ms * (r_ppb / 1000) / 1000;
+                // the widening grows by drift_ppm x interval between windows
+                CHECK(gap > want - (int64_t)cfg.drift_ppm * uc_ms / 1000 - 5 && gap < want + 5);
+            }
+            prev_uc = e->t;
+            uc_opens++;
+        }
+    }
+    if (bc_opens != (sync_only ? 2 : 11)) {
+        fprintf(stderr, "bc_opens %d uc_opens %d\n", bc_opens, uc_opens);
+        for (int i = 0; i < nevs; i++) {
+            if (evs[i].e == FHSS_RX_WINDOW_OPEN) {
+                fprintf(stderr, "  open t=%" PRIu64 " ch=%d\n", evs[i].t - L0, evs[i].channel);
+            }
+        }
+    }
+    CHECK(bc_opens == (sync_only ? 2 : 11));   // slots 16-26
+    CHECK(uc_opens >= 20);
+    // Stop: no more broadcast windows
+    CHECK(ns_fhss_ws_lfn_bc_stop(api) == 0);
+    nevs = 0;
+    while (step(PSTART(40))) {
+    }
+    for (int i = 0; i < nevs; i++) {
+        if (evs[i].e == FHSS_RX_WINDOW_OPEN) {
+            int k = (int)((evs[i].t - L0 + 5000000) / (bc_ms * 1000ull));
+            int64_t d = (int64_t)PSTART(k) - (int64_t)evs[i].t;
+            CHECK(!(d > 0 && d < 10000));
+        }
+    }
+    #undef PSTART
+    CHECK(ns_fhss_delete(api) == 0);
+}
+
 int main(void)
 {
     test_sched();
     test_lfn();
     test_lfn_long();
     test_parent();
+    test_bc_parent();
+    test_bc_lfn(false);
+    test_bc_lfn(true);
     printf("fhss_lfn: %u checks, %u failed\n", checks, failures);
     return failures ? 1 : 0;
 }

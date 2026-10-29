@@ -39,10 +39,12 @@
 #define DEFAULT_POLL_PERIOD    (10000 / 50)
 typedef struct fhss_ws fhss_ws_t;
 
-/* Wi-SUN FAN 1.1 LFN state (GS8 stage 2, docs/LFN_MAC.md). Both roles off:
- * the FHSS is the FAN 1.0 one. One FHSS timer callback serves both roles
- * (fhss_ws_lfn_timer_handler): at most three distinct FHSS timer callbacks
- * in all (unicast, broadcast, LFN). */
+/* Wi-SUN FAN 1.1 LFN state (GS8 stages 2 and 4, docs/LFN_MAC.md). Both
+ * roles off: the FHSS is the FAN 1.0 one. One FHSS timer callback serves the
+ * unicast windows and the parent role (fhss_ws_lfn_timer_handler), another
+ * the LFN's broadcast windows (fhss_ws_lfn_bc_timer_handler): at most four
+ * distinct FHSS timer callbacks in all (unicast, broadcast, LFN, LFN
+ * broadcast). */
 struct fhss_ws_lfn {
     /* LFN role: own unicast listen schedule */
     bool listen_enabled;            // configured (ns_fhss_ws_lfn_listen_set)
@@ -60,11 +62,39 @@ struct fhss_ws_lfn {
     uint32_t parent_bc_start_us;    // start of one of its broadcast intervals
     uint32_t parent_bc_interval_us;
     uint32_t parent_bc_dwell_us;
+    /* LFN role: the parent's LFN broadcast schedule (stage 4) */
+    bool pbc_valid;                 // synced at least once
+    fhss_lfn_sched_t pbc;           // its slots on our clock (interval corrected by rate_ppb)
+    uint32_t pbc_nominal_us;        // its interval on the parent's clock
+    uint16_t pbc_bsi;
+    uint8_t pbc_sync_period;
+    uint8_t pbc_channel_function;
+    uint16_t pbc_fixed_channel;
+    uint32_t sync_us;               // our time of the last sync: windows widen from it
+    bool rate_ref_valid;            // a reference sync for the rate measurement
+    uint32_t rate_ref_us;           // its slot start on our clock
+    uint16_t rate_ref_slot;
+    int32_t rate_ppb;               // our clock against the parent's
+    bool bc_window_open;
+    uint16_t bc_slot;               // current (open) or next broadcast slot
+    uint32_t bc_slot_start;
+    uint16_t bc_close_retries;
+    bool resched_after_bc;          // a sync during a broadcast window: our next unicast slot is computed at its close
     /* Parent role */
     bool parent_enabled;
     fhss_ws_lfn_parent_t parent_cfg;
     bool poll_armed;                // TX queue poll armed for a held frame
     uint32_t poll_time;             // its time
+    bool bc_enabled;                // LFN broadcast schedule (stage 4)
+    fhss_ws_lfn_bc_t bc_cfg;
+    fhss_lfn_sched_t bc;            // its slots on our clock
+    bool tx_dst_valid;              // the last frame released for an LFN window: destination, TX time
+    uint8_t tx_dst[8];
+    uint32_t tx_dst_time;
+    bool lto_cache_valid;           // the LTO offset written in the last frame with an LTO-IE
+    uint8_t lto_eui64[8];
+    uint32_t lto_phase_ms;          // as the upper layer gave it
+    uint32_t lto_offset_ms;         // as written (against the LFN's slot)
     fhss_ws_lfn_stats_t stats;
 };
 
@@ -104,5 +134,9 @@ int fhss_ws_lfn_listen_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_l
 int fhss_ws_lfn_parent_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_parent_t *cfg);
 int fhss_ws_lfn_timing_set(fhss_structure_t *fhss_structure, uint32_t offset_ms, uint32_t interval_ms, uint32_t rx_timestamp_us);
 int fhss_ws_lfn_neighbor_lto(fhss_structure_t *fhss_structure, const uint8_t eui64[8], uint32_t offset_ms, uint32_t interval_ms, uint32_t tx_timestamp_us);
+int fhss_ws_lfn_bc_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_t *cfg);
+int fhss_ws_lfn_bc_next(fhss_structure_t *fhss_structure, uint16_t *slot, uint32_t *start_us);
+int fhss_ws_lfn_bc_sync(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_sync_t *sync);
+int fhss_ws_lfn_bc_stop(fhss_structure_t *fhss_structure);
 
 #endif /*FHSS_WS_H_*/

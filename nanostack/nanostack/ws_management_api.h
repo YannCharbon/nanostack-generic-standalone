@@ -987,6 +987,10 @@ typedef struct ws_lfn_settings {
     uint8_t maintain_parent_time;       /**< Parent lost after 1.5 x this many sync periods without a frame from it */
     uint16_t lgtk_max_mismatch_s;       /**< Key request this long after an LGTK hash mismatch is seen (s) */
     uint16_t registration_lifetime_min; /**< ARO registration lifetime of the LFN's addresses (minutes) */
+    uint32_t drift_ppm;                 /**< Windows widened by this many µs per second since the last sync with the parent, each side (GS8 stage 4) */
+    uint32_t widening_max_us;           /**< Upper bound of that widening, each side (µs) */
+    uint32_t bc_rx_window_us;           /**< Receive window in the parent's LFN broadcast slots (µs) */
+    bool bc_sync_only;                  /**< Listen only in the LFN broadcast slots that carry sync frames (every sync period) */
     /* Parent (border router) */
     uint32_t bc_interval_ms;            /**< LFN broadcast interval (LBS-IE); the sync period is a multiple of it (ms) */
     uint8_t bc_sync_period;             /**< LFN broadcast sync period, in LFN broadcast intervals */

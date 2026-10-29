@@ -78,6 +78,7 @@
 #define WS_FT_LPAS              10          /**< LFN PAN Advert Solicit */
 #define WS_FT_LPC               11          /**< LFN PAN Config */
 #define WS_FT_LPCS              12          /**< LFN PAN Config Solicit */
+#define WS_FT_LTS               13          /**< LFN Time Sync */
 
 
 /* WS excluded channel Control */

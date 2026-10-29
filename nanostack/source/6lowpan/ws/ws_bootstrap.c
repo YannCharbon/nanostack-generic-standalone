@@ -2094,6 +2094,14 @@ void ws_bootstrap_fhss_activate(protocol_interface_info_entry_t *cur)
         if (ns_fhss_ws_lfn_parent_set(cur->ws_info->fhss_api, &lp)) {
             tr_error("LFN parenting: FHSS refused the settings");
         }
+        // Its LFN broadcast schedule (LBS-IE values), GS8 stage 4
+        fhss_ws_lfn_bc_t bc = {
+            .interval_ms = cur->ws_info->lfn_cfg.bc_interval_ms,
+            .bsi = cur->ws_info->hopping_schedule.fhss_bsi,
+        };
+        if (ns_fhss_ws_lfn_bc_set(cur->ws_info->fhss_api, &bc)) {
+            tr_error("LFN broadcast schedule: FHSS refused the settings");
+        }
     }
 #endif
     ws_bootstrap_mac_activate(cur, cur->ws_info->cfg->fhss.fhss_uc_fixed_channel, cur->ws_info->network_pan_id, true);

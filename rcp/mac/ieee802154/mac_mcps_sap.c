@@ -292,6 +292,7 @@ void mcps_sap_data_req_handler_ext(protocol_interface_rf_mac_setup_s *rf_mac_set
     buffer->upper_layer_request = true;
     buffer->fcf_dsn.frametype = FC_DATA_FRAME;
     buffer->ExtendedFrameExchange = data_req->ExtendedFrameExchange;
+    buffer->lfn_bc = data_req->LfnBroadcast;
     buffer->WaitResponse = data_req->TxAckReq;
     buffer->phy_mode_id = phy_mode_id;
     if (data_req->ExtendedFrameExchange) {
@@ -862,11 +863,17 @@ static fhss_lfn_tx_e mcps_lfn_tx_check(protocol_interface_rf_mac_setup_s *rf_mac
     buffer->lfn_dst = false;
     buffer->lfn_tx_time_set = false;
     buffer->lfn_expired = false;
-    if (!rf_mac_setup->fhss_api || !rf_mac_setup->fhss_api->lfn_tx_check || buffer->asynch_request ||
-            !mac_is_ack_request_set(buffer) || buffer->fcf_dsn.DstAddrMode != MAC_ADDR_MODE_64_BIT) {
+    if (!rf_mac_setup->fhss_api || !rf_mac_setup->fhss_api->lfn_tx_check || buffer->asynch_request) {
         return FHSS_LFN_TX_NOT_LFN;
     }
-    ret = rf_mac_setup->fhss_api->lfn_tx_check(rf_mac_setup->fhss_api, buffer->DstAddr, buffer->request_start_time_us, &tx_time);
+    if (buffer->lfn_bc) {
+        // For the LFN broadcast slots (GS8 stage 4): no destination
+        ret = rf_mac_setup->fhss_api->lfn_tx_check(rf_mac_setup->fhss_api, NULL, buffer->request_start_time_us, &tx_time);
+    } else if (!mac_is_ack_request_set(buffer) || buffer->fcf_dsn.DstAddrMode != MAC_ADDR_MODE_64_BIT) {
+        return FHSS_LFN_TX_NOT_LFN;
+    } else {
+        ret = rf_mac_setup->fhss_api->lfn_tx_check(rf_mac_setup->fhss_api, buffer->DstAddr, buffer->request_start_time_us, &tx_time);
+    }
     if (ret == FHSS_LFN_TX_NOT_LFN) {
         return ret;
     }
@@ -2107,6 +2114,14 @@ bool mac_is_ack_request_set(mac_pre_build_frame_t *buffer)
     return false;
 }
 
+int mac_fhss_frame_type(const mac_pre_build_frame_t *buffer)
+{
+    if (buffer->lfn_bc) {
+        return FHSS_LFN_BC_FRAME;
+    }
+    return mac_convert_frame_type_to_fhss(buffer->fcf_dsn.frametype);
+}
+
 int mac_convert_frame_type_to_fhss(uint8_t frame_type)
 {
     if (FC_BEACON_FRAME == frame_type) {
@@ -2189,7 +2204,7 @@ push_to_queue:
     // When FHSS is enabled, broadcast buffers are pushed to own queue
     if (rf_mac_setup->fhss_api && (buffer->asynch_request == false)) {
         if (rf_mac_setup->fhss_api->use_broadcast_queue(rf_mac_setup->fhss_api, !mac_is_ack_request_set(buffer),
-                                                        mac_convert_frame_type_to_fhss(buffer->fcf_dsn.frametype)) == true) {
+                                                        mac_fhss_frame_type(buffer)) == true) {
             cur = rf_mac_setup->pd_data_request_bc_queue_to_go;
             use_bc_queue = true;
             rf_mac_setup->broadcast_queue_size++;

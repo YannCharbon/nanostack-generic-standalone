@@ -675,6 +675,12 @@ bool mac_payload_information_elements_parse(mac_pre_parsed_frame_t *buffer)
         return true;
     }
 
+    if (!buffer->mac_payload_length) {
+        // Header IEs only (a FAN 1.1 LFN Time Sync): nothing to parse
+        buffer->payloadsIePtr = ptr;
+        buffer->macPayloadPtr = ptr;
+        return true;
+    }
     if (buffer->mac_payload_length < 2) {
         return false;
     }

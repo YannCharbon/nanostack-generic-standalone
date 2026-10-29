@@ -182,6 +182,9 @@ extern int ns_fhss_ws_set_tx_allowance_level(const fhss_api_t *fhss_api, const f
 #define FHSS_LFN_CLOSE_RETRY_US_DEFAULT         2000u   /**< Retry period of a close the MAC deferred (frame being received or ACK being sent) */
 #define FHSS_LFN_FIRST_SLOT_DELAY_US_DEFAULT    10000u  /**< Start of slot 0 after the schedule starts */
 #define FHSS_LFN_UPLINK_GUARD_US_DEFAULT        5000u   /**< Time kept clear of the parent's broadcast dwell after an uplink frame starts (frame, ACK) beyond the frame's airtime */
+#define FHSS_LFN_DRIFT_PPM_DEFAULT              50u     /**< Window widening per side, µs per second since the last sync with the parent (GS8 stage 4) */
+#define FHSS_LFN_BC_RX_WINDOW_US_DEFAULT        5000u   /**< Receive window length in the parent's LFN broadcast slots */
+#define FHSS_LFN_WIDENING_MAX_US_DEFAULT        100000u /**< Upper bound of the widening, per side */
 
 /**
  * @brief LFN role: the node's own unicast listen schedule (LUS-IE). The
@@ -197,6 +200,11 @@ typedef struct fhss_ws_lfn_listen {
     uint32_t close_retry_us;        /**< Retry period of a deferred close (µs), >= 1 */
     uint32_t first_slot_delay_us;   /**< Slot 0 starts this long after the schedule starts (µs), > rx_guard_us */
     uint32_t uplink_guard_us;       /**< Uplink: time after the frame's airtime kept clear of the parent's broadcast dwell (µs; ACK turnaround and airtime) */
+    /* GS8 stage 4: the parent's LFN broadcast schedule and clock drift */
+    uint32_t drift_ppm;             /**< Both kinds of window open earlier and close later by drift_ppm µs per second since the last sync with the parent (each side); 0: no widening */
+    uint32_t widening_max_us;       /**< Upper bound of that widening, per side (µs) */
+    uint32_t bc_rx_window_us;       /**< Window length in the parent's LFN broadcast slots (µs), opened rx_guard_us before the slot start */
+    bool bc_sync_only;              /**< Listen only in the broadcast slots that carry the parent's sync frames (slot number a multiple of the sync period) */
 } fhss_ws_lfn_listen_t;
 
 /** Defaults of fhss_ws_lfn_parent_t (ns_fhss_ws_lfn_parent_defaults()). */
@@ -221,6 +229,37 @@ typedef struct fhss_ws_lfn_parent {
 } fhss_ws_lfn_parent_t;
 
 /**
+ * @brief LFN parent role, GS8 stage 4: the parent's LFN broadcast schedule.
+ * Slots start every interval_ms; slot n uses the broadcast channel function
+ * of the FHSS configuration with schedule identifier bsi. A broadcast frame
+ * the upper layer marks LfnBroadcast (mcps_data_req_t) is held in the MAC
+ * queue and sent at the next slot start + tx_offset_us of the parent role.
+ * The FHSS writes the LBT-IE (slot number, offset in ms) of every frame at TX
+ * time, and converts the offset of an LTO-IE sent to an LFN (the phase the
+ * upper layer wants against the broadcast slots) into an offset against the
+ * LFN's slot (docs/LFN_MAC.md §2.2).
+ */
+typedef struct fhss_ws_lfn_bc {
+    uint32_t interval_ms;           /**< LFN broadcast interval (LBS-IE), ms */
+    uint16_t bsi;                   /**< LFN broadcast schedule identifier (LBS-IE) */
+} fhss_ws_lfn_bc_t;
+
+/**
+ * @brief LFN role, GS8 stage 4: the parent's LFN broadcast timing from a
+ * frame that carried an LBT-IE (and its LBS-IE values).
+ */
+typedef struct fhss_ws_lfn_bc_sync {
+    uint32_t interval_ms;           /**< LFN broadcast interval (LBS-IE) */
+    uint16_t bsi;                   /**< LFN broadcast schedule identifier (LBS-IE) */
+    uint8_t sync_period;            /**< Broadcast slots per sync period (LBS-IE); with bc_sync_only, the slots listened to */
+    uint8_t channel_function;       /**< The parent's broadcast channel function (its BS-IE) */
+    uint16_t fixed_channel;         /**< Its fixed channel, for WS_FIXED_CHANNEL */
+    uint16_t slot;                  /**< LBT-IE slot number */
+    uint32_t offset_ms;             /**< LBT-IE offset into that slot */
+    uint32_t rx_timestamp_us;       /**< Reception time of the frame */
+} fhss_ws_lfn_bc_sync_t;
+
+/**
  * @brief Counters of the LFN mechanics (ns_fhss_ws_lfn_stats_get()).
  */
 typedef struct fhss_ws_lfn_stats {
@@ -231,6 +270,12 @@ typedef struct fhss_ws_lfn_stats {
     uint32_t tx_held;               /**< Parent: checks that held a frame for a later window */
     uint32_t tx_expired;            /**< Parent: frames dropped after their TTL */
     uint32_t uplink_deferred;       /**< LFN: uplink frames held until the parent's broadcast dwell ended */
+    uint32_t bc_windows_opened;     /**< LFN: windows opened in the parent's LFN broadcast slots */
+    uint32_t bc_windows_skipped;    /**< LFN: broadcast windows skipped (unicast window open, late timer) */
+    uint32_t bc_syncs;              /**< LFN: syncs to the parent's LFN broadcast schedule */
+    int32_t rate_ppb;               /**< LFN: measured rate of the own clock against the parent's (ppb) */
+    int32_t last_sync_error_us;     /**< LFN: error of the predicted broadcast slot start at the last sync */
+    uint32_t bc_tx_released;        /**< Parent: LFN broadcast frames released for a slot */
 } fhss_ws_lfn_stats_t;
 
 /** Fill *cfg with the FHSS_LFN_*_DEFAULT values. */
@@ -284,6 +329,34 @@ extern int ns_fhss_ws_lfn_timing_set(const fhss_api_t *fhss_api, uint32_t offset
  * @return 0 OK, -1 no FHSS, not a parent or no such LFN neighbour.
  */
 extern int ns_fhss_ws_lfn_neighbor_lto(const fhss_api_t *fhss_api, const uint8_t eui64[8], uint32_t offset_ms, uint32_t interval_ms, uint32_t tx_timestamp_us);
+
+/**
+ * @brief Parent role: start (cfg) or stop (NULL) the LFN broadcast schedule.
+ * The first slot starts one interval later. Needs the parent role.
+ * @return 0 OK, -1 no FHSS or not a parent, -2 invalid cfg.
+ */
+extern int ns_fhss_ws_lfn_bc_set(const fhss_api_t *fhss_api, const fhss_ws_lfn_bc_t *cfg);
+
+/**
+ * @brief Parent role: the next LFN broadcast slot whose TX time leaves at
+ * least the parent's tx_min_prep_us: its number and start time.
+ * @return 0 OK, -1 no LFN broadcast schedule.
+ */
+extern int ns_fhss_ws_lfn_bc_next(const fhss_api_t *fhss_api, uint16_t *slot, uint32_t *start_us);
+
+/**
+ * @brief LFN role: sync to the parent's LFN broadcast schedule (a frame with
+ * an LBT-IE). The first call starts the broadcast windows; later calls
+ * correct the phase, measure the rate of the own clock against the parent's
+ * and keep the own unicast slots at their place in the parent's time base,
+ * so that the parent's view of them (from the last LUTT-IE) stays valid.
+ * Windows widen by drift_ppm with the time since the last sync.
+ * @return 0 OK, -1 not an LFN, -2 invalid values.
+ */
+extern int ns_fhss_ws_lfn_bc_sync(const fhss_api_t *fhss_api, const fhss_ws_lfn_bc_sync_t *sync);
+
+/** @brief LFN role: stop following the parent's LFN broadcast schedule (parent lost). */
+extern int ns_fhss_ws_lfn_bc_stop(const fhss_api_t *fhss_api);
 
 /** @brief Read the LFN counters. @return 0 OK, -1 no FHSS. */
 extern int ns_fhss_ws_lfn_stats_get(const fhss_api_t *fhss_api, fhss_ws_lfn_stats_t *stats);

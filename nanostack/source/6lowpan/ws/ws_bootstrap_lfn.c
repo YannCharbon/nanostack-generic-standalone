@@ -102,8 +102,13 @@
  * parent, which registers the LFN on its behalf. No RPL, no MPL forwarding.
  *
  * Parent maintenance: the parent is lost after 1.5 x maintain_parent_time
- * sync periods with no frame from it (black-box results, item 46); the LFN
- * then rediscovers and rejoins without re-authenticating.
+ * sync periods with no sync frame from it (LTS, LPC; black-box results,
+ * items 34 and 46); the LFN then rediscovers and rejoins without
+ * re-authenticating.
+ *
+ * Sync (stage 4): every frame from the parent with an LBT-IE (LPA, LPC,
+ * LTS) syncs the FHSS to its LFN broadcast schedule, whose slots the LFN
+ * listens to; the FHSS keeps our unicast slots in the parent's time base.
  */
 
 static void ws_lfn_listen_apply(protocol_interface_info_entry_t *cur, uint32_t interval_ms)
@@ -117,6 +122,10 @@ static void ws_lfn_listen_apply(protocol_interface_info_entry_t *cur, uint32_t i
     l.rx_guard_us = c->rx_guard_us;
     l.close_retry_us = c->close_retry_us;
     l.uplink_guard_us = c->uplink_guard_us;
+    l.drift_ppm = c->drift_ppm;
+    l.widening_max_us = c->widening_max_us;
+    l.bc_rx_window_us = c->bc_rx_window_us;
+    l.bc_sync_only = c->bc_sync_only;
     cur->ws_info->lfn.listen_interval_ms = interval_ms;
     int ret = ns_fhss_ws_lfn_listen_set(cur->ws_info->fhss_api, &l);
     if (ret) {
@@ -223,18 +232,55 @@ static void ws_lfn_lpcs_send(protocol_interface_info_entry_t *cur)
     cur->ws_info->lfn.lpcs_timer_s = (cur->ws_info->lfn.listen_interval_ms * cur->ws_info->lfn_cfg.lpcs_retry_intervals + 999) / 1000 + 1;
 }
 
-/* The parent was heard (any frame, from the LLC): keep it */
+/* The parent was heard (any secured frame, from the LLC): keep its
+ * neighbour entry. Parent maintenance counts sync frames only. */
 void ws_bootstrap_lfn_parent_heard(protocol_interface_info_entry_t *cur, const uint8_t *src64)
 {
     if (!wisun_mode_host(cur) || !cur->ws_info->lfn.parent_known || memcmp(src64, cur->ws_info->lfn.parent_eui64, 8)) {
         return;
     }
-    cur->ws_info->lfn.parent_rx_s = cur->ws_info->uptime;
-    tr_debug("LFN: parent heard");
     mac_neighbor_table_entry_t *n = mac_neighbor_table_address_discover(mac_neighbor_info(cur), src64, MAC_ADDR_MODE_64_BIT);
     if (n) {
         n->lifetime = n->link_lifetime;
     }
+}
+
+/* A frame from the parent with an LBT-IE: sync to its LFN broadcast
+ * schedule (LBS-IE values from this frame or an earlier one), and keep the
+ * parent (black-box item 34: maintenance counts sync frames) */
+static void ws_lfn_sync(protocol_interface_info_entry_t *cur, const struct mcps_data_ind_s *data, const struct mcps_data_ie_list *ie_ext)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+    ws_lbt_ie_t lbt;
+    ws_lbs_ie_t lbs;
+    llc_neighbour_req_t ni;
+
+    if (ws_wh_lbs_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lbs) && lbs.broadcast_interval && lbs.broadcast_sync_period) {
+        lfn->lbs_interval_ms = lbs.broadcast_interval;
+        lfn->lbs_bsi = lbs.broadcast_secheduler_id;
+        lfn->lbs_sync_period = lbs.broadcast_sync_period;
+        lfn->sync_period_s = (lbs.broadcast_interval * lbs.broadcast_sync_period + 999) / 1000;
+    }
+    if (!ws_wh_lbt_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lbt) || !lfn->lbs_interval_ms ||
+            !ws_bootstrap_neighbor_info_request(cur, data->SrcAddr, &ni, false)) {
+        return;
+    }
+    fhss_ws_lfn_bc_sync_t s = {
+        .interval_ms = lfn->lbs_interval_ms,
+        .bsi = lfn->lbs_bsi,
+        .sync_period = lfn->lbs_sync_period,
+        .channel_function = ni.ws_neighbor->fhss_data.bc_timing_info.broadcast_channel_function,
+        .fixed_channel = ni.ws_neighbor->fhss_data.bc_timing_info.fixed_channel,
+        .slot = lbt.slot_number,
+        .offset_ms = lbt.interval_offset,
+        .rx_timestamp_us = data->timestamp,
+    };
+    if (ns_fhss_ws_lfn_bc_sync(cur->ws_info->fhss_api, &s)) {
+        tr_warn("LFN: sync refused (LBT slot %u, offset %"PRIu32" ms)", lbt.slot_number, (uint32_t)lbt.interval_offset);
+        return;
+    }
+    lfn->parent_rx_s = cur->ws_info->uptime;
+    tr_debug("LFN: parent heard (sync)");
 }
 
 static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struct mcps_data_ind_s *data, const struct mcps_data_ie_list *ie_ext)
@@ -246,7 +292,6 @@ static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struc
     ws_bs_ie_t bs;
     ws_panid_ie_t panid;
     ws_lto_ie_t lto;
-    ws_lbs_ie_t lbs;
     llc_neighbour_req_t ni;
 
     if (lfn->parent_known || data->SrcAddrMode != MAC_ADDR_MODE_64_BIT) {
@@ -285,9 +330,6 @@ static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struc
     memcpy(lfn->parent_eui64, data->SrcAddr, 8);
     lfn->parent_known = true;
     lfn->parent_rx_s = cur->ws_info->uptime;
-    if (ws_wh_lbs_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lbs) && lbs.broadcast_interval && lbs.broadcast_sync_period) {
-        lfn->sync_period_s = (lbs.broadcast_interval * lbs.broadcast_sync_period + 999) / 1000;
-    }
     // The parent's LTO-IE: our offset and adjusted interval
     if (ws_wh_lto_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lto)) {
         uint32_t ivl = lto.adjusted_listening_interval;
@@ -299,6 +341,8 @@ static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struc
         }
         tr_info("LFN: LTO offset %"PRIu32" ms, interval %"PRIu32" ms", (uint32_t)lto.offset, lfn->listen_interval_ms);
     }
+    // Its LFN broadcast schedule (LBS, LBT)
+    ws_lfn_sync(cur, data, ie_ext);
     cur->ws_info->lfn_cfg.listen_interval_ms = lfn->listen_interval_ms;   // the agreed interval from now on
     tr_info("LFN: parent %s, PAN %04x, sync period %"PRIu32" s", trace_array(data->SrcAddr, 8), panid.panid, ws_lfn_sync_period_s(cur));
     ws_stats_update(cur, STATS_WS_ASYNCH_RX_PA, 1);
@@ -327,6 +371,7 @@ static void ws_lfn_lpc_analyse(protocol_interface_info_entry_t *cur, const struc
             lfn->listen_interval_ms = ivl;
         }
     }
+    ws_lfn_sync(cur, data, ie_ext);
     if (ws_wp_nested_lfn_version_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &ver)) {
         if (lfn->lpc_received && ver.lfn_version != lfn->lfn_version) {
             tr_info("LFN: LFN version %u -> %u", lfn->lfn_version, ver.lfn_version);
@@ -372,6 +417,11 @@ void ws_bootstrap_lfn_asynch_ind(struct protocol_interface_info_entry *cur, cons
             break;
         case WS_FT_LPC:
             ws_lfn_lpc_analyse(cur, data, ie_ext);
+            break;
+        case WS_FT_LTS:
+            if (cur->ws_info->lfn.parent_known && !memcmp(data->SrcAddr, cur->ws_info->lfn.parent_eui64, 8) && data->Key.SecurityLevel) {
+                ws_lfn_sync(cur, data, ie_ext);
+            }
             break;
         default:
             // An LFN hears only what is sent to it in its windows
@@ -455,6 +505,7 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             lfn->addr_registered = false;
             lfn->eapol_interval = false;
             lfn->sync_period_s = 0;
+            lfn->lbs_interval_ms = 0;
             lfn->reregister_s = 0;
             lfn->lgtk_mismatch_timer_s = 0;
             lfn->lgtk_request_sent = false;
@@ -621,7 +672,8 @@ void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
     if (lfn->parent_known && cur->nwk_bootstrap_state != ER_PANA_AUTH) {
         uint32_t limit = ws_lfn_sync_period_s(cur) * cur->ws_info->lfn_cfg.maintain_parent_time * 3 / 2;
         if (cur->ws_info->uptime - lfn->parent_rx_s > limit) {
-            tr_warn("LFN: parent %s lost (nothing heard for %"PRIu32" s)", trace_array(lfn->parent_eui64, 8), limit);
+            tr_warn("LFN: parent %s lost (no sync frame for %"PRIu32" s)", trace_array(lfn->parent_eui64, 8), limit);
+            ns_fhss_ws_lfn_bc_stop(cur->ws_info->fhss_api);
             ws_stats_update(cur, STATS_WS_STATE_1, 0);
             ws_bootstrap_event_discovery_start(cur);
             lfn->parent_known = false;

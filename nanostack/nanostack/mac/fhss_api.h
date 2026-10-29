@@ -34,6 +34,7 @@ typedef struct fhss_callback fhss_callback_t;
 #define FHSS_SYNCH_FRAME            0   /**< FHSS synchronization frame */
 #define FHSS_SYNCH_REQUEST_FRAME    1   /**< FHSS synchronization request frame */
 #define FHSS_DATA_FRAME             2   /**< FHSS data frame */
+#define FHSS_LFN_BC_FRAME           3   /**< FAN 1.1: a frame for the parent's LFN broadcast slot (mcps_data_req_t.LfnBroadcast) */
 
 /**
  * @brief FHSS synchronization info length.

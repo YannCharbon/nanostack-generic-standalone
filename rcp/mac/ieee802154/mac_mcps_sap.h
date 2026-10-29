@@ -131,6 +131,10 @@ bool mac_is_ack_request_set(mac_pre_build_frame_t *buffer);
 
 int mac_convert_frame_type_to_fhss(uint8_t frame_type);
 
+// The FHSS frame type of a queued frame (FHSS_LFN_BC_FRAME for LfnBroadcast)
+struct mac_pre_build_frame;
+int mac_fhss_frame_type(const struct mac_pre_build_frame *buffer);
+
 void mcps_sap_trig_tx(void *mac_ptr);
 
 uint8_t mcps_sap_purge_reg_handler(struct protocol_interface_rf_mac_setup *rf_mac_setup, const struct mcps_purge_s *purge_req);

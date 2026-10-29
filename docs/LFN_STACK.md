@@ -1,6 +1,6 @@
 # Wi-SUN FAN 1.1 LFN in the upper layers: one LFN under the border router
 
-GS8 stage 3 (root repo: `documents/pre-study/investigation/LFN_FAN11_Study.md` §5, items U2–U7, U9–U13, U15). The MAC and FHSS mechanics are in `LFN_MAC.md`. This note describes what the LLC, the LFN bootstrap and the border router do, the settings, the sources each rule comes from, the deviations from Silicon Labs' implementation, and the tests.
+GS8 stages 3 and 4 (root repo: `documents/pre-study/investigation/LFN_FAN11_Study.md` §5, items U2–U13, U15). The MAC and FHSS mechanics are in `LFN_MAC.md`. This note describes what the LLC, the LFN bootstrap and the border router do, the settings, the sources each rule comes from, the deviations from Silicon Labs' implementation, and the tests.
 
 Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm codecs, Wireshark's dissector, `wisun-br-linux` and its `HIF.md`, RFC 8505; for LGTK, §8); **[M]** observed on Silicon Labs' LFN (root repo, `HW5_BlackBox_Phase1_Results.md`, item numbers); **[I]** our choice or inference, to check in black-box phase 2.
 
@@ -10,7 +10,8 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 - **Join** (`ws_bootstrap_lfn.c`): LPAS sweeps → LPA in the LFN's next listen window → EAPOL with the parent as authenticator (shorter listen interval meanwhile) → LPCS → LPC → DHCPv6 through the parent → address registration (NS with ARO) to the parent. No RPL, no MPL forwarding; a default route through the parent.
 - **Parent side** (`ws_lfn_parent.c`, border router): LPAS → the LFN child and a unicast LPA with an LTO-IE; LPCS → LPC; frames to an LFN child wait for its listen window (FHSS parent role, `LFN_MAC.md` §4); an LPC to every LFN child every sync period; a MAC-unicast copy of each `ff02::1` multicast to every LFN child.
 - **LGTK** (§8): the LFN authenticates with a node role KDE and gets LFN group keys (LGTKs, MAC key indexes 5–7) instead of GTKs; the border router keeps three LGTKs with their own lifetime, rotates them, announces each change with the LFN version and LGTK hash in an LPC to every LFN child, and activates a new LGTK only once its LFNs can have fetched it; the LFN fetches a new LGTK `lgtk_max_mismatch_s` after it sees its hash. FFNs keep their GTKs.
-- **Parent maintenance**: the LFN declares its parent lost after 1.5 × `maintain_parent_time` sync periods with no frame from it [M item 46], then rediscovers and rejoins without EAPOL [M item 47].
+- **LFN broadcast schedule and sync** (stage 4, §4.1 and `LFN_MAC.md` §2.2–2.3): while it has an LFN child, the border router sends a sync frame in the LFN broadcast slot of every sync period (an LTS, or a broadcast LPC after the schedule starts and after each LGTK event); the LFN listens in the parent's broadcast slots, syncs from every frame with an LBT-IE, keeps its own unicast slots in the parent's time base and widens its windows for clock drift.
+- **Parent maintenance**: the LFN declares its parent lost after 1.5 × `maintain_parent_time` sync periods with no sync frame from it (LTS, LPC) [M items 34, 46], then rediscovers and rejoins without EAPOL [M item 47].
 - **Checked** in virtual time with `wsbrd-inproc` and `wsnode-inproc` (emulator `sim_utils/vtime/test_lfn_join.sh`, §7).
 
 ## 2. Frames and IEs (LLC, `ws_llc_data_service.c`)
@@ -18,12 +19,14 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | Frame | Sent by | Header IEs | Payload IEs | Security | Source |
 | --- | --- | --- | --- | --- | --- |
 | LPAS (type 10) | LFN, asynchronous on every channel | LUTT, NR (role LFN, interval range), LUS, LND | US, NETNAME | none | [S] codecs, [M] items 1–4 |
-| LPA (9) | parent, unicast | UTT, BT, NR, PANID, LBS, LTO | US, BS, PAN, NETNAME | none | [S] `ws_mngt.c` IE list, [M] item 5 |
+| LPA (9) | parent, unicast | UTT, BT, NR, PANID, LBS, LTO, LBT | US, BS, PAN, NETNAME | none | [S] `ws_mngt.c` IE list, [M] item 5 |
 | LPCS (12) | LFN, unicast | LUTT, LUS | US | active LGTK | [M] item 13 |
-| LPC (11) | parent, unicast | UTT, BT, LBS | LFNVER, LGTKHASH | active LGTK | [M] items 14, 48, §5.2 |
+| LPC (11) | parent, unicast (answer to an LPCS) or broadcast in an LFN broadcast slot | UTT, BT, LBS, LBT | LFNVER, LGTKHASH | active LGTK | [M] items 14, 48, §5.2 |
+| LTS (13) | parent, broadcast in an LFN broadcast slot | UTT, BT, LBT | none | active LGTK | [M] items 24, §5.2 [I: IE set] |
 | Data, EAPOL | LFN | LUTT, LUS (instead of UTT, BT) | US | data: active LGTK; EAPOL: none | [S] |
 
-- **Frame type** is 8 bits in `asynch_request_t` and 4 bits in an LLC message (types up to 12).
+- **Frame type** is 8 bits in `asynch_request_t` and 4 bits in an LLC message (types up to 13).
+- **Broadcast sync frames** go through `ws_llc_asynch_request()` with `lfn_broadcast` set: the MAC holds them for the next LFN broadcast slot (`LfnBroadcast`, `LFN_MAC.md` §2.2). An LTS has header IEs only; the MAC now accepts such frames (it dropped a frame with IEs and no payload) and the LLC passes it to the bootstrap without payload IEs.
 - **Receiving**: a frame with a LUTT-IE and no UTT-IE is accepted (FAN 1.1 only); its LUTT/LUS fill the sender's `lfn_uc_timing_info` (`ws_llc_lfn_timing_update()`), instead of the UTT update. LPA, LPC, LPAS and LPCS go to the bootstrap's asynchronous handler.
 - **Unicast management frames** go through `ws_llc_asynch_request()` with `unicast` set: acknowledged, no channel list, so the MAC holds a frame to an LFN for its window. An LTO-IE that the LFN acknowledges is applied to the parent's view of its schedule on the ACK (`ns_fhss_ws_lfn_neighbor_lto()`).
 - **LBS-IE** now has its sync-period byte (7 bytes, as Wireshark's dissector and `wisun-br-linux`; the Arm codec had 6). Nothing called the old one.
@@ -38,7 +41,8 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | Authentication (`ER_PANA_AUTH`) | Listen interval `eapol_listen_interval_ms` (1 250 ms), EAPOL with the parent as target (the existing supplicant); skipped on a rejoin with valid keys | [M] items 10, 36, 47 |
 | Configuration (`ER_SCAN`) | Agreed interval back; LPCS, repeated every `lpcs_retry_intervals` listen intervals until an LPC | [M] items 13–15 |
 | Operation | Default route through the parent; DHCPv6 Solicit to the parent's link-local address (no prefix hint); on the reply, NS with ARO (lifetime `registration_lifetime_min`) to the parent; re-registration at 92 % of the lifetime | [M] items 16–18, 52; RFC 8505 |
-| Maintenance | Any secured frame from the parent keeps it; lost after 1.5 × `maintain_parent_time` × sync period without one → discovery, keys kept | [M] items 34, 46, 47 |
+| Sync | Every frame from the parent with an LBT-IE (LPA, LPC, LTS) syncs the FHSS to its LFN broadcast schedule (`ns_fhss_ws_lfn_bc_sync()`, with the LBS-IE values kept from the LPA or an LPC and the parent's broadcast channel function) | [M] items 21–25, §5.2 |
+| Maintenance | A sync frame from the parent keeps it; lost after 1.5 × `maintain_parent_time` × sync period without one → broadcast windows stopped, discovery, keys kept. Other secured frames keep the parent's neighbour entry only | [M] items 34, 46, 47 |
 
 - **Group key before the first LPC**: the LFN sends its LPCS with the lowest LGTK installed by the 4-way handshake (key index 5–7); every LPC's key index then sets the active one (as an FFN learns its GTK from a PAN configuration), after the LPC's LGTK hash has been applied (§8).
 - **Neighbours**: the LFN keeps only its parent; its entry is refreshed by every frame from it.
@@ -48,8 +52,10 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 - **LPAS**: needs NETNAME, NR (role LFN), LUS, US and LUTT. The LFN becomes a neighbour (an "LFN child": `lfn_uc_timing_info` set, `ffd_device` false, lifetime 2 × the registration lifetime, refreshed by its frames; no NUD or ETX probing). One LPA per sweep: a second LPAS within 2 proposed intervals is ignored, and no new LPA is queued while an earlier one to the same LFN still waits for a window (`ws_llc_lfn_lpa_pending()`). Otherwise a second LTO-IE would move the LFN's schedule in our view only: the LFN ignores an LPA once it has a parent, but the border router applies the LTO-IE of each acknowledged LPA. (Found during the LGTK work: an LPA from the first sweep, still queued, was sent after the one the LFN took, and the border router then missed the LFN's windows until its next uplink, about 340 s.)
 - **LTO-IE** (`lfn_lto`, default on) [S: the rule described in `wisun-br-linux` `ws_neigh.c`, our arithmetic]: the proposed interval snapped to a multiple (above) or a divisor (below) of the LFN broadcast interval within the LFN's NR range (6 000 ms → 5 000 ms with 10 s, as observed [M item 6]); the offset a random multiple of 300 ms in [300, min(interval, broadcast interval) − 300] ms.
 - **LPCS**: from a known LFN, secured → LPC.
-- **Sync frames [I]**: until the LFN broadcast schedule exists (stage 4), the border router sends a unicast LPC to every LFN child every sync period (`bc_interval_ms` × `bc_sync_period`, default 50 s). Silicon Labs' parents send broadcast LTS/LPC frames in the LFN broadcast slots [M items 24, 32, §5.2]; our LFN wakes for its unicast slots only, so the sync costs one unicast reception per sync period.
-- **Security**: frames to an LFN child (data through `ws_llc_lowpan_mpx_data_request()`, LPC) use the active LGTK (key index 5–7); everything else uses the GTKs as before (§8).
+- **LFN broadcast schedule** (stage 4): the FHSS runs it from the FHSS activation (`ns_fhss_ws_lfn_bc_set()`: `bc_interval_ms`, the BSI of the border router's hopping schedule, as in its LBS-IE); every LPA and LPC carries an LBT-IE.
+- **Sync frames** [M items 24, 32, 48, §5.2; S `wsbrd` `ws_mngt.c`]: only while the border router has an LFN child. In the slot of every sync period (slot number a multiple of `bc_sync_period`) an LTS, or a broadcast LPC during the first `maintain_parent_time` sync periods after the first child appears and after each LGTK event; an LGTK event's LPC goes in the next slot, whatever its number. The seconds timer queues the frame when its slot is less than 2 s away; the MAC holds it until the slot.
+- **LTO-IE**: the offset the upper layer gives is the phase of the LFN's slots against the LFN broadcast slots; the FHSS converts it at TX time (`LFN_MAC.md` §2.2), so the LFN's unicast slots stay at least 300 ms from the broadcast slots.
+- **Security**: frames to an LFN child (data through `ws_llc_lowpan_mpx_data_request()`, LPC) and the broadcast sync frames use the active LGTK (key index 5–7); everything else uses the GTKs as before (§8).
 - **Registration**: the LFN's NS(ARO) is handled by the existing 6LoWPAN-ND code: a registered neighbour-cache entry, through which the border router routes to the LFN; a non-FFD child is published to RPL (`rpl_control_publish_host_address`), which for the root is local.
 - **Multicast** [M items 41–42]: a multicast to `ff02::1` leaving the border router is also sent as a MAC-unicast copy to every LFN child (IPv6 destination unchanged), in its window (`lowpan_down()` → `ws_lfn_parent_multicast_copy()`). Other groups need the LFN's RFC 9685 subscription (EARO P flag), not implemented.
 
@@ -69,6 +75,10 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | `maintain_parent_time` | 5 | LFN | Sync periods; loss after 1.5 × [M item 46] |
 | `lgtk_max_mismatch_s` | 120 | LFN | Key request this long after the first LPC whose LGTK hash lists an LGTK it lacks (Silicon Labs Test profile `lgtk_max_mismatch_m` = 2 min [M item 49]) |
 | `registration_lifetime_min` | 2160 | both | ARO lifetime (36 h [M item 19]) |
+| `drift_ppm` | 50 | LFN | Window widening per side, µs per second since the last sync (Silicon Labs' LFN: about 55 [M item 23]) |
+| `widening_max_us` | 100000 | LFN | Upper bound of the widening, per side |
+| `bc_rx_window_us` | 5000 | LFN | Window in the parent's LFN broadcast slots |
+| `bc_sync_only` | false | LFN | Listen only in the broadcast slots of the sync frames (Silicon Labs' LFN listens in every slot [M items 21, 55]) |
 | `bc_interval_ms`, `bc_sync_period` | 10000, 5 | parent | LBS-IE; sync period = their product [M §3.1] |
 | `lto` | true | parent | Send an LTO-IE in the LPA |
 | `tx_offset_us`, `tx_lead_us`, `tx_min_prep_us`, `tx_ttl_intervals` | 0, 20000, 2000, 20 | parent | `LFN_MAC.md` §5 |
@@ -81,7 +91,7 @@ Limits: one LFN parent per LFN, and only the border router parents LFNs (FFN rou
 
 ## 6. Not done here
 
-- LFN broadcast schedule, LTS frames, window widening with drift (stage 4); FFN routers as parents (stage 5).
+- FFN routers as parents (stage 5).
 - RFC 9685 multicast subscriptions; LCP/FLUS and LND-slot answers (interoperability).
 - LGTK leftovers (§8): LGTKs and the node role are not stored in NVM; no LGTK revocation; no frame-counter-based LGTK lifetime check; the role-based PMK/PTK lifetimes of FAN 1.1.
 
@@ -93,6 +103,8 @@ Limits: one LFN parent per LFN, and only the border router parents LFNs (FFN rou
 | `tests/fhss_lfn/run.sh`, emulator `test_lfn_mac.sh` | The MAC and FHSS mechanics (`LFN_MAC.md` §6) |
 | `test_lfn_join.sh`, LGTK checks | The join with an LGTK (NR KDE in the key request and in 4-way handshake message 2, LPCS under key index 5–7); for every LGTK installed after the join: the LPC with the new hash, the key request `lgtk_max_mismatch_s` after it, the LGTK received before its activation, the LFN taking the new active index from the next LPC. Rotations come from `LGTK_ROTATE_AT` (`ws_management_lfn_lgtk_rotate()`) or from short lifetimes (`BR_EXTRA="-o lfn_lgtk_lifetime_s=900 ..."`) |
 
+Stage 4 runs use the emulator's clock drift (`SIM_OPTS="--drift-random=20"`: each node's clock off by up to ±20 ppm, docs `VIRTUAL_TIME.md` §4.1); the window check takes each window's logged length, widening included, and the broadcast windows.
+
 Test hook: `ws_test_lfn_parent_silence()` (`net_ws_test.h`) makes the border router ignore its LFN children and send them no LPC, as a parent that is gone (emulator `SILENT_AT`, `SILENT_FOR`).
 
 **Results** (emulator `docs/POWER_MODEL.md` §14; FG25 profile, EU mode 3, +10 dBm, −50 dBm link):
@@ -100,6 +112,13 @@ Test hook: `ws_test_lfn_parent_silence()` (`net_ws_test.h`) makes the border rou
 - Idle, 3 seeds, 3600 s: 41.6–42.4 µA, of which about 24 µA come from the 50 ms protocol timer (20 wakes/s), 5.8 µA from listening. With idle-tick skipping of the protocol timers (`PORTING.md`, DI6): 16.6–17.3 µA, 0.66 wakes/s, of which 0.07/s from the protocol timers; with test traffic 49.6–54.5 µA (emulator `docs/POWER_MODEL.md` §15).
 - Parent loss, 3 seeds: declared 375.2–375.7 s after the last frame from the parent, rejoin without EAPOL in 21–22 s (Silicon Labs' LFN: 375 s, 21.6–21.9 s [M items 45–47]).
 - With LGTKs (§8): the same tests pass (traffic 10 seeds, idle 3 seeds, parent loss 3 seeds); idle 16.5 µA in each of the 3 seeds, 0.6 wakes/s; with test traffic 49.5–57.6 µA (seed 1, the highest, had 28 uplink retries instead of 15, during the border router's PAN configuration sweeps, whose timing moved with the border router's random draws); parent lost 375.2–376.0 s after its last frame, operational again without EAPOL; operational 27–49 s after start. LGTK rotations and their timing: §8.
+
+- **Stage 4** (LFN broadcast schedule and sync; every run with each node's clock drawn in ±20 ppm unless stated):
+  - with test traffic, 10 seeds × 1800 s: all checks pass (every frame the LFN received inside a unicast or broadcast window); operational 27.2–48.9 s after start; LFN 56.3–64.5 µA;
+  - idle, 3 seeds × 3600 s: 24.0–24.4 µA without drift, 24.0–24.6 µA with drift, 0.7 wakes/s; of 24.4 µA (seed 1), listening 13.5 µA, MCU sleep 4.9 µA, deep-sleep floor 4.6 µA. The stage 3 figure (16.5 µA) had no broadcast windows. With `bc_sync_only`, 19.5–19.8 µA (0.6 wakes/s);
+  - sync: the LFN measured its clock rate against the parent's to the drift set (seed 1 of the idle runs: 7.2 ppm measured, 7.22 ppm set; a 40 ppm pair: −40 000 ppb), and the sync error stayed at 0–1 µs once the rate was known;
+  - parent loss, 3 seeds: declared 376.0 s after the last sync frame, rejoin without EAPOL;
+  - LGTK rotation at 600 s (3 seeds) and short lifetimes (3 seeds): all checks pass; hash at the LFN 10 s after the installation (next LFN broadcast slot), key request 120 s after it.
 
 Non-regression (FAN 1.0, no LFN): `dag_simple` in virtual time, 10 seeds, logs byte-identical to the previous stack commit (`compare_logs.py --mask-pointers --mask-source-lines`; the second option masks the programs' own `function():line` trace prefixes, which move when their source is edited).
 
@@ -120,11 +139,11 @@ FAN 1.1 gives LFNs their own group keys, LGTKs, distinct from the GTKs of the FF
 - an LGTK whose lifetime ends is removed;
 - `ws_management_lfn_lgtk_rotate()` installs the next LGTK now and shortens the active one's lifetime so that the activation falls when the guard has passed; the old LGTK then expires `lgtk_lifetime_s` / `lgtk_new_activation_time` later.
 
-**Each LGTK event** (installed, activated, expired) increments the LFN version, updates the LGTK hash and active index for the LGTKHASH-IE (`ws_info->lfngtk`), and sets `lpc_pending`, so every LFN child gets an LPC at the next second [M item 48: one event, one version, an extra LPC]. The LPC is secured with the active LGTK (`ws_lfn_lgtk_security_set()`), as are data frames to LFN children (`ws_lfn_parent_tx_key_index()`, from the LLC). FAN 1.1 PAN configurations carry the same LFN version and LGTK hash, as before.
+**Each LGTK event** (installed, activated, expired) increments the LFN version, updates the LGTK hash and active index for the LGTKHASH-IE (`ws_info->lfngtk`), and sets `lpc_pending`: a broadcast LPC goes in the next LFN broadcast slot, and the sync frames of the next `maintain_parent_time` sync periods are LPCs [M item 48: one event, one version, an extra LPC]. The LPC is secured with the active LGTK (`ws_lfn_lgtk_security_set()`), as are data frames to LFN children (`ws_lfn_parent_tx_key_index()`, from the LLC). FAN 1.1 PAN configurations carry the same LFN version and LGTK hash, as before.
 
 **On the LFN** (`ws_lfn_parent.c`, `ws_pae_supp.c`): each LPC's LGTK hash is applied before its key index (`ws_pae_controller_lgtk_hash_update()`): LGTKs it no longer lists, or whose hash differs, are removed; listed ones become fresh; a listed LGTK the LFN lacks starts a timer of `lgtk_max_mismatch_s`. When it ends, the LFN sends a key request to its parent (`ws_pae_supp_lgtk_key_request()`), and the parent answers with a group-key handshake; retries are an FFN's key-update retries. A later LPC whose hash matches stops the timer [M items 49–50; I: a fixed delay from the first LPC that shows the new hash; Silicon Labs' two samples, 113 and 117 s, cannot tell a fixed delay from a random one]. The LPC key index then sets the active LGTK. The LFN's EAPOL target after the join is its LFN parent, not an RPL parent.
 
-**Deviations [I].** The LFN keeps its 5 s interval during the group-key handshake (Silicon Labs' LFN listens every 1.25 s then, item 50); the handshake's first message then waits for the next window. Event LPCs are unicast to each child at the next second, not broadcast in the next LFN broadcast slot and repeated for 5 sync periods (stage 4). The key request is sent once the timer ends, without the random spread an FFN uses after a GTK mismatch.
+**Deviations [I].** The LFN keeps its 5 s interval during the group-key handshake (Silicon Labs' LFN listens every 1.25 s then, item 50); the handshake's first message then waits for the next window. The key request is sent once the timer ends, without the random spread an FFN uses after a GTK mismatch.
 
 **Limits.** LGTKs and the supplicants' node roles are not stored: after a border router restart the LGTKs are new, and LFNs that rejoin without EAPOL cannot read the new LPCs until they authenticate again. No LGTK revocation (`ws_pae_auth_node_access_revoke_start()` acts on GTKs only), no frame-counter-based lifetime shortening, no role-based PMK/PTK lifetimes. With a guard longer than the time between installation and expiry, activation happens at the old LGTK's expiry; the LFN's uplinks under the old key then fail until it hears the next LPC (seen with 6-minute lifetimes: 3 losses in 62 request-echo exchanges).
 

@@ -124,10 +124,15 @@ typedef struct ws_lfn_state_s {
     bool lgtk_request_sent: 1;      /**< Key request made for the current mismatch */
     uint16_t lfn_version;           /**< Last LFN version heard (LPC) */
     uint32_t reregister_s;          /**< Address re-registration */
+    uint32_t lbs_interval_ms;       /**< Parent's LFN broadcast schedule (LBS-IE): interval, 0 unknown */
+    uint16_t lbs_bsi;               /**< Its schedule identifier */
+    uint8_t lbs_sync_period;        /**< Its sync period, in broadcast intervals */
 
     /* Parent (border router) */
-    uint16_t lpc_timer_s;           /**< Next round of LPCs to the LFN children */
-    uint8_t lpc_pending;            /**< LPC rounds still to send at the next LFN broadcast slot (LGTK event) */
+    uint8_t lpc_pending;            /**< An LGTK event: a broadcast LPC in the next LFN broadcast slot */
+    uint8_t bc_lpc_left;            /**< Sync periods whose sync frame is still an LPC instead of an LTS */
+    bool bc_slot_queued_valid: 1;   /**< A frame is queued for bc_slot_queued */
+    uint16_t bc_slot_queued;        /**< LFN broadcast slot of the last frame queued */
     bool test_silent;               /**< Test hook: answer no LFN and send no LPC (ws_test_lfn_parent_silence()) */
 
 } ws_lfn_state_t;
