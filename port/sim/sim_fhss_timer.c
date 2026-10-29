@@ -55,7 +55,7 @@ static int fhss_timer_start(uint32_t slots_us, void (*callback)(const fhss_api_t
         return 0;
     }
     item->armed = true;
-    item->deadline = ns_port_sim_now_us() + slots_us;
+    item->deadline = sim_deadline_after(slots_us);
     return 0;
 }
 
@@ -78,7 +78,8 @@ static uint32_t fhss_get_remaining_slots(void (*callback)(const fhss_api_t *api,
         return -1; // as the POSIX port
     if (!item->armed || item->deadline <= now)
         return 0;
-    return min(item->deadline - now, (uint64_t)UINT32_MAX);
+    // in the node's clock
+    return min(sim_local_of(item->deadline) - sim_local_of(now), (uint64_t)UINT32_MAX);
 }
 
 static uint32_t fhss_get_timestamp(const fhss_api_t *api)

@@ -12,8 +12,8 @@
  *
  *   1. The program connects to the conductor and sends its own hello (the
  *      emulator's "xh", outside this header), then calls ns_port_sim_attach().
- *   2. attach() waits for "xw" (welcome): the run's base seed. Virtual time
- *      starts at 0.
+ *   2. attach() waits for "xw" (welcome): the run's base seed and the node's
+ *      clock drift. Virtual time starts at 0.
  *   3. ns_port_run() runs until idle, sends "xi" (idle) with the deadline of
  *      its earliest armed timer, and blocks.
  *   4. The conductor wakes it with "xa" (advance) to a time t >= now. The
@@ -32,6 +32,12 @@
  * and programs may send messages of their own for the conductor's power
  * ledger (the emulated radio's state). Without the flag nothing changes.
  *
+ * Clock drift (EM3 step 5): the welcome gives the node's clock error in parts
+ * per billion. The node's clock, which the porting API shows (ns_port_time_us(),
+ * the FHSS timestamp, timer lengths), runs at (1 + drift_ppb / 10^9) times
+ * virtual time; the conductor, its frames and the "xi" deadlines stay on
+ * virtual time. With drift 0 the node's clock is virtual time exactly.
+ *
  * Idle means: no event-loop event signalled, no timer due, no pending()
  * callback returning true. Code runs in zero virtual time.
  */
@@ -41,7 +47,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define NSIM_PROTO_VERSION 1
+#define NSIM_PROTO_VERSION 2
 #define NSIM_NEVER UINT64_MAX   // "xi": no timer armed
 
 #define NSIM_WELCOME_POWER 0x0001 // the conductor records power: send "xc"
@@ -51,6 +57,8 @@ struct nsim_welcome {
     uint16_t version;           // NSIM_PROTO_VERSION
     uint32_t flags;             // NSIM_WELCOME_*
     uint64_t seed;              // the run's base seed
+    int32_t drift_ppb;          // this node's clock error, parts per billion
+    uint32_t reserved;
 };
 
 struct nsim_advance {
@@ -110,9 +118,17 @@ void ns_port_sim_attach(int fd, int node_id);
 // The run's base seed, from the welcome. Valid after ns_port_sim_attach().
 uint64_t ns_port_sim_seed(void);
 
-// Virtual time in µs since the start of the run (64 bits; the porting API's
-// ns_port_time_us() is the low 32 bits of it plus NSIM_CLOCK32_OFFSET_US).
+// Virtual time in µs since the start of the run (64 bits). The porting API's
+// ns_port_time_us() is the low 32 bits of the node's clock,
+// ns_port_sim_local_us(), plus NSIM_CLOCK32_OFFSET_US.
 uint64_t ns_port_sim_now_us(void);
+
+// The node's own clock in µs since the start of the run: virtual time with
+// the node's drift (equal to it when the drift is 0).
+uint64_t ns_port_sim_local_us(void);
+
+// The node's clock drift from the welcome, parts per billion.
+int32_t ns_port_sim_drift_ppb(void);
 
 // Number of zero-length timer starts so far (callback timers + FHSS timers).
 // Such a start disarms the timer, as timerfd_settime() does in the POSIX

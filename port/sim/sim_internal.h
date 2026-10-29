@@ -8,6 +8,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// sim_scheduler.c: the node's clock (drift). sim_local_of() maps virtual
+// time to the node's clock; sim_deadline_after() is the virtual time at which
+// the node's clock has advanced by us from now.
+uint64_t sim_local_of(uint64_t virtual_us);
+uint64_t sim_deadline_after(uint64_t us);
+
 // sim_timer.c: callback timers
 bool sim_timer_due(uint64_t now);
 void sim_timer_fire_due(uint64_t now);

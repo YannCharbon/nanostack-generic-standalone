@@ -149,11 +149,17 @@ static void c_send(const void *buf, size_t len)
         FAIL("send: %m");
 }
 
-static void c_welcome(uint64_t seed)
+static void c_welcome_drift(uint64_t seed, int32_t drift_ppb)
 {
-    struct nsim_welcome w = { .magic = { 'x', 'w' }, .version = NSIM_PROTO_VERSION, .seed = seed };
+    struct nsim_welcome w = { .magic = { 'x', 'w' }, .version = NSIM_PROTO_VERSION, .seed = seed,
+                              .drift_ppb = drift_ppb };
 
     c_send(&w, sizeof(w));
+}
+
+static void c_welcome(uint64_t seed)
+{
+    c_welcome_drift(seed, 0);
 }
 
 // Collect the node's reports up to its "xi"; returns its deadline. Returns 0
@@ -981,6 +987,78 @@ static void test_logs(void)
     run_test("logs: virtual-time line prefix", node_logs, cond_logs);
 }
 
+static int32_t g_drift_ppb;
+
+// Clock drift: the node's clock runs at (1 + ppb / 10^9) × virtual time.
+// A timer of d µs on the node's clock fires at the first virtual µs where the
+// node's clock has advanced by d; ns_port_time_us() and the FHSS remaining
+// time are on the node's clock.
+static void drift_cb(int id, uint16_t slots)
+{
+    report("timer %d %llu local %llu", id, (unsigned long long)ns_port_sim_now_us(),
+           (unsigned long long)ns_port_sim_local_us());
+}
+
+static void drift_fhss_cb(const fhss_api_t *api, uint16_t slots)
+{
+    report("fhss %llu local %llu", (unsigned long long)ns_port_sim_now_us(),
+           (unsigned long long)ns_port_sim_local_us());
+}
+
+static void node_drift(int fd)
+{
+    int id = eventOS_callback_timer_register(drift_cb);
+
+    node_attach(fd, 1);
+    NODE_CHECK(ns_port_sim_drift_ppb() == g_drift_ppb);
+    eventOS_callback_timer_start_sec(id, 1);
+    ns_port_fhss_timer.fhss_timer_start(2000000, drift_fhss_cb, NULL);
+    // 2 s on the node's clock remain
+    NODE_CHECK(ns_port_fhss_timer.fhss_get_remaining_slots(drift_fhss_cb, NULL) == 2000000);
+    NODE_CHECK(ns_port_time_us() == (uint32_t)NSIM_CLOCK32_OFFSET_US);
+    ns_port_run();
+}
+
+static void cond_drift_fast(void)
+{
+    // +100 ppm: local(v) = v + floor(v / 10^4)
+    c_welcome_drift(1, 100000);
+    CHECK_U64(c_idle(), 999901);
+    c_advance(999901, 0, NULL);
+    CHECK_U64(c_idle(), 1999801);
+    EXPECT("timer 0 999901 local 1000000");
+    c_advance(1999801, 0, NULL);
+    CHECK_U64(c_idle(), NEVER);
+    EXPECT("fhss 1999801 local 2000000");
+    c_quit();
+}
+
+static void cond_drift_slow(void)
+{
+    // -100 ppm
+    c_welcome_drift(1, -100000);
+    CHECK_U64(c_idle(), 1000101);
+    c_advance(1000101, 0, NULL);
+    CHECK_U64(c_idle(), 2000201);
+    EXPECT("timer 0 1000101 local 1000000");
+    c_advance(2000201, 0, NULL);
+    CHECK_U64(c_idle(), NEVER);
+    EXPECT("fhss 2000201 local 2000000");
+    c_quit();
+}
+
+static void node_drift_fast(int fd)
+{
+    g_drift_ppb = 100000;
+    node_drift(fd);
+}
+
+static void node_drift_slow(int fd)
+{
+    g_drift_ppb = -100000;
+    node_drift(fd);
+}
+
 int main(void)
 {
     run_test("arm", node_arm, cond_arm);
@@ -1002,6 +1080,8 @@ int main(void)
     run_test("quit while idle", node_quit, cond_quit_idle);
     run_test("quit while frames are expected", node_quit, cond_quit_frames);
     run_test("quit before the welcome", node_quit, cond_quit_welcome);
+    run_test("clock drift +100 ppm", node_drift_fast, cond_drift_fast);
+    run_test("clock drift -100 ppm", node_drift_slow, cond_drift_slow);
     test_logs();
     say("%s: %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);
     return g_failures ? 1 : 0;

@@ -7,10 +7,10 @@
 
 uint32_t ns_port_time_us(void)
 {
-    return (uint32_t)(ns_port_sim_now_us() + NSIM_CLOCK32_OFFSET_US);
+    return (uint32_t)(ns_port_sim_local_us() + NSIM_CLOCK32_OFFSET_US);
 }
 
 uint64_t ns_port_time_wall_s(void)
 {
-    return NSIM_EPOCH_S + ns_port_sim_now_us() / 1000000;
+    return NSIM_EPOCH_S + ns_port_sim_local_us() / 1000000;
 }

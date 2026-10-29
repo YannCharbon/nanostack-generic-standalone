@@ -28,6 +28,7 @@ static struct {
     int fd;                     // conductor, -1 before attach
     int node_id;
     uint64_t seed;
+    int32_t drift_ppb;
     uint64_t now_us;
     volatile bool signalled;
 
@@ -94,6 +95,47 @@ void ns_port_add_poll_hook(void (*hook)(void))
 uint64_t ns_port_sim_now_us(void)
 {
     return sim.now_us;
+}
+
+// local = v + floor(v × ppb / 10^9). The inverse is not exact in integers:
+// sim_deadline_after() takes the first virtual µs at which the node's clock
+// has reached the target, so a timer never fires early on the node's clock.
+uint64_t sim_local_of(uint64_t v)
+{
+    if (!sim.drift_ppb)
+        return v;
+    __int128 d = (__int128)v * sim.drift_ppb;
+    // floor division, also for a negative drift
+    __int128 q = d / 1000000000;
+    if (d < 0 && q * 1000000000 != d)
+        q--;
+    return (uint64_t)((__int128)v + q);
+}
+
+uint64_t sim_deadline_after(uint64_t us)
+{
+    uint64_t target, v;
+
+    if (!sim.drift_ppb)
+        return sim.now_us + us;
+    target = sim_local_of(sim.now_us) + us;
+    // first guess from the rate, then step to the first v with local >= target
+    v = (uint64_t)((__int128)target * 1000000000 / (1000000000 + (__int128)sim.drift_ppb));
+    while (v > sim.now_us && sim_local_of(v - 1) >= target)
+        v--;
+    while (sim_local_of(v) < target)
+        v++;
+    return v > sim.now_us ? v : sim.now_us + 1;
+}
+
+uint64_t ns_port_sim_local_us(void)
+{
+    return sim_local_of(sim.now_us);
+}
+
+int32_t ns_port_sim_drift_ppb(void)
+{
+    return sim.drift_ppb;
 }
 
 uint64_t ns_port_sim_seed(void)
@@ -168,6 +210,11 @@ void ns_port_sim_attach(int fd, int node_id)
              "conductor: protocol version %u, expected %u",
              msg.welcome.version, NSIM_PROTO_VERSION);
     sim.seed = msg.welcome.seed;
+    FATAL_ON(msg.welcome.drift_ppb <= -100000000 || msg.welcome.drift_ppb >= 100000000, 2,
+             "conductor: clock drift %d ppb out of range", msg.welcome.drift_ppb);
+    sim.drift_ppb = msg.welcome.drift_ppb;
+    if (sim.drift_ppb)
+        INFO("ns_port_sim: clock drift %+.3f ppm", sim.drift_ppb / 1000.0);
     g_sim_power = msg.welcome.flags & NSIM_WELCOME_POWER;
     sim_random_seed(sim.seed, node_id);
     atexit(sim_report);

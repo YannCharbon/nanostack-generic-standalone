@@ -72,7 +72,7 @@ static void timer_arm_us(int ns_timer_id, uint64_t us)
         return;
     }
     t->armed = true;
-    t->deadline = ns_port_sim_now_us() + us;
+    t->deadline = sim_deadline_after(us);
 }
 
 int eventOS_callback_timer_start(int ns_timer_id, uint16_t slots)

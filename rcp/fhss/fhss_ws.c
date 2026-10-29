@@ -1303,8 +1303,10 @@ int fhss_ws_set_parent(fhss_structure_t *fhss_structure, const uint8_t eui64[8],
             } else if (drift_per_ms_tmp < -MAX_DRIFT_COMPENSATION_STEP) {
                 drift_per_ms_tmp = -MAX_DRIFT_COMPENSATION_STEP;
             }
-            // Timer drift is unpredictable with linux platform. Do not set drift compensation
-#ifndef __linux__
+            // Timer drift is unpredictable with linux platform. Do not set drift compensation.
+            // The simulation port's clocks are exact, with the drift the
+            // conductor gives each node (EM3 step 5): compensate there.
+#if !defined(__linux__) || defined(NS_PORT_SIM)
             fhss_structure->ws->drift_per_millisecond_ns += drift_per_ms_tmp;
 #endif
             fhss_stats_update(fhss_structure, STATS_FHSS_DRIFT_COMP, NS_TO_US((int64_t)(fhss_structure->ws->drift_per_millisecond_ns * bc_timing_info->broadcast_dwell_interval)));
