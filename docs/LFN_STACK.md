@@ -77,13 +77,29 @@ Limits: one LFN parent per LFN, and only the border router parents LFNs (FFN rou
 
 - LFN broadcast schedule, LTS frames, window widening with drift (stage 4); FFN routers as parents (stage 5).
 - RFC 9685 multicast subscriptions; LCP/FLUS and LND-slot answers (interoperability).
+- LGTK (§8).
 - The 50 ms protocol timer still wakes the LFN 20 times a second (§7).
 
-## 7. Tests
+## 7. Tests and results
 
 | Test | What |
 | --- | --- |
 | Emulator `sim_utils/vtime/test_lfn_join.sh` | Border router + LFN in virtual time with test traffic (`app_wsbrd/test_traffic.c`): join; UDP both ways; `ff02::1` received as MAC-unicast copies; every frame the LFN receives in a window (ACKs to its own frames aside); parent kept; the LFN's average current over a steady-state window, by part (EM2 ledger) |
 | `tests/fhss_lfn/run.sh`, emulator `test_lfn_mac.sh` | The MAC and FHSS mechanics (`LFN_MAC.md` §6) |
 
+Test hook: `ws_test_lfn_parent_silence()` (`net_ws_test.h`) makes the border router ignore its LFN children and send them no LPC, as a parent that is gone (emulator `SILENT_AT`, `SILENT_FOR`).
+
+**Results** (emulator `docs/POWER_MODEL.md` §14; FG25 profile, EU mode 3, +10 dBm, −50 dBm link):
+- 10 seeds with test traffic, 1800 s: all checks pass; operational 37–67 s after start; LFN 74.6–79.5 µA.
+- Idle, 3 seeds, 3600 s: 41.6–42.4 µA, of which about 24 µA come from the 50 ms protocol timer (20 wakes/s), 5.8 µA from listening.
+- Parent loss, 3 seeds: declared 375.2–375.7 s after the last frame from the parent, rejoin without EAPOL in 21–22 s (Silicon Labs' LFN: 375 s, 21.6–21.9 s [M items 45–47]).
+
 Non-regression (FAN 1.0, no LFN): `dag_simple` in virtual time, 10 seeds, logs byte-identical to the previous stack commit (`compare_logs.py --mask-pointers --mask-source-lines`; the second option masks the programs' own `function():line` trace prefixes, which move when their source is edited).
+
+## 8. LGTK: not done yet
+
+The LFN and its parent use the network's GTKs (MAC key indexes 1–4). What remains, with its sources:
+- KDEs (Wi-SUN OUI): NR (type 3, node role), LGTKL (4), LGTK (5, same layout as the GTK KDE) [S: `wisun-br-linux` `common/specs/ws.h`, `kde.c`]; `kde_helper.c` has none of them.
+- 4-way handshake: the LFN adds an NR KDE (role LFN) to message 2; the authenticator answers with LGTK and LGTKL KDEs instead of GTKs in message 3; the same in the group-key handshake [S: `authenticator.c` picks the LGTK group by the supplicant's node role; M items 48–50].
+- Keys: three LGTKs on the border router (generation, LFN version, LGTK hash for the LPC's LGTKHASH-IE; `ws_info->lfngtk` exists), MAC key indexes 5–7 (the emulated MAC's key table has 4 entries: `sl_rf_inproc.c`, `sl_wsrcp.h`); frames to and from LFNs secured with the active LGTK.
+- An LGTK event (installed, activated, expired) increments the LFN version and sends an LPC to every child (`lpc_pending` exists for it); the LFN, on an LGTK hash mismatch, requests the new key `lgtk_max_mismatch_s` later (group-key handshake); the parent must not activate a new LGTK before its LFNs can have fetched it [M item 51].

@@ -219,3 +219,14 @@ int ws_test_procedure_trigger(int8_t interface_id, ws_test_proc_t procedure, voi
     return ws_bootstrap_test_procedure_trigger(cur, procedure);
 }
 
+
+int ws_test_lfn_parent_silence(int8_t interface_id, bool silent)
+{
+    protocol_interface_info_entry_t *cur = protocol_stack_interface_info_get_by_id(interface_id);
+
+    if (!cur || !ws_info(cur) || !cur->ws_info->lfn_parent) {
+        return -1;
+    }
+    cur->ws_info->lfn.test_silent = silent;
+    return 0;
+}

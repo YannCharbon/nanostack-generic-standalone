@@ -256,7 +256,7 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
     if (message_type != WS_FT_LPAS && message_type != WS_FT_LPCS) {
         return false;
     }
-    if (!cur->ws_info->lfn_parent) {
+    if (!cur->ws_info->lfn_parent || cur->ws_info->lfn.test_silent) {
         return true;
     }
     if (message_type == WS_FT_LPAS) {
@@ -324,10 +324,11 @@ void ws_lfn_parent_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t 
     ws_lfn_state_t *st = &cur->ws_info->lfn;
     uint32_t period = (cur->ws_info->lfn_cfg.bc_interval_ms * cur->ws_info->lfn_cfg.bc_sync_period + 999) / 1000;
 
-    if (!cur->ws_info->lfn_parent) {
+    if (!cur->ws_info->lfn_parent || st->test_silent) {
         return;
     }
     if (st->lpc_pending) {
+
         // An LGTK event: an LPC to every LFN child now
         st->lpc_pending = 0;
         ws_lfn_lpc_round(cur);

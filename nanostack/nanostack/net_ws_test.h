@@ -229,5 +229,12 @@ int8_t  ws_test_drop_edfe_data_frames(int8_t interface_id, uint8_t number_of_dro
  */
 int ws_test_neighbour_temporary_lifetime_set(int8_t interface_id, uint32_t temporary_lifetime);
 
+/**
+ * Test hook (GS8 stage 3): a border router parenting LFNs stops answering
+ * them and sends them no LPC while silent is true, as a parent that is gone
+ * (the LFN's parent-loss rule). \return 0 OK, -1 not an LFN parent.
+ */
+int ws_test_lfn_parent_silence(int8_t interface_id, bool silent);
+
 #endif /* DOXYGEN */
 #endif /* NET_THREAD_TEST_H_ */

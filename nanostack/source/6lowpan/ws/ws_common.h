@@ -127,6 +127,8 @@ typedef struct ws_lfn_state_s {
     /* Parent (border router) */
     uint16_t lpc_timer_s;           /**< Next round of LPCs to the LFN children */
     uint8_t lpc_pending;            /**< LPC rounds still to send at the next LFN broadcast slot (LGTK event) */
+    bool test_silent;               /**< Test hook: answer no LFN and send no LPC (ws_test_lfn_parent_silence()) */
+
 } ws_lfn_state_t;
 
 typedef struct ws_info_s {

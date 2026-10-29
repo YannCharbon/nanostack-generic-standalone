@@ -225,6 +225,7 @@ void ws_bootstrap_lfn_parent_heard(protocol_interface_info_entry_t *cur, const u
         return;
     }
     cur->ws_info->lfn.parent_rx_s = cur->ws_info->uptime;
+    tr_debug("LFN: parent heard");
     mac_neighbor_table_entry_t *n = mac_neighbor_table_address_discover(mac_neighbor_info(cur), src64, MAC_ADDR_MODE_64_BIT);
     if (n) {
         n->lifetime = n->link_lifetime;
