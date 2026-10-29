@@ -67,6 +67,8 @@
 #include "6lowpan/ws/ws_bootstrap_ffn.h"
 #include "6lowpan/ws/ws_bootstrap.h"
 #include "6lowpan/ws/ws_bootstrap_lfn.h"
+#include "6lowpan/ws/ws_lfn_parent.h"
+#include "nanostack/mac/fhss_ws_extension.h"
 #include "6lowpan/ws/ws_cfg_settings.h"
 #include "6lowpan/ws/ws_common_defines.h"
 #include "6lowpan/ws/ws_common.h"
@@ -1530,6 +1532,10 @@ static bool ws_neighbor_entry_nud_notify(mac_neighbor_table_entry_t *entry_ptr, 
     if (!entry_ptr->trusted_device || !ws_neighbor || !etx_entry || entry_ptr->link_lifetime <= WS_NEIGHBOUR_TEMPORARY_NEIGH_MAX_LIFETIME) {
         return false;
     }
+    // FAN 1.1 LFN children sleep: no probes, no NUD (GS8 stage 3)
+    if (ws_lfn_parent_neighbor_keep(cur, entry_ptr)) {
+        return false;
+    }
 
     if (lowpan_adaptation_expedite_forward_state_get(cur)) {
         //Do not send any probe or NUD when Expedite forward state is enabled
@@ -1988,7 +1994,22 @@ void ws_bootstrap_fhss_activate(protocol_interface_info_entry_t *cur)
     mac_helper_pib_boolean_set(cur, macRxOnWhenIdle, true);
     cur->lowpan_info &=  ~INTERFACE_NWK_CONF_MAC_RX_OFF_IDLE;
     ws_bootstrap_mac_security_enable(cur);
+#ifdef HAVE_WS_VERSION_1_1
+    if (cur->ws_info->lfn_parent) {
+        // FAN 1.1: frames to LFN children wait for their listen windows
+        fhss_ws_lfn_parent_t lp;
+        ns_fhss_ws_lfn_parent_defaults(&lp);
+        lp.tx_offset_us = cur->ws_info->lfn_cfg.tx_offset_us;
+        lp.tx_lead_us = cur->ws_info->lfn_cfg.tx_lead_us;
+        lp.tx_min_prep_us = cur->ws_info->lfn_cfg.tx_min_prep_us;
+        lp.tx_ttl_intervals = cur->ws_info->lfn_cfg.tx_ttl_intervals;
+        if (ns_fhss_ws_lfn_parent_set(cur->ws_info->fhss_api, &lp)) {
+            tr_error("LFN parenting: FHSS refused the settings");
+        }
+    }
+#endif
     ws_bootstrap_mac_activate(cur, cur->ws_info->cfg->fhss.fhss_uc_fixed_channel, cur->ws_info->network_pan_id, true);
+
     if (cur->ws_info->rx_off_when_idle) {
         // Only for a node that asked for it: an FFN keeps its receiver on.
         // Set after the start, which turns RX on for a PAN coordinator.
@@ -2177,7 +2198,10 @@ static void ws_dhcp_client_global_adress_cb(int8_t interface, uint8_t dhcp_addr[
     tr_debug("DHCPv6 %s status %u with link %s", trace_ipv6(prefix), register_status, trace_ipv6(dhcp_addr));
     if (register_status) {
         protocol_interface_info_entry_t *cur = protocol_stack_interface_info_get_by_id(interface);
-        if (cur) {
+        if (cur && wisun_mode_host(cur)) {
+            // FAN 1.1 LFN: register the address with its parent
+            ws_bootstrap_lfn_address_register(cur);
+        } else if (cur) {
             ws_address_reregister_trig(cur);
         }
     } else {

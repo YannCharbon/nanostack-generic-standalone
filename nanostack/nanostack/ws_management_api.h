@@ -961,4 +961,77 @@ int ws_management_fan_version_get(int8_t interface_id, uint8_t *version);
  */
 int ws_management_rx_on_when_idle_set(int8_t interface_id, bool rx_on);
 
+/**
+ * Wi-SUN FAN 1.1 LFN settings (GS8 stage 3; docs/LFN_STACK.md). One set per
+ * interface: the LFN fields apply to an interface started as an LFN
+ * (arm_nwk_interface_configure_6lowpan_bootstrap_set() with NET_6LOWPAN_HOST),
+ * the parent fields to a border router with LFN parenting on
+ * (ws_management_lfn_parent_set()). Every value is a user setting;
+ * ws_management_lfn_settings_defaults() gives the defaults (WS_LFN_*_DEFAULT,
+ * Silicon Labs' "Test" profile where one exists).
+ */
+typedef struct ws_lfn_settings {
+    /* LFN */
+    uint32_t listen_interval_ms;        /**< Unicast listen interval proposed in the LUS-IE (ms) */
+    uint32_t listen_interval_min_ms;    /**< NR-IE: shortest interval accepted from the parent's LTO-IE (ms) */
+    uint32_t listen_interval_max_ms;    /**< NR-IE: longest interval accepted (ms) */
+    uint32_t eapol_listen_interval_ms;  /**< Listen interval during EAPOL and key updates (ms); 0: unchanged */
+    uint32_t rx_window_us;              /**< Receive window (µs) */
+    uint32_t rx_guard_us;               /**< Window opening before the slot start (µs) */
+    uint32_t close_retry_us;            /**< Retry period of a deferred window close (µs) */
+    uint32_t uplink_guard_us;           /**< Uplink: time kept clear of the parent's broadcast dwell after the airtime (µs) */
+    uint16_t lpas_interval_s;           /**< Time between LPAS sweeps while no LPA is heard (s) */
+    uint8_t lnd_slot_time_ms;           /**< LND-IE discovery slot time (ms) */
+    uint8_t lnd_slots;                  /**< LND-IE number of discovery slots */
+    uint16_t lpcs_retry_intervals;      /**< LPCS repeated after this many listen intervals without an LPC */
+    uint8_t maintain_parent_time;       /**< Parent lost after 1.5 x this many sync periods without a frame from it */
+    uint16_t lgtk_max_mismatch_s;       /**< Key request this long after an LGTK hash mismatch is seen (s) */
+    uint16_t registration_lifetime_min; /**< ARO registration lifetime of the LFN's addresses (minutes) */
+    /* Parent (border router) */
+    uint32_t bc_interval_ms;            /**< LFN broadcast interval (LBS-IE); the sync period is a multiple of it (ms) */
+    uint8_t bc_sync_period;             /**< LFN broadcast sync period, in LFN broadcast intervals */
+    bool lto;                           /**< Adjust the LFN's interval and offset with an LTO-IE */
+    uint32_t tx_offset_us;              /**< TX start after the LFN's slot start (µs) */
+    uint32_t tx_lead_us;                /**< Frame released this long before its TX time (µs) */
+    uint32_t tx_min_prep_us;            /**< Shortest release-to-TX time (µs) */
+    uint16_t tx_ttl_intervals;          /**< Held frame dropped after this many listen intervals */
+} ws_lfn_settings_t;
+
+#define WS_LFN_LISTEN_INTERVAL_MS_DEFAULT        6000
+#define WS_LFN_LISTEN_INTERVAL_MIN_MS_DEFAULT    1000
+#define WS_LFN_LISTEN_INTERVAL_MAX_MS_DEFAULT    300000
+#define WS_LFN_EAPOL_LISTEN_INTERVAL_MS_DEFAULT  1250
+#define WS_LFN_LPAS_INTERVAL_S_DEFAULT           10
+#define WS_LFN_LND_SLOT_TIME_MS_DEFAULT          60
+#define WS_LFN_LND_SLOTS_DEFAULT                 40
+#define WS_LFN_LPCS_RETRY_INTERVALS_DEFAULT      2
+#define WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT      5
+#define WS_LFN_LGTK_MAX_MISMATCH_S_DEFAULT       120
+#define WS_LFN_REGISTRATION_LIFETIME_MIN_DEFAULT 2160
+#define WS_LFN_BC_INTERVAL_MS_DEFAULT            10000
+#define WS_LFN_BC_SYNC_PERIOD_DEFAULT            5
+
+/** Fill *settings with the defaults. */
+void ws_management_lfn_settings_defaults(ws_lfn_settings_t *settings);
+
+/**
+ * Set the LFN settings of an interface. Call it before arm_nwk_interface_up().
+ * eturn 0 OK, -1 unknown interface, -2 invalid value.
+ */
+int ws_management_lfn_settings_set(int8_t interface_id, const ws_lfn_settings_t *settings);
+
+/**
+ * Border router: parent LFNs (FAN 1.1; needs ws_management_fan_version_set()
+ * to FAN 1.1). Off by default. Call it before arm_nwk_interface_up().
+ * eturn 0 OK, -1 unknown interface, -2 not FAN 1.1 or not a border router build.
+ */
+int ws_management_lfn_parent_set(int8_t interface_id, bool enable);
+
+/**
+ * Border router: replace the active LGTK by a new one (an LGTK event: the LFN
+ * version goes up by one and every LFN child gets an LPC). For tests and key
+ * management. eturn 0 OK, -1 unknown interface or no LFN parenting.
+ */
+int ws_management_lfn_lgtk_rotate(int8_t interface_id);
+
 #endif /* WS_MANAGEMENT_API_H_ */

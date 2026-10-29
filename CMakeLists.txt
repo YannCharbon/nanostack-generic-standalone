@@ -201,6 +201,7 @@ set(NANOSTACK_SOURCES
     nanostack/source/6lowpan/ws/ws_bootstrap.c
     nanostack/source/6lowpan/ws/ws_bootstrap_ffn.c
     nanostack/source/6lowpan/ws/ws_bootstrap_lfn.c
+    nanostack/source/6lowpan/ws/ws_lfn_parent.c
     nanostack/source/6lowpan/ws/ws_cfg_settings.c
     nanostack/source/6lowpan/ws/ws_common.c
     nanostack/source/6lowpan/ws/ws_eapol_auth_relay.c

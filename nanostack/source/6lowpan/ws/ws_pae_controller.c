@@ -1869,3 +1869,17 @@ sec_prot_gtk_keys_t *ws_pae_controller_get_gtks(int8_t interface_id)
 }
 
 
+
+int8_t ws_pae_controller_first_installed_key_index_get(protocol_interface_info_entry_t *interface_ptr)
+{
+    pae_controller_t *controller = ws_pae_controller_get(interface_ptr);
+    if (!controller) {
+        return -1;
+    }
+    for (uint8_t i = 0; i < GTK_NUM; i++) {
+        if (controller->nw_key[i].set && controller->nw_key[i].installed) {
+            return i;
+        }
+    }
+    return -1;
+}

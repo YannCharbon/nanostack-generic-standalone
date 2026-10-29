@@ -28,6 +28,9 @@
 /** Longest listen interval the 32-bit clock allows, in µs (2^31 - 1). */
 #define FHSS_LFN_INTERVAL_MAX_US 0x7fffffffu
 
+/** LFN: TX queue poll period while frames wait (restart after a failure). */
+#define FHSS_LFN_QUEUE_POLL_US 20000u
+
 typedef struct fhss_lfn_sched {
     uint32_t interval_us;   /**< Listen interval; 0: no schedule */
     uint32_t anchor_us;     /**< Start time of slot anchor_slot */

@@ -33,6 +33,8 @@
 #include "6lowpan/iphc_decode/cipv6.h"
 #include "6lowpan/iphc_decode/iphc_compress.h"
 #include "6lowpan/iphc_decode/iphc_decompress.h"
+#include "6lowpan/ws/ws_common.h"
+#include "6lowpan/ws/ws_lfn_parent.h"
 
 #define TRACE_GROUP  "iphc"
 
@@ -43,8 +45,15 @@
  * Output: Buffer destination+source = link-layer addresses
  *         Sent to mesh, LowPAN fragmentation or MAC layers
  */
+static uint_fast16_t max_iphc_size_get(protocol_interface_info_entry_t *cur, buffer_t *buf)
+{
+    uint_fast16_t overhead = mac_helper_frame_overhead(cur, buf);
+    return mac_helper_max_payload_size(cur, overhead) - 4;
+}
+
 buffer_t *lowpan_down(buffer_t *buf)
 {
+
     protocol_interface_info_entry_t *cur = buf->interface;
 
     buf->options.type = 0;
@@ -117,6 +126,11 @@ buffer_t *lowpan_down(buffer_t *buf)
              * IEEE 802.15.4 only supports broadcast in the real MAC header.
              */
             common_write_16_bit(0xFFFF, buf->dst_sa.address + 2);
+            // FAN 1.1: LFN children get a MAC-unicast copy in their listen
+            // window (they do not follow the FFN broadcast schedule)
+            if (ws_info(cur)) {
+                ws_lfn_parent_multicast_copy(cur, buf, stable_only, max_iphc_size_get(cur, buf));
+            }
         }
     }
 

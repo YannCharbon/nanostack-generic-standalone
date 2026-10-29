@@ -257,7 +257,16 @@ extern int ns_fhss_ws_lfn_listen_set(const fhss_api_t *fhss_api, const fhss_ws_l
 extern int ns_fhss_ws_lfn_parent_set(const fhss_api_t *fhss_api, const fhss_ws_lfn_parent_t *cfg);
 
 /**
- * @brief LFN role: apply an LTO-IE (LFN Timing Offset) received at
+ * @brief LFN role: start the configured listen schedule now, as MLME-START
+ * would with a PAN ID: an LFN listens for its parent's answers before it
+ * knows its PAN (GS8 stage 3). The FHSS is then synchronized.
+ * @return 0 OK, -1 no FHSS or no listen schedule configured.
+ */
+extern int ns_fhss_ws_lfn_listen_start(const fhss_api_t *fhss_api);
+
+/**
+ * @brief LFN role: apply an LTO-IE
+ (LFN Timing Offset) received at
  * rx_timestamp_us. The slot that contains rx_timestamp_us and the slots after
  * it start offset_ms later, and the listen interval becomes interval_ms (0:
  * unchanged). An open window stays open; the next one follows the new

@@ -230,6 +230,7 @@ typedef struct ws_lto_ie {
  */
 typedef struct ws_lbs_ie {
     uint8_t channel_plan_tag;
+    uint8_t broadcast_sync_period;      /**< LFN broadcast intervals between sync frames (Wireshark's layout) */
     uint16_t broadcast_secheduler_id;
     uint_fast24_t broadcast_interval;
 } ws_lbs_ie_t;

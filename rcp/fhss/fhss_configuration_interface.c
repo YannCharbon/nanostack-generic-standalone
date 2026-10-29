@@ -196,3 +196,15 @@ int ns_fhss_ws_lfn_stats_get(const fhss_api_t *fhss_api, fhss_ws_lfn_stats_t *st
     *stats = fhss_structure->ws->lfn.stats;
     return 0;
 }
+
+int ns_fhss_ws_lfn_listen_start(const fhss_api_t *fhss_api)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);
+    if (!fhss_structure || !fhss_structure->ws || !fhss_structure->ws->lfn.listen_enabled) {
+        return -1;
+    }
+    if (fhss_structure->fhss_state != FHSS_SYNCHRONIZED) {
+        fhss_api->synch_state_set(fhss_api, FHSS_SYNCHRONIZED, 0xffff);
+    }
+    return 0;
+}

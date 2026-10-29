@@ -28,6 +28,7 @@
 #include "6lowpan/ws/ws_common_defines.h"
 #include "6lowpan/ws/ws_neighbor_class.h"
 #include "6lowpan/ws/ws_regulation.h"
+#include "nanostack/ws_management_api.h"
 
 extern uint16_t test_max_child_count_override;
 
@@ -105,6 +106,29 @@ typedef struct {
 
 typedef NS_LIST_HEAD(ws_nud_table_entry_t, link) ws_nud_table_list_t;
 
+/** FAN 1.1 LFN run-time state (ws_bootstrap_lfn.c, ws_lfn_parent.c; GS8 stage 3) */
+typedef struct ws_lfn_state_s {
+    /* LFN */
+    uint8_t parent_eui64[8];
+    bool parent_known: 1;           /**< An LPA was accepted */
+    bool keys_valid: 1;             /**< Authenticated once (a rejoin skips EAPOL) */
+    bool lpc_received: 1;
+    bool addr_registered: 1;
+    bool eapol_interval: 1;         /**< The shorter EAPOL listen interval is in use */
+    uint32_t listen_interval_ms;    /**< Current listen interval (LUS-IE) */
+    uint32_t parent_rx_s;           /**< Uptime of the last frame from the parent */
+    uint32_t sync_period_s;         /**< Parent's LFN sync period (LBS-IE); 0: unknown */
+    uint16_t lpas_timer_s;          /**< Next LPAS sweep */
+    uint16_t lpcs_timer_s;          /**< LPCS retry */
+    uint16_t lgtk_mismatch_timer_s; /**< Key request after an LGTK hash mismatch */
+    uint16_t lfn_version;           /**< Last LFN version heard (LPC) */
+    uint32_t reregister_s;          /**< Address re-registration */
+
+    /* Parent (border router) */
+    uint16_t lpc_timer_s;           /**< Next round of LPCs to the LFN children */
+    uint8_t lpc_pending;            /**< LPC rounds still to send at the next LFN broadcast slot (LGTK event) */
+} ws_lfn_state_t;
+
 typedef struct ws_info_s {
     trickle_t trickle_pan_config_solicit;
     trickle_t trickle_pan_config;
@@ -153,6 +177,9 @@ typedef struct ws_info_s {
     struct fhss_api *fhss_api;
     ws_regulation_t regulation_ctxt;  /**< Regional regulation context. */
     bool rx_off_when_idle;            /**< MAC radio off when idle (ws_management_rx_on_when_idle_set()) */
+    bool lfn_parent;                  /**< Border router: LFN parenting on (ws_management_lfn_parent_set()) */
+    ws_lfn_settings_t lfn_cfg;        /**< LFN settings (ws_management_lfn_settings_set()) */
+    ws_lfn_state_t lfn;               /**< LFN / LFN parent run-time state */
 } ws_info_t;
 
 

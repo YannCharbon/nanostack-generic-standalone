@@ -23,10 +23,13 @@
 #include <stdlib.h>
 #include "nanostack/mac/fhss_config.h"
 #include "nanostack/ws_management_api.h"
+#include "nanostack/mac/fhss_ws_extension.h"
 
 #include "nwk_interface/protocol.h"
 #include "6lowpan/ws/ws_common.h"
 #include "6lowpan/ws/ws_bootstrap.h"
+#include "nanostack-event-loop/eventOS_event.h"
+#include "6lowpan/ws/ws_bootstrap_6lbr.h"
 #include "6lowpan/ws/ws_cfg_settings.h"
 #include "6lowpan/ws/ws_common_defines.h"
 #include "6lowpan/mac/mac_helper.h"
@@ -1059,4 +1062,68 @@ int ws_management_rx_on_when_idle_set(int8_t interface_id, bool rx_on)
         }
     }
     return 0;
+}
+
+void ws_management_lfn_settings_defaults(ws_lfn_settings_t *s)
+{
+    memset(s, 0, sizeof(*s));
+    s->listen_interval_ms = WS_LFN_LISTEN_INTERVAL_MS_DEFAULT;
+    s->listen_interval_min_ms = WS_LFN_LISTEN_INTERVAL_MIN_MS_DEFAULT;
+    s->listen_interval_max_ms = WS_LFN_LISTEN_INTERVAL_MAX_MS_DEFAULT;
+    s->eapol_listen_interval_ms = WS_LFN_EAPOL_LISTEN_INTERVAL_MS_DEFAULT;
+    s->rx_window_us = FHSS_LFN_RX_WINDOW_US_DEFAULT;
+    s->rx_guard_us = FHSS_LFN_RX_GUARD_US_DEFAULT;
+    s->close_retry_us = FHSS_LFN_CLOSE_RETRY_US_DEFAULT;
+    s->uplink_guard_us = FHSS_LFN_UPLINK_GUARD_US_DEFAULT;
+    s->lpas_interval_s = WS_LFN_LPAS_INTERVAL_S_DEFAULT;
+    s->lnd_slot_time_ms = WS_LFN_LND_SLOT_TIME_MS_DEFAULT;
+    s->lnd_slots = WS_LFN_LND_SLOTS_DEFAULT;
+    s->lpcs_retry_intervals = WS_LFN_LPCS_RETRY_INTERVALS_DEFAULT;
+    s->maintain_parent_time = WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT;
+    s->lgtk_max_mismatch_s = WS_LFN_LGTK_MAX_MISMATCH_S_DEFAULT;
+    s->registration_lifetime_min = WS_LFN_REGISTRATION_LIFETIME_MIN_DEFAULT;
+    s->bc_interval_ms = WS_LFN_BC_INTERVAL_MS_DEFAULT;
+    s->bc_sync_period = WS_LFN_BC_SYNC_PERIOD_DEFAULT;
+    s->lto = true;
+    s->tx_offset_us = FHSS_LFN_TX_OFFSET_US_DEFAULT;
+    s->tx_lead_us = FHSS_LFN_TX_LEAD_US_DEFAULT;
+    s->tx_min_prep_us = FHSS_LFN_TX_MIN_PREP_US_DEFAULT;
+    s->tx_ttl_intervals = FHSS_LFN_TX_TTL_INTERVALS_DEFAULT;
+}
+
+int ws_management_lfn_settings_set(int8_t interface_id, const ws_lfn_settings_t *s)
+{
+    protocol_interface_info_entry_t *cur = protocol_stack_interface_info_get_by_id(interface_id);
+
+    if (!cur || !ws_info(cur) || !s) {
+        return -1;
+    }
+    if (!s->listen_interval_ms || s->listen_interval_ms > 0xffffff || s->listen_interval_min_ms > s->listen_interval_ms ||
+            s->listen_interval_max_ms < s->listen_interval_ms || s->listen_interval_max_ms > 0xffffff ||
+            !s->rx_window_us || s->rx_guard_us >= s->rx_window_us || !s->close_retry_us ||
+            !s->lpas_interval_s || !s->lnd_slot_time_ms || !s->lnd_slots || !s->lpcs_retry_intervals ||
+            !s->maintain_parent_time || !s->registration_lifetime_min || !s->bc_interval_ms || !s->bc_sync_period ||
+            !s->tx_ttl_intervals || s->tx_min_prep_us > s->tx_lead_us || s->tx_lead_us > 60000) {
+        return -2;
+    }
+    cur->ws_info->lfn_cfg = *s;
+    return 0;
+}
+
+int ws_management_lfn_parent_set(int8_t interface_id, bool enable)
+{
+    protocol_interface_info_entry_t *cur = protocol_stack_interface_info_get_by_id(interface_id);
+
+    if (!cur || !ws_info(cur)) {
+        return -1;
+    }
+#if defined(HAVE_WS_VERSION_1_1) && defined(HAVE_WS_BORDER_ROUTER)
+    if (enable && (!ws_version_1_1(cur) || !wisun_mode_border_router(cur))) {
+        return -2;
+    }
+    cur->ws_info->lfn_parent = enable;
+    return 0;
+#else
+    return enable ? -2 : 0;
+#endif
 }

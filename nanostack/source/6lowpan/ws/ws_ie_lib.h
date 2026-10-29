@@ -40,7 +40,7 @@ typedef struct ws_wp_network_name {
 #define ws_wh_lus_length() 4
 #define ws_wh_flus_length() 2
 #define ws_wh_lbt_length() 5
-#define ws_wh_lbs_length() 6
+#define ws_wh_lbs_length() 7
 #define ws_wh_lnd_length() 8
 #define ws_wh_lto_length() 6
 #define ws_wh_panid_length() 2

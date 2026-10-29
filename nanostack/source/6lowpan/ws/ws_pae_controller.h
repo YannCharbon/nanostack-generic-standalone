@@ -523,6 +523,12 @@ int8_t ws_pae_controller_gtk_hash_update(protocol_interface_info_entry_t *interf
 int8_t ws_pae_controller_nw_key_index_update(protocol_interface_info_entry_t *interface_ptr, uint8_t index);
 
 /**
+ * ws_pae_controller_first_installed_key_index_get the lowest index of a group
+ * key installed on the MAC, or -1 (FAN 1.1 LFN, before an LPC gives the active one)
+ */
+int8_t ws_pae_controller_first_installed_key_index_get(protocol_interface_info_entry_t *interface_ptr);
+
+/**
  * ws_pae_controller_nw_keys_remove remove network keys
  *
  * \param interface_ptr interface

@@ -483,11 +483,18 @@ static void fhss_event_timer_cb(int timer_id, uint16_t slots)
     if (fhss_structure->ws->lfn.listen_running) {
         // LFN: no periodic poll (it would wake the node every 10 ms); a
         // frame queued behind another is sent from the MAC's TX confirm.
+        // This timer polls after a failed frame (it may wait for a restart)
+        // or the parent's broadcast dwell, and again while the queue holds
+        // frames.
         if (fhss_structure->callbacks.read_tx_queue_size(fhss_structure->fhss_api, false)) {
             fhss_structure->callbacks.tx_poll(fhss_structure->fhss_api);
+            if (fhss_structure->callbacks.read_tx_queue_size(fhss_structure->fhss_api, false)) {
+                eventOS_callback_timer_start(fhss_structure->fhss_event_timer, FHSS_LFN_QUEUE_POLL_US / 50);
+            }
         }
         return;
     }
+
     if (fhss_structure->ws->expedited_forwarding_enabled_us) {
         if ((fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api) - fhss_structure->ws->expedited_forwarding_enabled_us) > S_TO_US(EXPEDITED_FORWARDING_PERIOD)) {
             fhss_structure->ws->expedited_forwarding_enabled_us = 0;
@@ -1022,6 +1029,11 @@ static void fhss_ws_data_tx_done_callback(const fhss_api_t *api, bool waiting_ac
     fhss_structure_t *fhss_structure = fhss_get_object_with_api(api);
     if (!fhss_structure) {
         return;
+    }
+    if (fhss_structure->ws->lfn.listen_running && !waiting_ack && !tx_completed) {
+        // LFN: a failed frame may wait in the MAC queue for its restart; with
+        // no periodic poll, poll until the queue is empty (fhss_event_timer_cb)
+        eventOS_callback_timer_start(fhss_structure->fhss_event_timer, FHSS_LFN_QUEUE_POLL_US / 50);
     }
     if (fhss_structure->fhss_state == FHSS_SYNCHRONIZED) {
         if (waiting_ack == false) {

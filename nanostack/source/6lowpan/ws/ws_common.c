@@ -616,6 +616,7 @@ int8_t ws_common_allocate_and_init(protocol_interface_info_entry_t *cur)
     cur->ws_info->pan_information.pan_version_set = false;
     cur->ws_info->pan_information.version = WS_FAN_VERSION_1_0;
     cur->ws_info->pending_key_index_info.state = NO_PENDING_PROCESS;
+    ws_management_lfn_settings_defaults(&cur->ws_info->lfn_cfg);
 
     cur->ws_info->hopping_schedule.regulatory_domain = REG_DOMAIN_EU;
     cur->ws_info->hopping_schedule.operating_mode = OPERATING_MODE_3;

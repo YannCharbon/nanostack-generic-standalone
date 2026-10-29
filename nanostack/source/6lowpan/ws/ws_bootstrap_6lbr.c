@@ -65,6 +65,7 @@
 #include "6lowpan/ws/ws_common_defines.h"
 #include "6lowpan/ws/ws_config.h"
 #include "6lowpan/ws/ws_common.h"
+#include "6lowpan/ws/ws_lfn_parent.h"
 #include "6lowpan/ws/ws_bootstrap.h"
 #include "6lowpan/ws/ws_bbr_api_internal.h"
 #include "6lowpan/ws/ws_common_defines.h"
@@ -191,6 +192,10 @@ void ws_bootstrap_6lbr_asynch_ind(struct protocol_interface_info_entry *cur, con
         return;
     }
     ws_stats_update(cur, STATS_WS_ASYNCH_RX, 1);
+    // FAN 1.1 LFN management frames (GS8 stage 3)
+    if (ws_lfn_parent_asynch_ind(cur, data, ie_ext, message_type)) {
+        return;
+    }
     //Validate network name
     switch (message_type) {
         case WS_FT_PAN_ADVERT:
@@ -467,9 +472,11 @@ void ws_bootstrap_6lbr_state_machine(protocol_interface_info_entry_t *cur)
 
 void ws_bootstrap_6lbr_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seconds)
 {
-    (void)cur;
-    (void)seconds;
+    if (cur->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_BORDER_ROUTER) {
+        ws_lfn_parent_seconds_timer(cur, seconds);
+    }
 }
+
 
 
 #endif

@@ -37,6 +37,10 @@
 #include "6lowpan/ws/ws_common_defines.h"
 #include "6lowpan/ws/ws_common.h"
 #include "6lowpan/ws/ws_bootstrap.h"
+#include "nanostack-event-loop/eventOS_event.h"
+#include "6lowpan/ws/ws_bootstrap_6lbr.h"
+#include "6lowpan/ws/ws_bootstrap_lfn.h"
+#include "6lowpan/ws/ws_lfn_parent.h"
 #include "6lowpan/ws/ws_ie_lib.h"
 #include "6lowpan/ws/ws_llc.h"
 #include "6lowpan/ws/ws_neighbor_class.h"
@@ -79,12 +83,13 @@ typedef struct {
     uint8_t                 *network_name;          /**< Network name */
     uint8_t                 *vendor_header_data;    /**< Vendor specific header data */
     uint8_t                 *vendor_payload;        /**< Vendor specific payload data */
+    bool                    lfn_role;               /**< FAN 1.1 LFN: frames carry LUTT/LUS instead of UTT/BT */
 } llc_ie_params_t;
 
 typedef struct {
     uint8_t dst_address[8];             /**< Destination address */
     uint16_t pan_id;                    /**< Destination Pan-Id */
-    unsigned        messsage_type: 3;   /**< Frame type to UTT */
+    unsigned        messsage_type: 4;   /**< Frame type to UTT */
     unsigned        mpx_id: 5;          /**< MPX sequence */
     bool            ack_requested: 1;   /**< ACK requested */
     bool            eapol_temporary: 1; /**< EAPOL TX entry index used */
@@ -92,6 +97,8 @@ typedef struct {
     unsigned        src_address_type: 2; /**<  Source address type */
     uint8_t         msg_handle;         /**< LLC genetaed unique MAC handle */
     uint8_t         mpx_user_handle;    /**< This MPX user defined handle */
+    bool            lto_sent;           /**< FAN 1.1: an LTO-IE to an LFN, applied to its schedule on the ACK */
+    ws_lto_ie_t     lto;
     ns_ie_iovec_t   ie_vector_list[3];  /**< IE vectors: 1 for Header's, 1 for Payload and for MPX payload */
     mcps_data_req_ie_list_t ie_ext;
     mac_data_priority_t priority;
@@ -160,6 +167,9 @@ typedef struct {
 } llc_data_base_t;
 
 static NS_LIST_DEFINE(llc_data_base_list, llc_data_base_t, link);
+
+/* The frame being received carries a LUTT-IE instead of a UTT-IE (FAN 1.1 LFN) */
+static bool llc_rx_lutt;
 
 static uint16_t ws_wp_nested_message_length(wp_nested_ie_sub_list_t requested_list, llc_data_base_t *llc_base);
 static uint16_t ws_wh_headers_length(wh_ie_sub_list_t requested_list, llc_ie_params_t *params);
@@ -377,8 +387,99 @@ static uint16_t ws_wh_headers_length(wh_ie_sub_list_t requested_list, llc_ie_par
     if (requested_list.ea_ie) {
         length += WH_IE_ELEMENT_HEADER_LENGTH + 8;
     }
+    if (requested_list.lutt_ie) {
+        length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_lutt_length();
+    }
+    if (requested_list.lus_ie) {
+        length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_lus_length();
+    }
+    if (requested_list.nr_ie) {
+        length += WH_IE_ELEMENT_HEADER_LENGTH + (params->lfn_role ? 9 : 3);
+    }
+    if (requested_list.lnd_ie) {
+        length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_lnd_length();
+    }
+    if (requested_list.lto_ie) {
+        length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_lto_length();
+    }
+    if (requested_list.panid_ie) {
+        length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_panid_length();
+    }
+    if (requested_list.lbs_ie) {
+        length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_lbs_length();
+    }
 
     return length;
+}
+
+/* FAN 1.1 LFN header IEs (GS8 stage 3), in the order LUTT, NR, LUS, LND,
+ * LTO, PANID, LBS. Values from the interface's LFN settings and state. */
+static uint8_t *ws_llc_lfn_wh_write(uint8_t *ptr, llc_data_base_t *base, wh_ie_sub_list_t list, uint8_t message_type, const ws_lto_ie_t *lto)
+{
+    protocol_interface_info_entry_t *cur = base->interface_ptr;
+    ws_info_t *ws = cur->ws_info;
+
+    if (list.lutt_ie) {
+        ptr = ws_wh_lutt_write(ptr, message_type);
+    }
+    if (list.nr_ie) {
+        ws_nr_ie_t nr = { 0 };
+        nr.node_role = base->ie_params.lfn_role ? WS_NR_ROLE_LFN : (wisun_mode_border_router(cur) ? WS_NR_ROLE_BR : WS_NR_ROLE_ROUTER);
+        nr.clock_drift = ws->hopping_schedule.clock_drift;
+        nr.timing_accuracy = ws->hopping_schedule.timing_accuracy;
+        nr.listen_interval_min = ws->lfn_cfg.listen_interval_min_ms;
+        nr.listen_interval_max = ws->lfn_cfg.listen_interval_max_ms;
+        ptr = ws_wh_nr_write(ptr, &nr);
+    }
+    if (list.lus_ie) {
+        ws_lus_ie_t lus = { .channel_plan_tag = 0, .listen_interval = ws->lfn.listen_interval_ms };
+        ptr = ws_wh_lus_write(ptr, &lus);
+    }
+    if (list.lnd_ie) {
+        // Our parents answer in the LFN's next listen window, not in an LND
+        // slot (docs/LFN_STACK.md): the response delay is 0
+        ws_lnd_ie_t lnd = { 0 };
+        lnd.discovery_slot_time = ws->lfn_cfg.lnd_slot_time_ms;
+        lnd.discovery_slots = ws->lfn_cfg.lnd_slots;
+        ptr = ws_wh_lnd_write(ptr, &lnd);
+    }
+    if (list.lto_ie && lto) {
+        ptr = ws_wh_lto_write(ptr, (ws_lto_ie_t *)lto);
+    }
+    if (list.panid_ie) {
+        ptr = ws_wh_panid_write(ptr, ws->network_pan_id);
+    }
+    if (list.lbs_ie) {
+        ws_lbs_ie_t lbs = { 0 };
+        lbs.broadcast_interval = ws->lfn_cfg.bc_interval_ms;
+        lbs.broadcast_secheduler_id = ws->hopping_schedule.fhss_bsi;
+        lbs.broadcast_sync_period = ws->lfn_cfg.bc_sync_period;
+        ptr = ws_wh_lbs_write(ptr, &lbs);
+    }
+    return ptr;
+}
+
+bool ws_llc_lfn_timing_update(struct protocol_interface_info_entry *interface, struct ws_neighbor_class_entry *ws_neighbor, const struct mcps_data_ie_list *ie_ext, uint32_t rx_timestamp)
+{
+    ws_lutt_ie_t lutt;
+    ws_lus_ie_t lus;
+    lfn_unicast_timing_info_t *lt;
+
+    (void)interface;
+    if (!ws_neighbor || !ws_wh_lutt_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lutt)) {
+        return false;
+    }
+    lt = &ws_neighbor->fhss_data.lfn_uc_timing_info;
+    if (ws_wh_lus_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lus) && lus.listen_interval) {
+        lt->listen_interval_ms = lus.listen_interval;
+    }
+    if (!lt->listen_interval_ms || lutt.interval_offset >= lt->listen_interval_ms) {
+        return true;
+    }
+    lt->slot_number = lutt.slot_number;
+    lt->interval_offset_ms = lutt.interval_offset;
+    lt->lutt_rx_timestamp = rx_timestamp;
+    return true;
 }
 
 static uint16_t ws_wp_nested_message_length(wp_nested_ie_sub_list_t requested_list, llc_data_base_t *llc_base)
@@ -567,6 +668,14 @@ static void ws_llc_mac_confirm_cb(const mac_api_t *api, const mcps_data_conf_t *
                 break;
         }
 
+    }
+    if (messsage_type >= WS_FT_LPA && messsage_type <= WS_FT_LPCS) {
+        tr_debug("LFN frame %u to %s: status %u", messsage_type, trace_array(message->dst_address, 8), data->status);
+    }
+    // FAN 1.1: an LTO-IE the LFN acknowledged moves its schedule
+    if (message->lto_sent && data->status == MLME_SUCCESS) {
+        ns_fhss_ws_lfn_neighbor_lto(interface->ws_info->fhss_api, message->dst_address, message->lto.offset,
+                                    message->lto.adjusted_listening_interval, data->timestamp);
     }
     //Free message
     llc_message_free(message, base);
@@ -764,8 +873,13 @@ static void ws_llc_data_indication_cb(const mac_api_t *api, const mcps_data_ind_
         return;
     }
 
-    ws_neighbor_class_neighbor_unicast_time_info_update(neighbor_info.ws_neighbor, &ws_utt, data->timestamp, (uint8_t *) data->SrcAddr);
+    if (llc_rx_lutt) {
+        ws_llc_lfn_timing_update(interface, neighbor_info.ws_neighbor, ie_ext, data->timestamp);
+    } else {
+        ws_neighbor_class_neighbor_unicast_time_info_update(neighbor_info.ws_neighbor, &ws_utt, data->timestamp, (uint8_t *) data->SrcAddr);
+    }
     if (us_ie_inline) {
+
         ws_neighbor_class_neighbor_unicast_schedule_set(interface, neighbor_info.ws_neighbor, &us_ie, &interface->ws_info->hopping_schedule, data->SrcAddr);
     }
     //Update BS if it is part of message
@@ -874,7 +988,11 @@ static void ws_llc_eapol_indication_cb(const mac_api_t *api, const mcps_data_ind
         temp_entry->signal_dbm = data->signal_dbm;
     }
     uint8_t auth_eui64[8];
-    ws_neighbor_class_neighbor_unicast_time_info_update(neighbor_info.ws_neighbor, &ws_utt, data->timestamp, (uint8_t *) data->SrcAddr);
+    if (llc_rx_lutt) {
+        ws_llc_lfn_timing_update(interface, neighbor_info.ws_neighbor, ie_ext, data->timestamp);
+    } else {
+        ws_neighbor_class_neighbor_unicast_time_info_update(neighbor_info.ws_neighbor, &ws_utt, data->timestamp, (uint8_t *) data->SrcAddr);
+    }
     if (us_ie_inline) {
         ws_neighbor_class_neighbor_unicast_schedule_set(interface, neighbor_info.ws_neighbor, &us_ie, &interface->ws_info->hopping_schedule, data->SrcAddr);
     }
@@ -944,27 +1062,40 @@ static void ws_llc_mac_indication_cb(const mac_api_t *api, const mcps_data_ind_t
 {
 
 
+    // FAN 1.1: the frame keeps an LFN's parent, or an LFN child, alive
+    if (data->SrcAddrMode == MAC_ADDR_MODE_64_BIT && data->Key.SecurityLevel) {
+        llc_data_base_t *b = ws_llc_discover_by_mac(api);
+        if (b && b->interface_ptr->ws_info && ws_version_1_1(b->interface_ptr)) {
+            ws_bootstrap_lfn_parent_heard(b->interface_ptr, data->SrcAddr);
+            ws_lfn_parent_frame_rx(b->interface_ptr, data->SrcAddr);
+        }
+    }
     //Discover Header WH_IE_UTT_TYPE
     ws_utt_ie_t ws_utt;
+
     if (!ws_wh_utt_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &ws_utt)) {
-        // NO UTT header
-        return;
+        // FAN 1.1: a frame from an LFN carries a LUTT-IE instead
+        ws_lutt_ie_t lutt;
+        llc_data_base_t *base = ws_llc_discover_by_mac(api);
+        if (!base || !ws_version_1_1(base->interface_ptr) ||
+                !ws_wh_lutt_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lutt)) {
+            // NO UTT header
+            return;
+        }
+        ws_utt.message_type = lutt.message_type;
+        ws_utt.ufsi = 0;
+        llc_rx_lutt = true;
     }
 
-    if (ws_utt.message_type < WS_FT_DATA) {
+    if (ws_utt.message_type < WS_FT_DATA ||
+            (ws_utt.message_type >= WS_FT_LPA && ws_utt.message_type <= WS_FT_LPCS)) {
         ws_llc_asynch_indication(api, data, ie_ext, ws_utt);
-        return;
-    }
-
-    if (ws_utt.message_type == WS_FT_DATA) {
+    } else if (ws_utt.message_type == WS_FT_DATA) {
         ws_llc_data_indication_cb(api, data, ie_ext, ws_utt);
-        return;
-    }
-
-    if (ws_utt.message_type == WS_FT_EAPOL) {
+    } else if (ws_utt.message_type == WS_FT_EAPOL) {
         ws_llc_eapol_indication_cb(api, data, ie_ext, ws_utt);
-        return;
     }
+    llc_rx_lutt = false;
 }
 
 static uint16_t ws_mpx_header_size_get(llc_data_base_t *base, uint16_t user_id)
@@ -1066,6 +1197,13 @@ static void ws_llc_lowpan_mpx_data_request(llc_data_base_t *base, mpx_user_t *us
     ie_header_mask.utt_ie = true;
 
     ie_header_mask.bt_ie = true;
+    if (base->ie_params.lfn_role) {
+        // FAN 1.1 LFN: its unicast timing (LUTT, LUS), no broadcast schedule
+        ie_header_mask.utt_ie = false;
+        ie_header_mask.bt_ie = false;
+        ie_header_mask.lutt_ie = true;
+        ie_header_mask.lus_ie = true;
+    }
     if (base->ie_params.vendor_header_length) {
         ie_header_mask.vh_ie = true;
     }
@@ -1151,10 +1289,13 @@ static void ws_llc_lowpan_mpx_data_request(llc_data_base_t *base, mpx_user_t *us
     }
     //Write UTT
 
-    ptr = ws_wh_utt_write(ptr, message->messsage_type);
+    if (ie_header_mask.utt_ie) {
+        ptr = ws_wh_utt_write(ptr, message->messsage_type);
+    }
     if (ie_header_mask.bt_ie) {
         ptr = ws_wh_bt_write(ptr);
     }
+    ptr = ws_llc_lfn_wh_write(ptr, base, ie_header_mask, message->messsage_type, NULL);
 
     if (ie_header_mask.vh_ie) {
         ptr = ws_wh_vh_write(ptr, base->ie_params.vendor_header_data, base->ie_params.vendor_header_length);
@@ -1249,6 +1390,14 @@ static void ws_llc_mpx_eapol_request(llc_data_base_t *base, mpx_user_t *user_cb,
     ie_header_mask.bt_ie = ws_eapol_relay_state_active(base->interface_ptr);
     ie_header_mask.ea_ie = ws_eapol_handshake_first_msg(data->msdu, data->msduLength, base->interface_ptr);
     nested_wp_id.bs_ie = ie_header_mask.ea_ie;
+    if (base->ie_params.lfn_role) {
+        ie_header_mask.utt_ie = false;
+        ie_header_mask.bt_ie = false;
+        ie_header_mask.ea_ie = false;
+        nested_wp_id.bs_ie = false;
+        ie_header_mask.lutt_ie = true;
+        ie_header_mask.lus_ie = true;
+    }
 
 
     nested_wp_id.us_ie = true;
@@ -1287,10 +1436,13 @@ static void ws_llc_mpx_eapol_request(llc_data_base_t *base, mpx_user_t *user_cb,
 
     message->ie_vector_list[0].ieBase = ptr;
     //Write UTT
-    ptr = ws_wh_utt_write(ptr, message->messsage_type);
+    if (ie_header_mask.utt_ie) {
+        ptr = ws_wh_utt_write(ptr, message->messsage_type);
+    }
     if (ie_header_mask.bt_ie) {
         ptr = ws_wh_bt_write(ptr);
     }
+    ptr = ws_llc_lfn_wh_write(ptr, base, ie_header_mask, message->messsage_type, NULL);
 
     if (ie_header_mask.ea_ie) {
         uint8_t eapol_auth_eui64[8];
@@ -1466,6 +1618,7 @@ static void ws_llc_clean(llc_data_base_t *base)
     base->temp_entries->llc_eap_pending_list_size = 0;
     base->temp_entries->active_eapol_session = false;
     memset(&base->ie_params, 0, sizeof(llc_ie_params_t));
+    base->ie_params.lfn_role = wisun_mode_host(base->interface_ptr);
 
     ws_llc_temp_neigh_info_table_reset(base->temp_entries);
     //Disable High Priority mode
@@ -1723,6 +1876,11 @@ int8_t ws_llc_create(struct protocol_interface_info_entry *interface, ws_asynch_
     if (base) {
         ws_llc_clean(base);
         base->temp_entries->dynamic_alloc_max = WS_LLC_EAPOL_DYNAMIC_ALLOCATE_MAX;
+        // The bootstrap mode may have changed (FAN 1.1 LFN: host mode)
+        base->asynch_ind = asynch_ind_cb;
+        base->asynch_confirm = asynch_cnf_cb;
+        base->ws_neighbor_info_request_cb = ws_neighbor_info_request_cb;
+        base->ie_params.lfn_role = wisun_mode_host(interface);
         return 0;
     }
 
@@ -1733,6 +1891,7 @@ int8_t ws_llc_create(struct protocol_interface_info_entry *interface, ws_asynch_
     }
 
     base->interface_ptr = interface;
+    base->ie_params.lfn_role = wisun_mode_host(interface);
     base->asynch_ind = asynch_ind_cb;
     base->asynch_confirm = asynch_cnf_cb;
     base->ws_neighbor_info_request_cb = ws_neighbor_info_request_cb;
@@ -1858,9 +2017,26 @@ int8_t ws_llc_asynch_request(struct protocol_interface_info_entry *interface, as
     data_req.Key = request->security;
     data_req.msduHandle = message->msg_handle;
     data_req.ExtendedFrameExchange = false;
-    if (request->message_type == WS_FT_PAN_ADVERT_SOL) {
+    if (request->message_type == WS_FT_PAN_ADVERT_SOL || request->message_type == WS_FT_LPAS) {
         // PANID not know yet must be supressed
         data_req.PanIdSuppressed = true;
+    }
+    if (request->unicast) {
+        // FAN 1.1 LFN management frame (LPA, LPC, LPCS): acknowledged
+        // unicast; to an LFN the MAC holds it for the LFN's window
+        data_req.SeqNumSuppressed = false;
+        data_req.PanIdSuppressed = true;
+        data_req.TxAckReq = true;
+        data_req.DstAddrMode = MAC_ADDR_MODE_64_BIT;
+        data_req.DstPANId = interface->ws_info->network_pan_id;
+        memcpy(data_req.DstAddr, request->dst_address, 8);
+        message->ack_requested = true;
+        message->dst_address_type = MAC_ADDR_MODE_64_BIT;
+        memcpy(message->dst_address, request->dst_address, 8);
+        if (request->wh_requested_ie_list.lto_ie) {
+            message->lto_sent = true;
+            message->lto = request->lto;
+        }
     }
 
     uint8_t *ptr = ws_message_buffer_ptr_get(message);
@@ -1881,6 +2057,7 @@ int8_t ws_llc_asynch_request(struct protocol_interface_info_entry *interface, as
         //Static 5 bytes allways
         ptr = ws_wh_bt_write(ptr);
     }
+    ptr = ws_llc_lfn_wh_write(ptr, base, request->wh_requested_ie_list, message->messsage_type, &request->lto);
 
     if (wp_nested_payload_length) {
         message->ie_vector_list[1].ieBase = ptr;
@@ -1953,7 +2130,7 @@ int8_t ws_llc_asynch_request(struct protocol_interface_info_entry *interface, as
 
     }
 
-    base->interface_ptr->mac_api->mcps_data_req_ext(base->interface_ptr->mac_api, &data_req, &message->ie_ext, &request->channel_list, message->priority, 0);
+    base->interface_ptr->mac_api->mcps_data_req_ext(base->interface_ptr->mac_api, &data_req, &message->ie_ext, request->unicast ? NULL : &request->channel_list, message->priority, 0);
 
     return 0;
 }

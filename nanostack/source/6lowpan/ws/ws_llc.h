@@ -18,6 +18,7 @@
 #ifndef WS_LLC_H_
 #define WS_LLC_H_
 
+#include "6lowpan/ws/ws_common_defines.h"
 #include "6lowpan/ws/ws_neighbor_class.h"
 #include "service_libs/mac_neighbor_table/mac_neighbor_table.h"
 
@@ -43,6 +44,14 @@ typedef struct wh_ie_sub_list_s {
     bool rsl_ie: 1;  /**< Received Signal Level information */
     bool vh_ie: 1;   /**< Vendor header information */
     bool ea_ie: 1;   /**< EAPOL autheticator EUI-64 header information */
+    /* FAN 1.1 LFN (GS8 stage 3) */
+    bool lutt_ie: 1; /**< LFN Unicast Timing and Frame type (instead of UTT) */
+    bool lus_ie: 1;  /**< LFN Unicast Schedule */
+    bool nr_ie: 1;   /**< Node Role */
+    bool lnd_ie: 1;  /**< LFN Network Discovery */
+    bool lto_ie: 1;  /**< LFN Timing Offset (asynch_request_t.lto) */
+    bool panid_ie: 1; /**< PAN ID */
+    bool lbs_ie: 1;  /**< LFN Broadcast Schedule */
 } wh_ie_sub_list_t;
 
 /**
@@ -64,7 +73,10 @@ typedef struct wp_nested_ie_sub_list_s {
  * @brief asynch_request_t Asynch message request parameters
  */
 typedef struct asynch_request_s {
-    unsigned  message_type: 3;                              /**< Asynch message type: WS_FT_PAN_ADVERT, WS_FT_PAN_ADVERT_SOL, WS_FT_PAN_CONF or WS_FT_PAN_CONF_SOL. */
+    uint8_t message_type;                                   /**< Asynch message type: WS_FT_PAN_ADVERT, WS_FT_PAN_ADVERT_SOL, WS_FT_PAN_CONF, WS_FT_PAN_CONF_SOL, or FAN 1.1 WS_FT_LPA..WS_FT_LPCS */
+    bool unicast;                                           /**< FAN 1.1 LFN management frame sent as an acknowledged unicast to dst_address (no channel list) */
+    uint8_t dst_address[8];                                 /**< Its destination */
+    ws_lto_ie_t lto;                                        /**< LTO-IE values when wh_requested_ie_list.lto_ie */
     wh_ie_sub_list_t wh_requested_ie_list;                  /**< WH-IE header list to message. */
     wp_nested_ie_sub_list_t wp_requested_nested_ie_list;    /**< WP-IE Nested IE list to message. */
     struct mlme_security_s security;                               /**< Request MAC security paramaters */
@@ -127,6 +139,13 @@ typedef void ws_asynch_confirm(struct protocol_interface_info_entry *interface, 
  * @return false when no neighbor info
  */
 typedef bool ws_neighbor_info_request(struct protocol_interface_info_entry *interface, const uint8_t *mac_64, struct llc_neighbour_req *neighbor_buffer, bool request_new);
+
+/**
+ * @brief FAN 1.1: store the LFN unicast schedule of a neighbour from the
+ * LUTT-IE (and LUS-IE, if present) of a frame it sent (GS8 stage 3).
+ * @return true if the frame had a LUTT-IE
+ */
+bool ws_llc_lfn_timing_update(struct protocol_interface_info_entry *interface, struct ws_neighbor_class_entry *ws_neighbor, const struct mcps_data_ie_list *ie_ext, uint32_t rx_timestamp);
 
 /**
  * @brief ws_llc_create ws LLC module create
