@@ -400,7 +400,9 @@ int8_t sec_prot_lib_gtk_read(uint8_t *kde, uint16_t kde_len, sec_prot_keys_t *se
     uint8_t key_id;
     uint8_t gtk[GTK_LEN];
 
-    if (kde_gtk_read(kde, kde_len, &key_id, gtk) >= 0) {
+    // An LFN reads LGTK and LGTKL KDEs (FAN 1.1), any other node GTK and GTKL
+    bool lfn = sec_keys->lfn;
+    if ((lfn ? kde_lgtk_read(kde, kde_len, &key_id, gtk) : kde_gtk_read(kde, kde_len, &key_id, gtk)) >= 0) {
         uint32_t lifetime = 0;
         if (kde_lifetime_read(kde, kde_len, &lifetime) >= 0) {
 
@@ -412,10 +414,10 @@ int8_t sec_prot_lib_gtk_read(uint8_t *kde, uint16_t kde_len, sec_prot_keys_t *se
         }
     }
     uint8_t gtkl;
-    if (kde_gtkl_read(kde, kde_len, &gtkl) >= 0) {
+    if ((lfn ? kde_lgtkl_read(kde, kde_len, &gtkl) : kde_gtkl_read(kde, kde_len, &gtkl)) >= 0) {
         sec_prot_keys_gtkl_set(sec_keys, gtkl);
     } else {
-        tr_error("No GTKL");
+        tr_error(lfn ? "No LGTKL" : "No GTKL");
         return -1;
     }
 
@@ -426,7 +428,7 @@ int8_t sec_prot_lib_gtk_read(uint8_t *kde, uint16_t kde_len, sec_prot_keys_t *se
         }
     }
 
-    tr_info("GTK recv index %i lifetime %"PRIu32"", gtk_index, sec_prot_keys_gtk_lifetime_get(sec_keys->gtks, gtk_index));
+    tr_info("%s recv index %i lifetime %"PRIu32"", lfn ? "LGTK" : "GTK", gtk_index, sec_prot_keys_gtk_lifetime_get(sec_keys->gtks, gtk_index));
 
     return 0;
 }

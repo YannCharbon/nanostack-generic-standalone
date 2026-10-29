@@ -207,13 +207,14 @@ static int8_t auth_gkh_sec_prot_message_send(sec_prot_t *prot, gkh_sec_prot_msg_
             uint8_t gtk_index;
             uint8_t *gtk = sec_prot_keys_get_gtk_to_insert(prot->sec_keys, &gtk_index);
             if (gtk) {
-                kde_end = kde_gtk_write(kde_end, gtk_index, gtk);
+                // An LFN gets an LGTK (FAN 1.1; the supplicant's NR KDE)
+                kde_end = prot->sec_keys->lfn ? kde_lgtk_write(kde_end, gtk_index, gtk) : kde_gtk_write(kde_end, gtk_index, gtk);
 
                 uint32_t gtk_lifetime = sec_prot_keys_gtk_lifetime_get(prot->sec_keys->gtks, gtk_index);
                 kde_end = kde_lifetime_write(kde_end, gtk_lifetime);
             }
             uint8_t gtkl = sec_prot_keys_fresh_gtkl_get(prot->sec_keys->gtks);
-            kde_end = kde_gtkl_write(kde_end, gtkl);
+            kde_end = prot->sec_keys->lfn ? kde_lgtkl_write(kde_end, gtkl) : kde_gtkl_write(kde_end, gtkl);
             kde_padding_write(kde_end, kde_start + kde_len);
         }
         break;

@@ -995,6 +995,10 @@ typedef struct ws_lfn_settings {
     uint32_t tx_lead_us;                /**< Frame released this long before its TX time (µs) */
     uint32_t tx_min_prep_us;            /**< Shortest release-to-TX time (µs) */
     uint16_t tx_ttl_intervals;          /**< Held frame dropped after this many listen intervals */
+    uint32_t lgtk_lifetime_s;           /**< LGTK lifetime (LGTK_EXPIRE_OFFSET; s) */
+    uint8_t lgtk_new_install_required;  /**< Next LGTK installed when the active one has used this % of its lifetime */
+    uint16_t lgtk_new_activation_time;  /**< Next LGTK activated lifetime / this before the active one expires */
+    uint32_t lgtk_activation_guard_s;   /**< Next LGTK activated no sooner than this after its installation (s) */
 } ws_lfn_settings_t;
 
 #define WS_LFN_LISTEN_INTERVAL_MS_DEFAULT        6000
@@ -1010,27 +1014,34 @@ typedef struct ws_lfn_settings {
 #define WS_LFN_REGISTRATION_LIFETIME_MIN_DEFAULT 2160
 #define WS_LFN_BC_INTERVAL_MS_DEFAULT            10000
 #define WS_LFN_BC_SYNC_PERIOD_DEFAULT            5
+#define WS_LFN_LGTK_LIFETIME_S_DEFAULT           (90UL * 24 * 3600)
+#define WS_LFN_LGTK_NEW_INSTALL_REQUIRED_DEFAULT 90
+#define WS_LFN_LGTK_NEW_ACTIVATION_TIME_DEFAULT  180
+#define WS_LFN_LGTK_ACTIVATION_GUARD_S_DEFAULT   300
 
 /** Fill *settings with the defaults. */
 void ws_management_lfn_settings_defaults(ws_lfn_settings_t *settings);
 
 /**
  * Set the LFN settings of an interface. Call it before arm_nwk_interface_up().
- * eturn 0 OK, -1 unknown interface, -2 invalid value.
+ * 
+eturn 0 OK, -1 unknown interface, -2 invalid value.
  */
 int ws_management_lfn_settings_set(int8_t interface_id, const ws_lfn_settings_t *settings);
 
 /**
  * Border router: parent LFNs (FAN 1.1; needs ws_management_fan_version_set()
  * to FAN 1.1). Off by default. Call it before arm_nwk_interface_up().
- * eturn 0 OK, -1 unknown interface, -2 not FAN 1.1 or not a border router build.
+ * 
+eturn 0 OK, -1 unknown interface, -2 not FAN 1.1 or not a border router build.
  */
 int ws_management_lfn_parent_set(int8_t interface_id, bool enable);
 
 /**
  * Border router: replace the active LGTK by a new one (an LGTK event: the LFN
  * version goes up by one and every LFN child gets an LPC). For tests and key
- * management. eturn 0 OK, -1 unknown interface or no LFN parenting.
+ * management. 
+eturn 0 OK, -1 unknown interface or no LFN parenting.
  */
 int ws_management_lfn_lgtk_rotate(int8_t interface_id);
 

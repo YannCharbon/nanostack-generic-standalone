@@ -247,7 +247,14 @@ static int8_t supp_fwh_sec_prot_message_send(sec_prot_t *prot, fwh_sec_prot_msg_
     fwh_sec_prot_int_t *data = fwh_sec_prot_get(prot);
 
     eapol_pdu_t eapol_pdu;
-    uint16_t eapol_pdu_size = eapol_pdu_key_frame_init(&eapol_pdu, 0, NULL);
+    /* FAN 1.1 LFN: its node role KDE in message 2 too (in clear, under the
+       MIC); the authenticator takes the role from the key request */
+    uint8_t nr_kde[KDE_NR_LEN];
+    uint16_t nr_kde_len = 0;
+    if (msg == FWH_MESSAGE_2 && prot->sec_keys->lfn) {
+        nr_kde_len = kde_nr_write(nr_kde, KDE_NR_ROLE_LFN) - nr_kde;
+    }
+    uint16_t eapol_pdu_size = eapol_pdu_key_frame_init(&eapol_pdu, nr_kde_len, nr_kde_len ? nr_kde : NULL);
 
     eapol_pdu.msg.key.key_information.pairwise_key = true;
 
@@ -268,7 +275,7 @@ static int8_t supp_fwh_sec_prot_message_send(sec_prot_t *prot, fwh_sec_prot_msg_
             break;
     }
 
-    uint8_t *eapol_pdu_frame = sec_prot_lib_message_build(data->new_ptk, 0, 0, &eapol_pdu, eapol_pdu_size, prot->header_size);
+    uint8_t *eapol_pdu_frame = sec_prot_lib_message_build(data->new_ptk, nr_kde_len ? nr_kde : NULL, nr_kde_len, &eapol_pdu, eapol_pdu_size, prot->header_size);
 
     if (eapol_pdu_frame == NULL) {
         return -1;

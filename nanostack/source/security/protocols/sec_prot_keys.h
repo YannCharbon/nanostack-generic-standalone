@@ -32,6 +32,7 @@
 #define PTK_LEN                 48
 #define GTK_LEN                 16
 #define GTK_NUM                 4
+#define LGTK_NUM                3                       // FAN 1.1 LFN group keys, MAC key indexes 5-7
 
 #define KCK_LEN                 16
 #define KEK_LEN                 16
@@ -95,6 +96,8 @@ typedef struct {
     sec_prot_gtk_hash_t    ins_gtk_hash[GTK_NUM];     /**< Hashes for inserted GTKs for a PTK */
     sec_prot_gtk_keys_t    *gtks;                     /**< Group Transient Keys */
     const sec_prot_certs_t *certs;                    /**< Certificates */
+    sec_prot_gtk_keys_t    *ffn_gtks;                 /**< Authenticator: the network's GTKs (set per message) */
+    sec_prot_gtk_keys_t    *lgtks;                    /**< Authenticator: the network's LGTKs, NULL without LFN support */
     uint32_t               pmk_lifetime;              /**< PMK lifetime in seconds */
     uint32_t               ptk_lifetime;              /**< PTK lifetime in seconds */
     uint8_t                gtkl;                      /**< Remote GTKL information */
@@ -108,6 +111,7 @@ typedef struct {
     bool                   ptk_eui_64_set: 1;         /**< Remote EUI-64 used to derive PTK is set */
     bool                   pmk_mismatch: 1;           /**< Remote PMK mismatch reported */
     bool                   ptk_mismatch: 1;           /**< Remote PTK mismatch reported */
+    bool                   lfn: 1;                    /**< FAN 1.1 LFN (supplicant: itself; authenticator: the supplicant, from its NR KDE): gtks are LGTKs, GTK/GTKL KDEs become LGTK/LGTKL */
 } sec_prot_keys_t;
 
 // Frame counter data
@@ -148,6 +152,7 @@ typedef struct {
 typedef struct {
     char network_name[33];                                 /**< Network name for keys */
     sec_prot_gtk_keys_t *gtks;                             /**< Link to GTKs */
+    sec_prot_gtk_keys_t *lgtks;                            /**< Link to LGTKs (FAN 1.1 LFNs; border router) */
     uint16_t new_pan_id;                                   /**< new PAN ID indicated by bootstrap */
     uint16_t key_pan_id;                                   /**< PAN ID for keys */
     uint16_t pan_version;                                  /**< PAN version for keys */
@@ -939,6 +944,18 @@ uint8_t sec_prot_keys_gtk_count(sec_prot_gtk_keys_t *gtks);
  * \param sec_keys security keys
  *
  */
+/**
+ * sec_prot_keys_lfn_set authenticator: the supplicant's node role from its
+ * key request; an LFN uses the network's LGTKs in place of its GTKs
+ *
+ * \param sec_keys security keys
+ * \param lfn the supplicant is an LFN
+ *
+ * \return < 0 LFN but no LGTKs
+ * \return >= 0 success
+ */
+int8_t sec_prot_keys_lfn_set(sec_prot_keys_t *sec_keys, bool lfn);
+
 void sec_prot_keys_ptk_installed_gtk_hash_clear_all(sec_prot_keys_t *sec_keys);
 
 /**

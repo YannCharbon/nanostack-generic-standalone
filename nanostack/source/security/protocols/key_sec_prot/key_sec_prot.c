@@ -166,6 +166,9 @@ static int8_t key_sec_prot_initial_key_send(sec_prot_t *prot, sec_prot_keys_t *s
 {
     uint8_t result = 0;
     uint16_t kde_len = KDE_GTKL_LEN;
+    if (sec_keys->lfn) {
+        kde_len = KDE_LGTKL_LEN + KDE_NR_LEN;
+    }
 
     uint8_t *pmk = sec_prot_keys_pmk_get(sec_keys);
     uint8_t pmkid[PMKID_LEN];
@@ -203,7 +206,15 @@ static int8_t key_sec_prot_initial_key_send(sec_prot_t *prot, sec_prot_keys_t *s
     }
 
     uint8_t gtkl = sec_prot_keys_fresh_gtkl_get(sec_keys->gtks);
-    kde_end = kde_gtkl_write(kde_end, gtkl);
+    if (sec_keys->lfn) {
+        /* FAN 1.1 LFN: its LGTKL and its node role (Wi-SUN FAN 1.1 6.5.2.2, as
+           quoted in wisun-br-linux authenticator_key.c: the NR KDE tells the
+           authenticator the role; an LFN gets LGTKs) */
+        kde_end = kde_lgtkl_write(kde_end, gtkl);
+        kde_end = kde_nr_write(kde_end, KDE_NR_ROLE_LFN);
+    } else {
+        kde_end = kde_gtkl_write(kde_end, gtkl);
+    }
 
     kde_len = kde_end - kde_start;
 
@@ -224,7 +235,11 @@ static int8_t key_sec_prot_initial_key_send(sec_prot_t *prot, sec_prot_keys_t *s
     eapol_pdu.msg.key.key_length = 0;
     eapol_write_pdu_frame(eapol_decoded_data + prot->header_size, &eapol_pdu);
 
-    tr_info("Initial EAPOL-Key send, PMKID %s PTKID %s GTKL %x", pmk ? "set" : "not set", ptk ? "set" : "not set", gtkl);
+    if (sec_keys->lfn) {
+        tr_info("Initial EAPOL-Key send, PMKID %s PTKID %s LGTKL %x NR LFN", pmk ? "set" : "not set", ptk ? "set" : "not set", gtkl);
+    } else {
+        tr_info("Initial EAPOL-Key send, PMKID %s PTKID %s GTKL %x", pmk ? "set" : "not set", ptk ? "set" : "not set", gtkl);
+    }
 
     if (prot->send(prot, eapol_decoded_data, eapol_pdu_size + prot->header_size) < 0) {
         result = -1;
@@ -287,16 +302,31 @@ static int8_t key_sec_prot_receive(sec_prot_t *prot, void *pdu, uint16_t size)
             }
         }
 
-        // Get the GTKL that supplicant indicates
-        uint8_t gtkl;
-        if (kde_gtkl_read(kde, kde_len, &gtkl) >= 0) {
-            prot->sec_keys->gtkl = gtkl;
-        } else {
-            tr_error("no GTKL");
+        /* FAN 1.1: the node role KDE; an LFN indicates its LGTKL and gets
+           LGTKs, any other node (or no NR KDE: FAN 1.0) its GTKL and GTKs */
+        uint8_t node_role;
+        bool lfn = kde_nr_read(kde, kde_len, &node_role) >= 0 && node_role == KDE_NR_ROLE_LFN;
+        if (sec_prot_keys_lfn_set(prot->sec_keys, lfn) < 0) {
+            tr_error("LFN key request but no LGTKs");
+            free(kde);
+            prot->finished(prot);
             return -1;
         }
 
-        tr_info("PMK %s PTK %s GTKL %x", prot->sec_keys->pmk_mismatch ? "not live" : "live", prot->sec_keys->ptk_mismatch ? "not live" : "live", gtkl);
+        // Get the GTKL (LGTKL) that supplicant indicates
+        uint8_t gtkl;
+        if ((lfn ? kde_lgtkl_read(kde, kde_len, &gtkl) : kde_gtkl_read(kde, kde_len, &gtkl)) >= 0) {
+            prot->sec_keys->gtkl = gtkl;
+        } else {
+            tr_error(lfn ? "no LGTKL" : "no GTKL");
+            return -1;
+        }
+
+        if (lfn) {
+            tr_info("PMK %s PTK %s LGTKL %x NR LFN", prot->sec_keys->pmk_mismatch ? "not live" : "live", prot->sec_keys->ptk_mismatch ? "not live" : "live", gtkl);
+        } else {
+            tr_info("PMK %s PTK %s GTKL %x", prot->sec_keys->pmk_mismatch ? "not live" : "live", prot->sec_keys->ptk_mismatch ? "not live" : "live", gtkl);
+        }
 
         free(kde);
     } else {

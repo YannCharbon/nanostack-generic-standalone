@@ -459,6 +459,22 @@ static uint8_t *ws_llc_lfn_wh_write(uint8_t *ptr, llc_data_base_t *base, wh_ie_s
     return ptr;
 }
 
+/* FAN 1.1 parent: an LPA to this LFN still waits for its window (or retries) */
+bool ws_llc_lfn_lpa_pending(struct protocol_interface_info_entry *interface, const uint8_t *dst64)
+{
+    llc_data_base_t *base = ws_llc_discover_by_interface(interface);
+    if (!base) {
+        return false;
+    }
+    ns_list_foreach(llc_message_t, message, &base->llc_message_list) {
+        if (message->messsage_type == WS_FT_LPA && message->dst_address_type == MAC_ADDR_MODE_64_BIT &&
+                !memcmp(message->dst_address, dst64, 8)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool ws_llc_lfn_timing_update(struct protocol_interface_info_entry *interface, struct ws_neighbor_class_entry *ws_neighbor, const struct mcps_data_ie_list *ie_ext, uint32_t rx_timestamp)
 {
     ws_lutt_ie_t lutt;
@@ -1261,6 +1277,15 @@ static void ws_llc_lowpan_mpx_data_request(llc_data_base_t *base, mpx_user_t *us
     data_req.msdu = NULL;
     data_req.msduLength = 0;
     data_req.msduHandle = message->msg_handle;
+#ifdef HAVE_WS_VERSION_1_1
+    // FAN 1.1: a frame to an LFN child is secured with the active LGTK (key index 5-7)
+    if (data_req.Key.SecurityLevel && data->TxAckReq && data->DstAddrMode == MAC_ADDR_MODE_64_BIT) {
+        uint8_t lgtk_key_index = ws_lfn_parent_tx_key_index(base->interface_ptr, data->DstAddr);
+        if (lgtk_key_index) {
+            data_req.Key.KeyIndex = lgtk_key_index;
+        }
+    }
+#endif
 
     if (data->ExtendedFrameExchange && data->TxAckReq) {
         data_req.SeqNumSuppressed = true;

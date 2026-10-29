@@ -80,6 +80,7 @@
 #include "6lowpan/ws/ws_stats.h"
 #include "6lowpan/ws/ws_bootstrap_lfn.h"
 #include "6lowpan/ws/ws_lfn_parent.h"
+#include "security/protocols/sec_prot_keys.h"
 #include "nanostack/mac/fhss_ws_extension.h"
 #include "common_protocols/icmpv6.h"
 #ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
@@ -189,7 +190,8 @@ static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur)
     ws_llc_asynch_request(cur, &req);
 }
 
-/* Before the first LPC tells the active key: the first group key installed */
+/* Before the first LPC tells the active key: the first LGTK installed (key
+ * index 5-7) */
 static void ws_lfn_tx_key_select(protocol_interface_info_entry_t *cur)
 {
     int8_t i = ws_pae_controller_first_installed_key_index_get(cur);
@@ -197,7 +199,7 @@ static void ws_lfn_tx_key_select(protocol_interface_info_entry_t *cur)
     if (!mac_helper_default_key_index_get(cur) && i >= 0) {
         // As ws_bootstrap_nw_key_index_set(): the 4-way handshake may have
         // marked the key active already, so the PAE does not set it again
-        mac_helper_security_auto_request_key_index_set(cur, i, i + 1);
+        mac_helper_security_auto_request_key_index_set(cur, i, i + WS_LGTK_KEY_INDEX_FIRST);
     }
 }
 
@@ -331,15 +333,20 @@ static void ws_lfn_lpc_analyse(protocol_interface_info_entry_t *cur, const struc
         }
         lfn->lfn_version = ver.lfn_version;
     }
-    // The parent's key index is the active one (as an FFN learns it from a
-    // PAN configuration)
-    if (data->Key.KeyIndex && data->Key.KeyIndex != mac_helper_default_key_index_get(cur)) {
-        ws_pae_controller_nw_key_index_update(cur, data->Key.KeyIndex - 1);
+    // The LGTK hash first: it makes a newly fetched LGTK fresh, so that it can
+    // become the active one
+    ws_lfn_parent_lgtk_hash_check(cur, ie_ext);
+    // The parent's key index is the active LGTK (5-7), as an FFN learns its
+    // GTK from a PAN configuration
+    if (data->Key.KeyIndex >= WS_LGTK_KEY_INDEX_FIRST && data->Key.KeyIndex < WS_LGTK_KEY_INDEX_FIRST + LGTK_NUM &&
+            data->Key.KeyIndex != mac_helper_default_key_index_get(cur)) {
+        uint8_t index = data->Key.KeyIndex - WS_LGTK_KEY_INDEX_FIRST;
+        tr_info("LFN: active LGTK index %u (key index %u)", index, data->Key.KeyIndex);
+        ws_pae_controller_nw_key_index_update(cur, index);
         if (data->Key.KeyIndex != mac_helper_default_key_index_get(cur)) {
-            mac_helper_security_auto_request_key_index_set(cur, data->Key.KeyIndex - 1, data->Key.KeyIndex);
+            mac_helper_security_auto_request_key_index_set(cur, index, data->Key.KeyIndex);
         }
     }
-    ws_lfn_parent_lgtk_hash_check(cur, ie_ext);
     if (!lfn->lpc_received) {
         lfn->lpc_received = true;
         lfn->lpcs_timer_s = 0;
@@ -449,6 +456,8 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             lfn->eapol_interval = false;
             lfn->sync_period_s = 0;
             lfn->reregister_s = 0;
+            lfn->lgtk_mismatch_timer_s = 0;
+            lfn->lgtk_request_sent = false;
             ws_lfn_network_configure(cur);
             // The receiver is off outside the listen windows
             cur->ws_info->rx_off_when_idle = true;
@@ -558,7 +567,9 @@ uint32_t ws_bootstrap_lfn_seconds_timer_next(protocol_interface_info_entry_t *cu
     if (lfn->reregister_s) {
         next = protocol_timer_next_min(next, lfn->reregister_s);
     }
-    // ws_lfn_parent_lgtk_timer(): nothing yet
+    if (lfn->lgtk_mismatch_timer_s) {
+        next = protocol_timer_next_min(next, lfn->lgtk_mismatch_timer_s);
+    }
     if (lfn->parent_known && cur->nwk_bootstrap_state != ER_PANA_AUTH) {
         // Lost on the first call that sees more than the limit since the
         // last frame (the uptime is incremented before this timer runs)

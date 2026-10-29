@@ -41,6 +41,10 @@ const uint8_t wisun_oui[3] = {0x0C, 0x5A, 0x9E};
 // Wi-Sun
 #define KDE_PTKID                0x01
 #define KDE_GTKL                 0x02
+// Wi-SUN FAN 1.1 (wisun-br-linux common/specs/ws.h)
+#define KDE_NR                   0x03
+#define KDE_LGTKL                0x04
+#define KDE_LGTK                 0x05
 
 #define GTK_LEN                  16
 #define PMKID_LEN                16
@@ -239,4 +243,59 @@ int8_t kde_gtkl_read(const uint8_t *ptr, uint16_t len, uint8_t *gtkl)
     return 0;
 }
 
+/* Wi-SUN FAN 1.1: LGTK, LGTKL and node role KDEs. The LGTK KDE has the GTK
+ * KDE's layout (key index in bits 0-1, reserved byte, key) under the Wi-SUN
+ * OUI; LGTKL and NR are one byte. */
+uint8_t *kde_lgtk_write(uint8_t *ptr, uint8_t key_id, const uint8_t *lgtk)
+{
+    ptr = kde_header_write(ptr, WISUN_OUI, KDE_LGTK, KDE_LGTK_LEN);
+    *ptr++ = key_id & 0x03;
+    *ptr++ = 0x00; // reserved
+    memcpy(ptr, lgtk, GTK_LEN);
+    return ptr + GTK_LEN;
+}
 
+uint8_t *kde_lgtkl_write(uint8_t *ptr, uint8_t lgtkl)
+{
+    ptr = kde_header_write(ptr, WISUN_OUI, KDE_LGTKL, KDE_LGTKL_LEN);
+    *ptr++ = lgtkl;
+    return ptr;
+}
+
+uint8_t *kde_nr_write(uint8_t *ptr, uint8_t node_role)
+{
+    ptr = kde_header_write(ptr, WISUN_OUI, KDE_NR, KDE_NR_LEN);
+    *ptr++ = node_role;
+    return ptr;
+}
+
+int8_t kde_lgtk_read(const uint8_t *ptr, uint16_t len, uint8_t *key_id, uint8_t *lgtk)
+{
+    ptr = kde_search(ptr, len, WISUN_OUI, KDE_LGTK, KDE_LGTK_LEN);
+    if (ptr == NULL || (ptr[0] & 0x03) > 2) {
+        return -1;
+    }
+    *key_id = ptr[0] & 0x03;
+    memcpy(lgtk, ptr + 2, GTK_LEN);
+    return 0;
+}
+
+int8_t kde_lgtkl_read(const uint8_t *ptr, uint16_t len, uint8_t *lgtkl)
+{
+    ptr = kde_search(ptr, len, WISUN_OUI, KDE_LGTKL, KDE_LGTKL_LEN);
+    if (ptr == NULL) {
+        return -1;
+    }
+    *lgtkl = *ptr;
+    return 0;
+}
+
+int8_t kde_nr_read(const uint8_t *ptr, uint16_t len, uint8_t *node_role)
+{
+    ptr = kde_search(ptr, len, WISUN_OUI, KDE_NR, KDE_NR_LEN);
+    if (ptr == NULL) {
+        return -1;
+    }
+    *node_role = *ptr;
+    return 0;
+}

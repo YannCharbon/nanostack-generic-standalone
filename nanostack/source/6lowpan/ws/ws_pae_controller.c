@@ -43,6 +43,8 @@
 #include "6lowpan/ws/ws_pae_nvm_data.h"
 #include "6lowpan/ws/ws_pae_time.h"
 #include "6lowpan/ws/ws_pae_key_storage.h"
+#include "6lowpan/ws/ws_lfn_parent.h"
+#include "nanostack/mac/mac_api.h"
 #ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
 #include "nwk_interface/protocol_timer.h"
 #endif
@@ -77,6 +79,8 @@ typedef struct {
     uint8_t gtkhash[32];                                             /**< GTK hashes */
     sec_prot_certs_t certs;                                          /**< Certificates */
     nw_key_t nw_key[GTK_NUM];                                        /**< Currently active network keys (on MAC) */
+    sec_prot_gtk_keys_t lgtks;                                       /**< FAN 1.1 LGTKs (border router) */
+    nw_key_t nw_lkey[LGTK_NUM];                                      /**< LGTKs on the MAC (border router) */
     uint16_t frame_cnt_store_timer;                                  /**< Timer to check if storing of frame counter value is needed */
     uint32_t frame_cnt_store_force_timer;                            /**< Timer to force storing of frame counter, if no other updates */
     frame_counters_t frame_counters;                                 /**< Frame counters */
@@ -133,6 +137,9 @@ static int8_t ws_pae_controller_nvm_frame_counter_read(uint32_t *restart_cnt, ui
 static pae_controller_t *ws_pae_controller_get_or_create(int8_t interface_id);
 static void ws_pae_controller_gtk_hash_set(protocol_interface_info_entry_t *interface_ptr, uint8_t *gtkhash);
 static int8_t ws_pae_controller_nw_key_check_and_insert(protocol_interface_info_entry_t *interface_ptr, sec_prot_gtk_keys_t *gtks, bool force_install);
+#ifdef HAVE_PAE_AUTH
+static void ws_pae_controller_lgtk_update(protocol_interface_info_entry_t *interface_ptr, sec_prot_gtk_keys_t *lgtks, int8_t active_index, const char *event);
+#endif
 static void ws_pae_controller_active_nw_key_clear(nw_key_t *nw_key);
 static void ws_pae_controller_active_nw_key_set(protocol_interface_info_entry_t *cur, uint8_t index);
 static void ws_pae_controller_frame_counter_store_and_nw_keys_remove(protocol_interface_info_entry_t *interface_ptr, pae_controller_t *controller, bool use_threshold);
@@ -240,6 +247,7 @@ int8_t ws_pae_controller_authenticator_start(protocol_interface_info_entry_t *in
     }
 
     ws_pae_auth_cb_register(interface_ptr, ws_pae_controller_gtk_hash_set, ws_pae_controller_nw_key_check_and_insert, ws_pae_controller_nw_key_index_check_and_set, ws_pae_controller_nw_info_updated_check, ws_pae_controller_auth_ip_addr_get, ws_pae_controller_auth_congestion_get, ws_pae_controller_auth_nw_frame_counter_read);
+    ws_pae_auth_lgtk_cb_register(interface_ptr, ws_pae_controller_lgtk_update);
 
     controller->auth_started = true;
 
@@ -798,7 +806,10 @@ static void ws_pae_controller_data_init(pae_controller_t *controller)
     sec_prot_keys_gtks_init(&controller->next_gtks);
     sec_prot_certs_init(&controller->certs);
     sec_prot_certs_ext_certificate_validation_set(&controller->certs, pae_controller_config.ext_cert_valid_enabled);
+    sec_prot_keys_gtks_init(&controller->lgtks);
+    memset(controller->nw_lkey, 0, sizeof(controller->nw_lkey));
     ws_pae_controller_keys_nw_info_init(&controller->sec_keys_nw_info, &controller->gtks);
+    controller->sec_keys_nw_info.lgtks = &controller->lgtks;
 }
 
 static int8_t ws_pae_controller_frame_counter_read(pae_controller_t *controller)
@@ -1930,3 +1941,83 @@ int8_t ws_pae_controller_first_installed_key_index_get(protocol_interface_info_e
     }
     return -1;
 }
+
+#ifdef HAVE_PAE_AUTH
+/* Border router, FAN 1.1: LGTKs changed (installed, activated, expired). They
+ * go to MAC key slots WS_LGTK_MAC_SLOT_FIRST..+2, key indexes 5-7, as GAKs
+ * derived like those of the GTKs; then the LFN parent updates the LFN version
+ * and the LGTK hash and sends LPCs (ws_lfn_parent.c). */
+static void ws_pae_controller_lgtk_update(protocol_interface_info_entry_t *interface_ptr, sec_prot_gtk_keys_t *lgtks, int8_t active_index, const char *event)
+{
+    pae_controller_t *controller = ws_pae_controller_get(interface_ptr);
+    if (!controller) {
+        return;
+    }
+    mac_description_storage_size_t sizes;
+    if (!interface_ptr->mac_api || !interface_ptr->mac_api->mac_storage_sizes_get ||
+            interface_ptr->mac_api->mac_storage_sizes_get(interface_ptr->mac_api, &sizes) != 0 ||
+            sizes.key_description_table_size < WS_LGTK_MAC_SLOT_FIRST + LGTK_NUM) {
+        tr_error("LGTK: the MAC key table needs %d entries", WS_LGTK_MAC_SLOT_FIRST + LGTK_NUM);
+        ws_lfn_parent_lgtk_update(interface_ptr, lgtks, active_index, event);
+        return;
+    }
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        nw_key_t *k = &controller->nw_lkey[i];
+        uint8_t slot = WS_LGTK_MAC_SLOT_FIRST + i;
+        uint8_t *lgtk = sec_prot_keys_gtk_get(lgtks, i);
+        if (k->set && (!lgtk || memcmp(k->gtk, lgtk, GTK_LEN) != 0)) {
+            if (k->installed) {
+                controller->nw_key_clear(interface_ptr, slot);
+            }
+            k->set = false;
+            k->installed = false;
+            tr_info("LGTK remove: %i", i);
+        }
+        if (!lgtk || k->set) {
+            continue;
+        }
+        uint8_t gak[GTK_LEN];
+        if (ws_pae_controller_gak_from_gtk(gak, lgtk, controller->sec_keys_nw_info.network_name) < 0) {
+            tr_error("LGTK: GAK generation failed");
+            continue;
+        }
+        uint8_t hash[GTK_HASH_LEN];
+        sec_prot_keys_gtk_hash_generate(lgtk, hash);
+        // Key index slot + 1: 5-7
+        controller->nw_key_set(interface_ptr, slot, slot, gak);
+        k->set = true;
+        k->installed = true;
+        memcpy(k->gtk, lgtk, GTK_LEN);
+        tr_info("LGTK set: %i, key index %i, hash: %s", i, slot + 1, trace_array(hash, GTK_HASH_LEN));
+    }
+    ws_lfn_parent_lgtk_update(interface_ptr, lgtks, active_index, event);
+}
+#endif
+
+int8_t ws_pae_controller_lgtk_rotate(protocol_interface_info_entry_t *interface_ptr)
+{
+    return ws_pae_auth_lgtk_rotate(interface_ptr);
+}
+
+#ifdef HAVE_WS_HOST
+int8_t ws_pae_controller_lgtk_hash_update(protocol_interface_info_entry_t *interface_ptr, const uint8_t *lgtkhash, uint8_t included)
+{
+    pae_controller_t *controller = ws_pae_controller_get(interface_ptr);
+    if (!controller) {
+        return -1;
+    }
+    // As a GTK hash of four, the fourth empty (an LFN's LGTKs are in slots 0-2)
+    memset(controller->gtkhash, 0, sizeof(controller->gtkhash));
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        if (included & (1 << i)) {
+            memcpy(controller->gtkhash + i * GTK_HASH_LEN, lgtkhash + i * GTK_HASH_LEN, GTK_HASH_LEN);
+        }
+    }
+    return ws_pae_supp_lgtk_hash_update(interface_ptr, controller->gtkhash);
+}
+
+int8_t ws_pae_controller_lgtk_key_request(protocol_interface_info_entry_t *interface_ptr)
+{
+    return ws_pae_supp_lgtk_key_request(interface_ptr);
+}
+#endif

@@ -144,6 +144,21 @@ int8_t ws_pae_supp_nw_key_valid(protocol_interface_info_entry_t *interface_ptr, 
 int8_t ws_pae_supp_gtk_hash_update(protocol_interface_info_entry_t *interface_ptr, uint8_t *gtkhash, bool del_gtk_on_mismatch);
 
 /**
+ * ws_pae_supp_lgtk_hash_update FAN 1.1 LFN: the parent's LGTK hash (LPC), as a
+ * 32-byte GTK hash with the fourth hash empty; removes LGTKs no longer listed
+ *
+ * \return gtk_mismatch_e (GTK_HASH_MISMATCH: a listed LGTK is missing), < 0 failure
+ */
+int8_t ws_pae_supp_lgtk_hash_update(protocol_interface_info_entry_t *interface_ptr, uint8_t *lgtkhash);
+
+/**
+ * ws_pae_supp_lgtk_key_request FAN 1.1 LFN: sends a key request to the parent now
+ *
+ * \return 1 sent, 0 one already on its way, < 0 failure
+ */
+int8_t ws_pae_supp_lgtk_key_request(protocol_interface_info_entry_t *interface_ptr);
+
+/**
  * ws_pae_supp_nw_key_index_update key index been updated (on PAN configuration)
  *
  * \param interface_ptr interface

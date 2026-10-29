@@ -33,6 +33,7 @@
 #include "6lowpan/ws/ws_cfg_settings.h"
 #include "6lowpan/ws/ws_common_defines.h"
 #include "6lowpan/mac/mac_helper.h"
+#include "6lowpan/ws/ws_pae_controller.h"
 
 #define TRACE_GROUP "wsmg"
 
@@ -1089,6 +1090,10 @@ void ws_management_lfn_settings_defaults(ws_lfn_settings_t *s)
     s->tx_lead_us = FHSS_LFN_TX_LEAD_US_DEFAULT;
     s->tx_min_prep_us = FHSS_LFN_TX_MIN_PREP_US_DEFAULT;
     s->tx_ttl_intervals = FHSS_LFN_TX_TTL_INTERVALS_DEFAULT;
+    s->lgtk_lifetime_s = WS_LFN_LGTK_LIFETIME_S_DEFAULT;
+    s->lgtk_new_install_required = WS_LFN_LGTK_NEW_INSTALL_REQUIRED_DEFAULT;
+    s->lgtk_new_activation_time = WS_LFN_LGTK_NEW_ACTIVATION_TIME_DEFAULT;
+    s->lgtk_activation_guard_s = WS_LFN_LGTK_ACTIVATION_GUARD_S_DEFAULT;
 }
 
 int ws_management_lfn_settings_set(int8_t interface_id, const ws_lfn_settings_t *s)
@@ -1103,7 +1108,11 @@ int ws_management_lfn_settings_set(int8_t interface_id, const ws_lfn_settings_t 
             !s->rx_window_us || s->rx_guard_us >= s->rx_window_us || !s->close_retry_us ||
             !s->lpas_interval_s || !s->lnd_slot_time_ms || !s->lnd_slots || !s->lpcs_retry_intervals ||
             !s->maintain_parent_time || !s->registration_lifetime_min || !s->bc_interval_ms || !s->bc_sync_period ||
-            !s->tx_ttl_intervals || s->tx_min_prep_us > s->tx_lead_us || s->tx_lead_us > 60000) {
+            !s->tx_ttl_intervals || s->tx_min_prep_us > s->tx_lead_us || s->tx_lead_us > 60000 ||
+            s->lgtk_lifetime_s < 60 || !s->lgtk_new_install_required || s->lgtk_new_install_required > 99 ||
+            !s->lgtk_new_activation_time ||
+            // the next LGTK must be installed before its activation point
+            (uint32_t)s->lgtk_new_activation_time * (100 - s->lgtk_new_install_required) <= 100) {
         return -2;
     }
     cur->ws_info->lfn_cfg = *s;
@@ -1125,5 +1134,22 @@ int ws_management_lfn_parent_set(int8_t interface_id, bool enable)
     return 0;
 #else
     return enable ? -2 : 0;
+#endif
+}
+
+int ws_management_lfn_lgtk_rotate(int8_t interface_id)
+{
+    protocol_interface_info_entry_t *cur = protocol_stack_interface_info_get_by_id(interface_id);
+
+    if (!cur || !ws_info(cur)) {
+        return -1;
+    }
+#if defined(HAVE_WS_VERSION_1_1) && defined(HAVE_WS_BORDER_ROUTER)
+    if (!cur->ws_info->lfn_parent || ws_pae_controller_lgtk_rotate(cur) < 0) {
+        return -1;
+    }
+    return 0;
+#else
+    return -1;
 #endif
 }

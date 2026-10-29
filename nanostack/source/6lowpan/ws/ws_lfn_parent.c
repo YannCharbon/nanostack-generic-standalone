@@ -57,6 +57,8 @@
 #include "core/ns_buffer.h"
 #include "core/ns_address_internal.h"
 #include "6lowpan/iphc_decode/iphc_compress.h"
+#include "security/protocols/sec_prot_keys.h"
+#include "6lowpan/ws/ws_pae_controller.h"
 
 #ifdef HAVE_WS_VERSION_1_1
 
@@ -291,6 +293,14 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
             return true;
         }
         ws_lfn_child_refresh(cur, ni.neighbor);
+        if (ws_llc_lfn_lpa_pending(cur, data->SrcAddr)) {
+            /* The LPA of an earlier sweep is still waiting for a window: a
+               second one would carry a second LTO-IE, which the LFN ignores
+               once it has a parent but which would move its schedule in our
+               view when acknowledged */
+            tr_debug("LPAS from %s: an LPA is still pending", trace_array(data->SrcAddr, 8));
+            return true;
+        }
         tr_info("LPAS from LFN %s: interval %"PRIu32" ms", trace_array(data->SrcAddr, 8), (uint32_t)lus.listen_interval);
         ws_lfn_lpa_send(cur, data->SrcAddr, &nr, lus.listen_interval);
         return true;
@@ -379,23 +389,133 @@ bool ws_lfn_parent_neighbor_keep(protocol_interface_info_entry_t *cur, mac_neigh
     return cur->ws_info->lfn_parent && ws_lfn_is_child(cur, n, NULL);
 }
 
-/* ---- LGTK (filled in below by the LGTK step; GTK security until then) */
+/* ---- LGTK (docs/LFN_STACK.md §8) */
 
+/* Border router: the key index of the active LGTK (5-7), 0 if none */
+static uint8_t ws_lfn_parent_lgtk_key_index(protocol_interface_info_entry_t *cur)
+{
+    ws_lfn_lgtk_t *g = &cur->ws_info->lfngtk;
+    if (!cur->ws_info->lfn_parent || !(g->active_hash_1 || g->active_hash_2 || g->active_hash_3)) {
+        return 0;
+    }
+    return WS_LGTK_KEY_INDEX_FIRST + g->active_key_index;
+}
+
+/* Frames to LFN children (LPC) use the active LGTK */
 void ws_lfn_lgtk_security_set(protocol_interface_info_entry_t *cur, asynch_request_t *req)
 {
     ws_lfn_security_set(cur, req);
+    uint8_t k = ws_lfn_parent_lgtk_key_index(cur);
+    if (k) {
+        req->security.KeyIndex = k;
+    }
 }
 
+uint8_t ws_lfn_parent_tx_key_index(protocol_interface_info_entry_t *cur, const uint8_t *dst64)
+{
+    if (!cur->ws_info->lfn_parent) {
+        return 0;
+    }
+    mac_neighbor_table_entry_t *n = mac_neighbor_table_address_discover(mac_neighbor_info(cur), dst64, MAC_ADDR_MODE_64_BIT);
+    if (!n || !ws_lfn_is_child(cur, n, NULL)) {
+        return 0;
+    }
+    return ws_lfn_parent_lgtk_key_index(cur);
+}
+
+/* Border router: an LGTK event (installed, activated, expired). The LGTK
+ * hash and active index for the LPC (LGTKHASH-IE), the LFN version up by
+ * one, and an LPC to every LFN child at the next second (black-box item 48:
+ * each event bumps the LFN version and triggers an LPC). */
+void ws_lfn_parent_lgtk_update(protocol_interface_info_entry_t *cur, sec_prot_gtk_keys_t *lgtks, int8_t active_index, const char *event)
+{
+    ws_lfn_lgtk_t *g = &cur->ws_info->lfngtk;
+    bool set[LGTK_NUM];
+
+    memset(g->lgtkhash, 0, sizeof(g->lgtkhash));
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        uint8_t *lgtk = sec_prot_keys_gtk_get(lgtks, i);
+        set[i] = lgtk != NULL;
+        if (lgtk) {
+            sec_prot_keys_gtk_hash_generate(lgtk, g->lgtkhash + i * GTK_HASH_LEN);
+        }
+    }
+    g->active_hash_1 = set[0];
+    g->active_hash_2 = set[1];
+    g->active_hash_3 = set[2];
+    if (active_index >= 0) {
+        g->active_key_index = active_index;
+    }
+    g->lfn_version++;
+    g->lfn_version_learned = true;
+    cur->ws_info->lfn.lpc_pending = 1;
+    tr_info("LGTK %s: LFN version %u, LGTKs %s%s%s, active index %d", event, g->lfn_version,
+            set[0] ? "0" : "-", set[1] ? "1" : "-", set[2] ? "2" : "-", active_index);
+}
+
+/* LFN: the LGTK hash of an LPC from the parent. LGTKs it no longer lists are
+ * removed; a listed one we lack is fetched lgtk_max_mismatch_s later with a
+ * key request (group-key handshake), as Silicon Labs' LFN does (black-box
+ * items 49-50) [M, I: a fixed delay from the first LPC that shows it]. */
 void ws_lfn_parent_lgtk_hash_check(protocol_interface_info_entry_t *cur, const struct mcps_data_ie_list *ie_ext)
 {
+#ifdef HAVE_WS_HOST
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+    ws_lgtkhash_ie_t h;
+    uint8_t hashes[3 * GTK_HASH_LEN];
+
+    if (!ws_wp_nested_lgtk_hash_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &h)) {
+        return;
+    }
+    memset(hashes, 0, sizeof(hashes));
+    if (h.lgtk0) {
+        memcpy(hashes, h.lgtk0_hash, GTK_HASH_LEN);
+    }
+    if (h.lgtk1) {
+        memcpy(hashes + GTK_HASH_LEN, h.lgtk1_hash, GTK_HASH_LEN);
+    }
+    if (h.lgtk2) {
+        memcpy(hashes + 2 * GTK_HASH_LEN, h.lgtk2_hash, GTK_HASH_LEN);
+    }
+    int8_t mismatch = ws_pae_controller_lgtk_hash_update(cur, hashes, h.lgtk0 | h.lgtk1 << 1 | h.lgtk2 << 2);
+    if (mismatch == GTK_HASH_MISMATCH) {
+        if (!lfn->lgtk_mismatch_timer_s && !lfn->lgtk_request_sent) {
+            lfn->lgtk_mismatch_timer_s = cur->ws_info->lfn_cfg.lgtk_max_mismatch_s ? cur->ws_info->lfn_cfg.lgtk_max_mismatch_s : 1;
+            tr_info("LFN: LGTK hash mismatch (active index %u), key request in %u s", h.active_lgtk_index, lfn->lgtk_mismatch_timer_s);
+        }
+    } else if (mismatch >= 0) {
+        if (lfn->lgtk_mismatch_timer_s || lfn->lgtk_request_sent) {
+            tr_info("LFN: LGTKs match the parent's hash");
+        }
+        lfn->lgtk_mismatch_timer_s = 0;
+        lfn->lgtk_request_sent = false;
+    }
+#else
     (void)cur;
     (void)ie_ext;
+#endif
 }
 
 void ws_lfn_parent_lgtk_timer(protocol_interface_info_entry_t *cur, uint32_t seconds)
 {
+#ifdef HAVE_WS_HOST
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+
+    if (!lfn->lgtk_mismatch_timer_s) {
+        return;
+    }
+    if (lfn->lgtk_mismatch_timer_s > seconds) {
+        lfn->lgtk_mismatch_timer_s -= seconds;
+        return;
+    }
+    lfn->lgtk_mismatch_timer_s = 0;
+    lfn->lgtk_request_sent = true;
+    tr_info("LFN: LGTK key request to %s", trace_array(lfn->parent_eui64, 8));
+    ws_pae_controller_lgtk_key_request(cur);
+#else
     (void)cur;
     (void)seconds;
+#endif
 }
 
 #endif /* HAVE_WS_VERSION_1_1 */

@@ -2,13 +2,14 @@
 
 GS8 stage 3 (root repo: `documents/pre-study/investigation/LFN_FAN11_Study.md` §5, items U2–U7, U9–U13, U15). The MAC and FHSS mechanics are in `LFN_MAC.md`. This note describes what the LLC, the LFN bootstrap and the border router do, the settings, the sources each rule comes from, the deviations from Silicon Labs' implementation, and the tests.
 
-Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm codecs, Wireshark's dissector, `wisun-br-linux` and its `HIF.md`, RFC 8505); **[M]** observed on Silicon Labs' LFN (root repo, `HW5_BlackBox_Phase1_Results.md`, item numbers); **[I]** our choice or inference, to check in black-box phase 2.
+Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm codecs, Wireshark's dissector, `wisun-br-linux` and its `HIF.md`, RFC 8505; for LGTK, §8); **[M]** observed on Silicon Labs' LFN (root repo, `HW5_BlackBox_Phase1_Results.md`, item numbers); **[I]** our choice or inference, to check in black-box phase 2.
 
 ## 1. Summary
 
 - **Run-time only.** An interface is an LFN when the application starts it with `NET_6LOWPAN_HOST` (`arm_nwk_interface_configure_6lowpan_bootstrap_set()`); the router library contains the LFN code (`HAVE_WS_HOST`). A border router parents LFNs after `ws_management_lfn_parent_set(id, true)`, which needs FAN 1.1. With neither, nothing changes: FAN 1.0 `dag_simple` logs are byte-identical (§7).
 - **Join** (`ws_bootstrap_lfn.c`): LPAS sweeps → LPA in the LFN's next listen window → EAPOL with the parent as authenticator (shorter listen interval meanwhile) → LPCS → LPC → DHCPv6 through the parent → address registration (NS with ARO) to the parent. No RPL, no MPL forwarding; a default route through the parent.
 - **Parent side** (`ws_lfn_parent.c`, border router): LPAS → the LFN child and a unicast LPA with an LTO-IE; LPCS → LPC; frames to an LFN child wait for its listen window (FHSS parent role, `LFN_MAC.md` §4); an LPC to every LFN child every sync period; a MAC-unicast copy of each `ff02::1` multicast to every LFN child.
+- **LGTK** (§8): the LFN authenticates with a node role KDE and gets LFN group keys (LGTKs, MAC key indexes 5–7) instead of GTKs; the border router keeps three LGTKs with their own lifetime, rotates them, announces each change with the LFN version and LGTK hash in an LPC to every LFN child, and activates a new LGTK only once its LFNs can have fetched it; the LFN fetches a new LGTK `lgtk_max_mismatch_s` after it sees its hash. FFNs keep their GTKs.
 - **Parent maintenance**: the LFN declares its parent lost after 1.5 × `maintain_parent_time` sync periods with no frame from it [M item 46], then rediscovers and rejoins without EAPOL [M item 47].
 - **Checked** in virtual time with `wsbrd-inproc` and `wsnode-inproc` (emulator `sim_utils/vtime/test_lfn_join.sh`, §7).
 
@@ -18,9 +19,9 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | --- | --- | --- | --- | --- | --- |
 | LPAS (type 10) | LFN, asynchronous on every channel | LUTT, NR (role LFN, interval range), LUS, LND | US, NETNAME | none | [S] codecs, [M] items 1–4 |
 | LPA (9) | parent, unicast | UTT, BT, NR, PANID, LBS, LTO | US, BS, PAN, NETNAME | none | [S] `ws_mngt.c` IE list, [M] item 5 |
-| LPCS (12) | LFN, unicast | LUTT, LUS | US | group key | [M] item 13 |
-| LPC (11) | parent, unicast | UTT, BT, LBS | LFNVER, LGTKHASH | group key | [M] item 14, §5.2 |
-| Data, EAPOL | LFN | LUTT, LUS (instead of UTT, BT) | US | as FFN | [S] |
+| LPCS (12) | LFN, unicast | LUTT, LUS | US | active LGTK | [M] item 13 |
+| LPC (11) | parent, unicast | UTT, BT, LBS | LFNVER, LGTKHASH | active LGTK | [M] items 14, 48, §5.2 |
+| Data, EAPOL | LFN | LUTT, LUS (instead of UTT, BT) | US | data: active LGTK; EAPOL: none | [S] |
 
 - **Frame type** is 8 bits in `asynch_request_t` and 4 bits in an LLC message (types up to 12).
 - **Receiving**: a frame with a LUTT-IE and no UTT-IE is accepted (FAN 1.1 only); its LUTT/LUS fill the sender's `lfn_uc_timing_info` (`ws_llc_lfn_timing_update()`), instead of the UTT update. LPA, LPC, LPAS and LPCS go to the bootstrap's asynchronous handler.
@@ -39,15 +40,16 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | Operation | Default route through the parent; DHCPv6 Solicit to the parent's link-local address (no prefix hint); on the reply, NS with ARO (lifetime `registration_lifetime_min`) to the parent; re-registration at 92 % of the lifetime | [M] items 16–18, 52; RFC 8505 |
 | Maintenance | Any secured frame from the parent keeps it; lost after 1.5 × `maintain_parent_time` × sync period without one → discovery, keys kept | [M] items 34, 46, 47 |
 
-- **Group key before the first LPC**: the LFN sends its LPCS with the lowest group key installed by the 4-way handshake; every LPC's key index then sets the active one (as an FFN learns it from a PAN configuration).
+- **Group key before the first LPC**: the LFN sends its LPCS with the lowest LGTK installed by the 4-way handshake (key index 5–7); every LPC's key index then sets the active one (as an FFN learns its GTK from a PAN configuration), after the LPC's LGTK hash has been applied (§8).
 - **Neighbours**: the LFN keeps only its parent; its entry is refreshed by every frame from it.
 
 ## 4. The border router as parent (`ws_lfn_parent.c`)
 
-- **LPAS**: needs NETNAME, NR (role LFN), LUS, US and LUTT. The LFN becomes a neighbour (an "LFN child": `lfn_uc_timing_info` set, `ffd_device` false, lifetime 2 × the registration lifetime, refreshed by its frames; no NUD or ETX probing). One LPA per sweep: a second LPAS within 2 proposed intervals is ignored (otherwise a second LTO-IE would move the LFN's schedule in our view only).
+- **LPAS**: needs NETNAME, NR (role LFN), LUS, US and LUTT. The LFN becomes a neighbour (an "LFN child": `lfn_uc_timing_info` set, `ffd_device` false, lifetime 2 × the registration lifetime, refreshed by its frames; no NUD or ETX probing). One LPA per sweep: a second LPAS within 2 proposed intervals is ignored, and no new LPA is queued while an earlier one to the same LFN still waits for a window (`ws_llc_lfn_lpa_pending()`). Otherwise a second LTO-IE would move the LFN's schedule in our view only: the LFN ignores an LPA once it has a parent, but the border router applies the LTO-IE of each acknowledged LPA. (Found during the LGTK work: an LPA from the first sweep, still queued, was sent after the one the LFN took, and the border router then missed the LFN's windows until its next uplink, about 340 s.)
 - **LTO-IE** (`lfn_lto`, default on) [S: the rule described in `wisun-br-linux` `ws_neigh.c`, our arithmetic]: the proposed interval snapped to a multiple (above) or a divisor (below) of the LFN broadcast interval within the LFN's NR range (6 000 ms → 5 000 ms with 10 s, as observed [M item 6]); the offset a random multiple of 300 ms in [300, min(interval, broadcast interval) − 300] ms.
 - **LPCS**: from a known LFN, secured → LPC.
 - **Sync frames [I]**: until the LFN broadcast schedule exists (stage 4), the border router sends a unicast LPC to every LFN child every sync period (`bc_interval_ms` × `bc_sync_period`, default 50 s). Silicon Labs' parents send broadcast LTS/LPC frames in the LFN broadcast slots [M items 24, 32, §5.2]; our LFN wakes for its unicast slots only, so the sync costs one unicast reception per sync period.
+- **Security**: frames to an LFN child (data through `ws_llc_lowpan_mpx_data_request()`, LPC) use the active LGTK (key index 5–7); everything else uses the GTKs as before (§8).
 - **Registration**: the LFN's NS(ARO) is handled by the existing 6LoWPAN-ND code: a registered neighbour-cache entry, through which the border router routes to the LFN; a non-FFD child is published to RPL (`rpl_control_publish_host_address`), which for the root is local.
 - **Multicast** [M items 41–42]: a multicast to `ff02::1` leaving the border router is also sent as a MAC-unicast copy to every LFN child (IPv6 destination unchanged), in its window (`lowpan_down()` → `ws_lfn_parent_multicast_copy()`). Other groups need the LFN's RFC 9685 subscription (EARO P flag), not implemented.
 
@@ -65,11 +67,15 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | `lnd_slot_time_ms`, `lnd_slots` | 60, 40 | LFN | LND-IE values [M item 4] |
 | `lpcs_retry_intervals` | 2 | LFN | LPCS again after this many intervals [I] |
 | `maintain_parent_time` | 5 | LFN | Sync periods; loss after 1.5 × [M item 46] |
-| `lgtk_max_mismatch_s` | 120 | LFN | Key request after an LGTK hash mismatch [M item 49] |
+| `lgtk_max_mismatch_s` | 120 | LFN | Key request this long after the first LPC whose LGTK hash lists an LGTK it lacks (Silicon Labs Test profile `lgtk_max_mismatch_m` = 2 min [M item 49]) |
 | `registration_lifetime_min` | 2160 | both | ARO lifetime (36 h [M item 19]) |
 | `bc_interval_ms`, `bc_sync_period` | 10000, 5 | parent | LBS-IE; sync period = their product [M §3.1] |
 | `lto` | true | parent | Send an LTO-IE in the LPA |
 | `tx_offset_us`, `tx_lead_us`, `tx_min_prep_us`, `tx_ttl_intervals` | 0, 20000, 2000, 20 | parent | `LFN_MAC.md` §5 |
+| `lgtk_lifetime_s` | 7 776 000 (90 days) | parent | LGTK lifetime (LGTK_EXPIRE_OFFSET; `wsbrd` default 129 600 min [S]) |
+| `lgtk_new_install_required` | 90 | parent | The next LGTK is installed when the active one has used this % of its lifetime [S: `wsbrd` default] |
+| `lgtk_new_activation_time` | 180 | parent | The next LGTK is activated `lgtk_lifetime_s` / this before the active one expires (12 h with the defaults) [S: `wsbrd` default] |
+| `lgtk_activation_guard_s` | 300 | parent | The next LGTK is activated no sooner than this after its installation [I] (§8) |
 
 Limits: one LFN parent per LFN, and only the border router parents LFNs (FFN routers as parents: stage 5). The split (Spinel) programs refuse the LFN roles (LFN study M12).
 
@@ -77,7 +83,7 @@ Limits: one LFN parent per LFN, and only the border router parents LFNs (FFN rou
 
 - LFN broadcast schedule, LTS frames, window widening with drift (stage 4); FFN routers as parents (stage 5).
 - RFC 9685 multicast subscriptions; LCP/FLUS and LND-slot answers (interoperability).
-- LGTK (§8).
+- LGTK leftovers (§8): LGTKs and the node role are not stored in NVM; no LGTK revocation; no frame-counter-based LGTK lifetime check; the role-based PMK/PTK lifetimes of FAN 1.1.
 
 ## 7. Tests and results
 
@@ -85,6 +91,7 @@ Limits: one LFN parent per LFN, and only the border router parents LFNs (FFN rou
 | --- | --- |
 | Emulator `sim_utils/vtime/test_lfn_join.sh` | Border router + LFN in virtual time with test traffic (`app_wsbrd/test_traffic.c`): join; UDP both ways; `ff02::1` received as MAC-unicast copies; every frame the LFN receives in a window (ACKs to its own frames aside); parent kept; the LFN's average current over a steady-state window, by part (EM2 ledger) |
 | `tests/fhss_lfn/run.sh`, emulator `test_lfn_mac.sh` | The MAC and FHSS mechanics (`LFN_MAC.md` §6) |
+| `test_lfn_join.sh`, LGTK checks | The join with an LGTK (NR KDE in the key request and in 4-way handshake message 2, LPCS under key index 5–7); for every LGTK installed after the join: the LPC with the new hash, the key request `lgtk_max_mismatch_s` after it, the LGTK received before its activation, the LFN taking the new active index from the next LPC. Rotations come from `LGTK_ROTATE_AT` (`ws_management_lfn_lgtk_rotate()`) or from short lifetimes (`BR_EXTRA="-o lfn_lgtk_lifetime_s=900 ..."`) |
 
 Test hook: `ws_test_lfn_parent_silence()` (`net_ws_test.h`) makes the border router ignore its LFN children and send them no LPC, as a parent that is gone (emulator `SILENT_AT`, `SILENT_FOR`).
 
@@ -92,13 +99,39 @@ Test hook: `ws_test_lfn_parent_silence()` (`net_ws_test.h`) makes the border rou
 - 10 seeds with test traffic, 1800 s: all checks pass; operational 37–67 s after start; LFN 74.6–79.5 µA.
 - Idle, 3 seeds, 3600 s: 41.6–42.4 µA, of which about 24 µA come from the 50 ms protocol timer (20 wakes/s), 5.8 µA from listening. With idle-tick skipping of the protocol timers (`PORTING.md`, DI6): 16.6–17.3 µA, 0.66 wakes/s, of which 0.07/s from the protocol timers; with test traffic 49.6–54.5 µA (emulator `docs/POWER_MODEL.md` §15).
 - Parent loss, 3 seeds: declared 375.2–375.7 s after the last frame from the parent, rejoin without EAPOL in 21–22 s (Silicon Labs' LFN: 375 s, 21.6–21.9 s [M items 45–47]).
+- With LGTKs (§8): the same tests pass (traffic 10 seeds, idle 3 seeds, parent loss 3 seeds); idle 16.5 µA in each of the 3 seeds, 0.6 wakes/s; with test traffic 49.5–57.6 µA (seed 1, the highest, had 28 uplink retries instead of 15, during the border router's PAN configuration sweeps, whose timing moved with the border router's random draws); parent lost 375.2–376.0 s after its last frame, operational again without EAPOL; operational 27–49 s after start. LGTK rotations and their timing: §8.
 
 Non-regression (FAN 1.0, no LFN): `dag_simple` in virtual time, 10 seeds, logs byte-identical to the previous stack commit (`compare_logs.py --mask-pointers --mask-source-lines`; the second option masks the programs' own `function():line` trace prefixes, which move when their source is edited).
 
-## 8. LGTK: not done yet
+## 8. LGTK
 
-The LFN and its parent use the network's GTKs (MAC key indexes 1–4). What remains, with its sources:
-- KDEs (Wi-SUN OUI): NR (type 3, node role), LGTKL (4), LGTK (5, same layout as the GTK KDE) [S: `wisun-br-linux` `common/specs/ws.h`, `kde.c`]; `kde_helper.c` has none of them.
-- 4-way handshake: the LFN adds an NR KDE (role LFN) to message 2; the authenticator answers with LGTK and LGTKL KDEs instead of GTKs in message 3; the same in the group-key handshake [S: `authenticator.c` picks the LGTK group by the supplicant's node role; M items 48–50].
-- Keys: three LGTKs on the border router (generation, LFN version, LGTK hash for the LPC's LGTKHASH-IE; `ws_info->lfngtk` exists), MAC key indexes 5–7 (the emulated MAC's key table has 4 entries: `sl_rf_inproc.c`, `sl_wsrcp.h`); frames to and from LFNs secured with the active LGTK.
-- An LGTK event (installed, activated, expired) increments the LFN version and sends an LPC to every child (`lpc_pending` exists for it); the LFN, on an LGTK hash mismatch, requests the new key `lgtk_max_mismatch_s` later (group-key handshake); the parent must not activate a new LGTK before its LFNs can have fetched it [M item 51].
+FAN 1.1 gives LFNs their own group keys, LGTKs, distinct from the GTKs of the FFNs. Our code is written from the public sources listed below, not copied: **[S]** `wisun-br-linux` v2.10.3 `common/specs/ws.h` (KDE types), `common/kde.c` (KDE layouts), `common/authenticator/authenticator_key.c` (which KDEs go to which role, quoting Wi-SUN FAN 1.1 6.5.2.2), and the Apache-2.0 stack files of `wisun-br-linux` v1.9.1 (`key_sec_prot.c`, `auth_fwh_sec_prot.c`, `auth_gkh_sec_prot.c`: the node role read from the key request); `examples/wsbrd.conf` (LGTK timer names and defaults); **[M]** the black-box results, items 48–51.
+
+**KDEs** (`kde_helper.c`, Wi-SUN OUI `0c:5a:9e`): node role (type 3, one byte), LGTKL (type 4, one byte, bit i: LGTK i live), LGTK (type 5, the GTK KDE's layout: key index 0–2 in bits 0–1, a reserved byte, the key).
+
+**Handshakes.** The supplicant's key request (initial EAPOL-Key) carries, for an LFN, its LGTKL and an NR KDE with role LFN, instead of its GTKL [S: `wsrd` writes GTKL, LGTKL and NR; the authenticator reads the NR KDE from the key request]. The LFN also puts its NR KDE in 4-way handshake message 2, in clear under the MIC; the authenticator only traces it, since it takes the role from the key request. The authenticator, on an NR KDE with role LFN, switches that supplicant's group keys to the LGTKs (`sec_prot_keys_lfn_set()`): the key to insert is chosen among the LGTKs by its LGTKL, and message 3 and group-key handshake message 1 carry an LGTK, its lifetime and the LGTKL instead of a GTK and the GTKL. A key request without an NR KDE (FAN 1.0, our FFNs) is handled as before; one with role LFN while the border router has no LGTKs is dropped [S]. The LFN reads LGTK and LGTKL KDEs where an FFN reads GTK and GTKL.
+
+**Keys.** The border router keeps three LGTKs next to its GTKs (`pae_controller_t.lgtks`), in MAC key slots 4–6 with key indexes 5–7 (the emulated MAC's key table has 7 entries; a smaller table gives an error and no LGTK on the MAC). Their GAKs are derived from the network name like those of the GTKs. An LFN keeps its LGTKs in its group-key slots 0–2 with key indexes 5–7 (`ws_bootstrap_nw_key_set()`), so a key table of 4 is enough for it.
+
+**Lifecycle on the border router** (`ws_pae_auth.c`, in the authenticator's second timer, once the interface parents LFNs):
+- the first LGTK is generated and active at once;
+- the next one is installed when the active one has used `lgtk_new_install_required` % of `lgtk_lifetime_s`, and activated `lgtk_lifetime_s` / `lgtk_new_activation_time` before the active one expires [S: LGTK_NEW_INSTALL_REQUIRED, LGTK_NEW_ACTIVATION_TIME];
+- **[I] activation guard:** it is activated no sooner than `lgtk_activation_guard_s` after its installation. An LFN fetches a new LGTK about `lgtk_max_mismatch_s` after the LPC that shows its hash; a parent that switches earlier sends frames the LFN cannot read and LPCs it cannot decrypt (black-box item 51: `wsbrd`'s NA under key 7 was not acknowledged for 17 s). The default 300 s covers 120 s of mismatch wait, an LPC that missed its window and the next sync period (50 s), and the handshake. If the active LGTK expires first, the next one is activated then, whatever the guard;
+- an LGTK whose lifetime ends is removed;
+- `ws_management_lfn_lgtk_rotate()` installs the next LGTK now and shortens the active one's lifetime so that the activation falls when the guard has passed; the old LGTK then expires `lgtk_lifetime_s` / `lgtk_new_activation_time` later.
+
+**Each LGTK event** (installed, activated, expired) increments the LFN version, updates the LGTK hash and active index for the LGTKHASH-IE (`ws_info->lfngtk`), and sets `lpc_pending`, so every LFN child gets an LPC at the next second [M item 48: one event, one version, an extra LPC]. The LPC is secured with the active LGTK (`ws_lfn_lgtk_security_set()`), as are data frames to LFN children (`ws_lfn_parent_tx_key_index()`, from the LLC). FAN 1.1 PAN configurations carry the same LFN version and LGTK hash, as before.
+
+**On the LFN** (`ws_lfn_parent.c`, `ws_pae_supp.c`): each LPC's LGTK hash is applied before its key index (`ws_pae_controller_lgtk_hash_update()`): LGTKs it no longer lists, or whose hash differs, are removed; listed ones become fresh; a listed LGTK the LFN lacks starts a timer of `lgtk_max_mismatch_s`. When it ends, the LFN sends a key request to its parent (`ws_pae_supp_lgtk_key_request()`), and the parent answers with a group-key handshake; retries are an FFN's key-update retries. A later LPC whose hash matches stops the timer [M items 49–50; I: a fixed delay from the first LPC that shows the new hash; Silicon Labs' two samples, 113 and 117 s, cannot tell a fixed delay from a random one]. The LPC key index then sets the active LGTK. The LFN's EAPOL target after the join is its LFN parent, not an RPL parent.
+
+**Deviations [I].** The LFN keeps its 5 s interval during the group-key handshake (Silicon Labs' LFN listens every 1.25 s then, item 50); the handshake's first message then waits for the next window. Event LPCs are unicast to each child at the next second, not broadcast in the next LFN broadcast slot and repeated for 5 sync periods (stage 4). The key request is sent once the timer ends, without the random spread an FFN uses after a GTK mismatch.
+
+**Limits.** LGTKs and the supplicants' node roles are not stored: after a border router restart the LGTKs are new, and LFNs that rejoin without EAPOL cannot read the new LPCs until they authenticate again. No LGTK revocation (`ws_pae_auth_node_access_revoke_start()` acts on GTKs only), no frame-counter-based lifetime shortening, no role-based PMK/PTK lifetimes. With a guard longer than the time between installation and expiry, activation happens at the old LGTK's expiry; the LFN's uplinks under the old key then fail until it hears the next LPC (seen with 6-minute lifetimes: 3 losses in 62 request-echo exchanges).
+
+**Results** (emulator `test_lfn_join.sh`, same conditions as §7):
+- Join with an LGTK: in every run (37), NR KDE in the key request and message 2, LPCS under key index 5.
+- Rotation at 600 s (`LGTK_ROTATE_AT=600`), 10 seeds × 1800 s with test traffic, all checks pass (no request or echo lost across the rotation): the new hash reached the LFN 5.2–10.1 s after the installation (the LPC waits for the LFN's window); key request 119.0–120.0 s after that LPC (the timer has 1 s steps; Silicon Labs' LFN: 113 and 117 s); LGTK received 0.2–10.0 s after the request (group-key handshake, one or two listen intervals); activation 300 s after installation (guard); the LFN took the new key as active 1.8–8.2 s after the activation. LFN 50.7–53.9 µA.
+- Short lifetimes (`lgtk_lifetime_s` 900, install at 50 %, activation 300 s before expiry), 3 seeds × 1800 s: three installations, three activations held 150 s by the guard and two expiries per run, every check passes.
+- `lgtk_max_mismatch_s` = 30 on the LFN, 3 seeds: key request 29.2–30.0 s after the LPC with the new hash.
+- Without the guard (`lgtk_activation_guard_s` 0) and `wsbrd`'s fast test timers (lifetime 360 s, install at 50 %, activation 120 s before expiry; 1 run): the border router activates 60 s after installation, before the LFN has the key; the LFN then took 142 and 147 s to follow, missed 12 of 23 unicast requests and 16 of 23 `ff02::1` requests, and stopped seeing new hashes. With the guard (300 s, so activation at expiry) the same run lost 1 of 23 unicast echoes, 1 of 23 `ff02::1` requests and 1 of 16 uplink echoes, around the expiries.
+- FAN 1.0 `dag_simple`, 10 seeds: logs byte-identical to the previous stack commit.

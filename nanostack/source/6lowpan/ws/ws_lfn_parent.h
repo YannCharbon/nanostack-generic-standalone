@@ -34,7 +34,14 @@ void ws_lfn_lgtk_security_set(struct protocol_interface_info_entry *cur, struct 
 /* LFN: LGTK hash of an LPC against ours; key request after the mismatch time */
 void ws_lfn_parent_lgtk_hash_check(struct protocol_interface_info_entry *cur, const struct mcps_data_ie_list *ie_ext);
 void ws_lfn_parent_lgtk_timer(struct protocol_interface_info_entry *cur, uint32_t seconds);
+/* Border router: LGTKs changed (ws_pae_controller.c) */
+struct sec_prot_gtk_keys_s;
+void ws_lfn_parent_lgtk_update(struct protocol_interface_info_entry *cur, struct sec_prot_gtk_keys_s *lgtks, int8_t active_index, const char *event);
+/* Border router: the LGTK key index for a frame to an LFN child, 0 otherwise */
+uint8_t ws_lfn_parent_tx_key_index(struct protocol_interface_info_entry *cur, const uint8_t *dst64);
 #else
+#define ws_lfn_parent_lgtk_update(cur, lgtks, active_index, event) ((void)0)
+#define ws_lfn_parent_tx_key_index(cur, dst64) (0)
 #define ws_lfn_parent_asynch_ind(cur, data, ie_ext, type) (false)
 #define ws_lfn_parent_seconds_timer(cur, seconds) ((void)0)
 #define ws_lfn_parent_frame_rx(cur, src64) ((void)0)

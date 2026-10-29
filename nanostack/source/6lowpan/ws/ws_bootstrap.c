@@ -2798,7 +2798,8 @@ static void ws_bootstrap_mac_security_enable(protocol_interface_info_entry_t *cu
 
 static void ws_bootstrap_nw_key_set(protocol_interface_info_entry_t *cur, uint8_t slot, uint8_t index, uint8_t *key)
 {
-    mac_helper_security_key_to_descriptor_set(cur, key, index + 1, slot);
+    // A FAN 1.1 LFN's group keys are LGTKs: key indexes 5-7
+    mac_helper_security_key_to_descriptor_set(cur, key, index + (wisun_mode_host(cur) ? WS_LGTK_KEY_INDEX_FIRST : 1), slot);
 }
 
 static void ws_bootstrap_nw_key_clear(protocol_interface_info_entry_t *cur, uint8_t slot)
@@ -2818,7 +2819,7 @@ static void ws_bootstrap_nw_key_index_set(protocol_interface_info_entry_t *cur, 
         }
     }
 
-    mac_helper_security_auto_request_key_index_set(cur, index, index + 1);
+    mac_helper_security_auto_request_key_index_set(cur, index, index + (wisun_mode_host(cur) ? WS_LGTK_KEY_INDEX_FIRST : 1));
 }
 
 static void ws_bootstrap_nw_frame_counter_set(protocol_interface_info_entry_t *cur, uint32_t counter, uint8_t slot)

@@ -47,6 +47,7 @@
 #include "security/kmp/kmp_eapol_pdu_if.h"
 #include "6lowpan/ws/ws_config.h"
 #include "6lowpan/ws/ws_cfg_settings.h"
+#include "6lowpan/ws/ws_common.h"
 #include "6lowpan/ws/ws_pae_controller.h"
 #include "6lowpan/ws/ws_pae_timers.h"
 #include "6lowpan/ws/ws_pae_supp.h"
@@ -220,6 +221,7 @@ int8_t ws_pae_supp_authenticate(protocol_interface_info_entry_t *interface_ptr, 
     ws_pae_supp_address_set(pae_supp, &pae_supp->target_addr);
 
     pae_supp->auth_requested = true;
+    pae_supp->entry.sec_keys.lfn = interface_ptr->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_HOST;
 
     // Randomizes the sending of initial EAPOL-Key message
     pae_supp->initial_key_timer = rand_get_random_in_range(INITIAL_KEY_TIMER_MIN, INITIAL_KEY_TIMER_MAX);
@@ -344,6 +346,52 @@ int8_t ws_pae_supp_gtk_hash_update(protocol_interface_info_entry_t *interface_pt
 
     return 0;
 }
+
+#ifdef HAVE_WS_HOST
+int8_t ws_pae_supp_lgtk_hash_update(protocol_interface_info_entry_t *interface_ptr, uint8_t *lgtkhash)
+{
+    pae_supp_t *pae_supp = ws_pae_supp_get(interface_ptr);
+    if (!pae_supp) {
+        return -1;
+    }
+
+    /* The parent's LGTK hash (LPC): LGTKs it no longer lists, or whose hash
+       differs, are removed; listed ones become fresh. No key request here:
+       the LFN makes it lgtk_max_mismatch_s later (ws_lfn_parent.c). */
+    gtk_mismatch_e mismatch = sec_prot_keys_gtks_hash_update(pae_supp->sec_keys_nw_info->gtks, lgtkhash, true);
+    pae_supp->nw_key_insert(pae_supp->interface_ptr, pae_supp->sec_keys_nw_info->gtks, false);
+
+    return mismatch;
+}
+
+int8_t ws_pae_supp_lgtk_key_request(protocol_interface_info_entry_t *interface_ptr)
+{
+    pae_supp_t *pae_supp = ws_pae_supp_get(interface_ptr);
+    if (!pae_supp) {
+        return -1;
+    }
+    if (pae_supp->auth_requested || ws_pae_lib_kmp_list_count(&pae_supp->entry.kmp_list) > 0 ||
+            pae_supp->gtk_update_trickle_running || pae_supp->initial_key_retry_timer) {
+        // An authentication or a key request is already on its way
+        return 0;
+    }
+
+    /* Key request now (the wait was the LFN's lgtk_max_mismatch_s); the
+       retries are those of an FFN's key update */
+    pae_supp->tx_failure_on_initial_key = false;
+    pae_supp->initial_key_retry_cnt = KEY_UPDATE_RETRY_COUNT;
+    if (ws_pae_supp_initial_key_send(pae_supp) < 0) {
+        tr_info("EAPOL-Key send failed");
+    }
+    pae_supp->initial_key_retry_cnt--;
+    pae_supp->initial_key_retry_max_value = pae_supp->sec_cfg->prot_cfg.initial_key_retry_max;
+    pae_supp->initial_key_retry_timer = rand_get_random_in_range(pae_supp->sec_cfg->prot_cfg.initial_key_retry_min,
+                                                                 pae_supp->initial_key_retry_max_value);
+    ws_pae_supp_timer_start(pae_supp);
+    tr_info("LGTK key request, retry in %i s", pae_supp->initial_key_retry_timer);
+    return 1;
+}
+#endif
 
 int8_t ws_pae_supp_nw_key_index_update(protocol_interface_info_entry_t *interface_ptr, uint8_t index)
 {
@@ -597,6 +645,8 @@ int8_t ws_pae_supp_init(protocol_interface_info_entry_t *interface_ptr, const se
 
     sec_prot_keys_gtks_init(pae_supp->sec_keys_nw_info->gtks);
     sec_prot_keys_init(&pae_supp->entry.sec_keys, pae_supp->sec_keys_nw_info->gtks, certs);
+    // FAN 1.1 LFN: its group keys are LGTKs (NR, LGTK and LGTKL KDEs)
+    pae_supp->entry.sec_keys.lfn = interface_ptr->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_HOST;
     memset(pae_supp->new_br_eui_64, 0, 8);
 
     pae_supp->kmp_service = kmp_service_create();
@@ -1043,6 +1093,16 @@ static int8_t ws_pae_supp_eapol_pdu_address_check(protocol_interface_info_entry_
 
 static int8_t ws_pae_supp_parent_eui_64_get(protocol_interface_info_entry_t *interface_ptr, uint8_t *eui_64)
 {
+#ifdef HAVE_WS_HOST
+    // FAN 1.1 LFN: no RPL, its LFN parent is its EAPOL target
+    if (interface_ptr->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_HOST) {
+        if (!interface_ptr->ws_info || !interface_ptr->ws_info->lfn.parent_known) {
+            return -1;
+        }
+        memcpy(eui_64, interface_ptr->ws_info->lfn.parent_eui64, 8);
+        return 0;
+    }
+#endif
     rpl_dodag_info_t dodag_info;
     if (!interface_ptr->rpl_domain) {
         return -1;

@@ -53,6 +53,7 @@
 #include "6lowpan/ws/ws_pae_lib.h"
 #include "6lowpan/ws/ws_pae_time.h"
 #include "6lowpan/ws/ws_pae_key_storage.h"
+#include "6lowpan/ws/ws_common.h"
 
 #ifdef HAVE_PAE_AUTH
 
@@ -123,6 +124,11 @@ typedef struct {
     bool gtk_new_act_time_exp : 1;                           /**< GTK new activation time expired */
     bool prev_system_time_set : 1;                           /**< Previous system time set */
     bool prev_frame_cnt_set : 1;                             /**< Previous frame counter set */
+    /* FAN 1.1 LGTKs (border router parenting LFNs; docs/LFN_STACK.md §8) */
+    ws_pae_auth_lgtk_update *lgtk_update;                    /**< LGTKs changed callback */
+    uint32_t lgtk_since_install_s;                           /**< Time since the last LGTK was installed */
+    bool lgtk_started : 1;                                   /**< LGTKs generated */
+    bool lgtk_guard_traced : 1;                              /**< Activation held by the guard: traced once */
 } pae_auth_t;
 
 static int8_t ws_pae_auth_network_keys_from_gtks_set(pae_auth_t *pae_auth, bool force_install);
@@ -158,6 +164,7 @@ static kmp_api_t *ws_pae_auth_kmp_create_and_start(kmp_service_t *service, kmp_t
 static void ws_pae_auth_kmp_api_finished(kmp_api_t *kmp);
 static void ws_pae_auth_active_supp_deleted(void *pae_auth);
 static void ws_pae_auth_waiting_supp_deleted(void *pae_auth);
+static void ws_pae_auth_lgtk_timer(pae_auth_t *pae_auth, uint16_t seconds);
 
 static int8_t tasklet_id = -1;
 static NS_LIST_DEFINE(pae_auth_list, pae_auth_t, link);
@@ -209,6 +216,10 @@ int8_t ws_pae_auth_init(protocol_interface_info_entry_t *interface_ptr, sec_prot
     pae_auth->gtk_new_inst_req_exp = false;
     pae_auth->gtk_new_act_time_exp = false;
     pae_auth->prev_frame_cnt_set = false;
+    pae_auth->lgtk_update = NULL;
+    pae_auth->lgtk_since_install_s = 0;
+    pae_auth->lgtk_started = false;
+    pae_auth->lgtk_guard_traced = false;
     pae_auth->prev_system_time_set = false;
 
     pae_auth->relay_socked_msg_if_instance_id = 0;
@@ -798,6 +809,8 @@ void ws_pae_auth_slow_timer(uint16_t seconds)
             }
         }
 
+        ws_pae_auth_lgtk_timer(pae_auth, seconds);
+
         ws_pae_lib_supp_list_slow_timer_update(&pae_auth->active_supp_list, seconds);
 
         ws_pae_lib_shared_comp_list_timeout(&pae_auth->shared_comp_list, seconds);
@@ -1250,6 +1263,10 @@ static kmp_api_t *ws_pae_auth_kmp_incoming_ind(kmp_service_t *service, uint8_t m
         kmp_address_copy(&supp_entry->addr, addr);
     }
 
+    // FAN 1.1: the group keys of each role; an LFN's key request switches it to the LGTKs
+    supp_entry->sec_keys.ffn_gtks = pae_auth->sec_keys_nw_info->gtks;
+    supp_entry->sec_keys.lgtks = pae_auth->lgtk_started ? pae_auth->sec_keys_nw_info->lgtks : NULL;
+
     // Increases waiting time for supplicant authentication
     ws_pae_lib_supp_timer_ticks_set(supp_entry, WAIT_FOR_AUTHENTICATION_TICKS);
 
@@ -1444,7 +1461,11 @@ static kmp_type_e ws_pae_auth_next_protocol_get(pae_auth_t *pae_auth, supp_entry
              * has been, trigger 4WH to update also the PTK. This prevents writing multiple
              * GTK keys to same index using same PTK.
              */
-            if (pae_auth->sec_cfg->timer_cfg.gtk_expire_offset > SHORT_GTK_LIFETIME &&
+            uint32_t group_key_lifetime = pae_auth->sec_cfg->timer_cfg.gtk_expire_offset;
+            if (sec_keys->lfn) {
+                group_key_lifetime = pae_auth->interface_ptr->ws_info->lfn_cfg.lgtk_lifetime_s;
+            }
+            if (group_key_lifetime > SHORT_GTK_LIFETIME &&
                     sec_prot_keys_ptk_installed_gtk_hash_mismatch_check(sec_keys, gtk_index)) {
                 // start 4WH towards supplicant
                 next_type = IEEE_802_11_4WH;
@@ -1544,5 +1565,186 @@ static void ws_pae_auth_waiting_supp_deleted(void *pae_auth_ptr)
     pae_auth->waiting_supp_list_size--;
 }
 
-#endif /* HAVE_PAE_AUTH */
+/*
+ * FAN 1.1 LGTKs (docs/LFN_STACK.md §8). Three LFN group keys, MAC key indexes
+ * 5-7, kept apart from the GTKs, with their own lifetime and the GTK rules
+ * [S: Wi-SUN FAN LGTK_EXPIRE_OFFSET, LGTK_NEW_ACTIVATION_TIME and
+ * LGTK_NEW_INSTALL_REQUIRED, defaults as in wisun-br-linux's wsbrd.conf]:
+ * the next LGTK is installed when the active one has lgtk_new_install_required
+ * % of its lifetime behind it, and activated lifetime / lgtk_new_activation_time
+ * before the active one expires. [I] Activation also waits until the new LGTK
+ * has been installed for lgtk_activation_guard_s, so that LFNs, which fetch it
+ * lgtk_max_mismatch_s after they see its hash, have it before the parent uses
+ * it (black-box item 51); an expiring active LGTK is replaced regardless.
+ */
+static const ws_lfn_settings_t *ws_pae_auth_lgtk_cfg(pae_auth_t *pae_auth)
+{
+    protocol_interface_info_entry_t *cur = pae_auth->interface_ptr;
+    if (!cur->ws_info || !cur->ws_info->lfn_parent || !pae_auth->lgtk_update || !pae_auth->sec_keys_nw_info->lgtks) {
+        return NULL;
+    }
+    return &cur->ws_info->lfn_cfg;
+}
 
+static void ws_pae_auth_lgtk_changed(pae_auth_t *pae_auth, const char *event)
+{
+    sec_prot_gtk_keys_t *lgtks = pae_auth->sec_keys_nw_info->lgtks;
+    pae_auth->lgtk_update(pae_auth->interface_ptr, lgtks, sec_prot_keys_gtk_status_active_get(lgtks), event);
+}
+
+static int8_t ws_pae_auth_lgtk_insert(pae_auth_t *pae_auth, uint32_t lifetime)
+{
+    sec_prot_gtk_keys_t *lgtks = pae_auth->sec_keys_nw_info->lgtks;
+    uint8_t lgtk[GTK_LEN];
+
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        if (sec_prot_keys_gtk_is_set(lgtks, i)) {
+            continue;
+        }
+        do {
+            rand_get_n_bytes_random(lgtk, GTK_LEN);
+        } while (sec_prot_keys_gtk_valid_check(lgtk) < 0);
+        sec_prot_keys_gtk_set(lgtks, i, lgtk, lifetime);
+        sec_prot_keys_gtk_status_fresh_set(lgtks, i);
+        pae_auth->lgtk_since_install_s = 0;
+        pae_auth->lgtk_guard_traced = false;
+        tr_info("LGTK installed: index %i, lifetime %"PRIu32" s", i, lifetime);
+        return i;
+    }
+    tr_warn("LGTK: no free index");
+    return -1;
+}
+
+// The next LGTK: installed, not yet active, not old
+static int8_t ws_pae_auth_lgtk_next_get(sec_prot_gtk_keys_t *lgtks)
+{
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        if (sec_prot_keys_gtk_is_set(lgtks, i) && sec_prot_keys_gtk_status_get(lgtks, i) == GTK_STATUS_FRESH) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void ws_pae_auth_lgtk_timer(pae_auth_t *pae_auth, uint16_t seconds)
+{
+    const ws_lfn_settings_t *c = ws_pae_auth_lgtk_cfg(pae_auth);
+    sec_prot_gtk_keys_t *lgtks = pae_auth->sec_keys_nw_info->lgtks;
+
+    if (!c) {
+        return;
+    }
+    if (!pae_auth->lgtk_started) {
+        // The first LGTK, active at once
+        int8_t i = ws_pae_auth_lgtk_insert(pae_auth, c->lgtk_lifetime_s);
+        if (i < 0) {
+            return;
+        }
+        sec_prot_keys_gtk_status_active_set(lgtks, i);
+        pae_auth->lgtk_started = true;
+        ws_pae_auth_lgtk_changed(pae_auth, "installed and active");
+        return;
+    }
+    pae_auth->lgtk_since_install_s += seconds;
+
+    uint64_t current_time = ws_pae_current_time_get();
+    int8_t active = sec_prot_keys_gtk_status_active_get(lgtks);
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        if (!sec_prot_keys_gtk_is_set(lgtks, i)) {
+            continue;
+        }
+        if (sec_prot_keys_gtk_lifetime_decrement(lgtks, i, current_time, seconds, false) > 0) {
+            continue;
+        }
+        if (i == active) {
+            // The active LGTK expires: the next one replaces it now
+            int8_t next = ws_pae_auth_lgtk_next_get(lgtks);
+            if (next >= 0) {
+                sec_prot_keys_gtk_status_active_set(lgtks, next);
+                tr_info("LGTK activated: index %i (the active one expired)", next);
+                ws_pae_auth_lgtk_changed(pae_auth, "activated");
+                active = next;
+            } else {
+                active = -1;
+            }
+        }
+        sec_prot_keys_gtk_clear(lgtks, i);
+        tr_info("LGTK expired: index %i", i);
+        ws_pae_auth_lgtk_changed(pae_auth, "expired");
+    }
+    if (active < 0) {
+        // No LGTK left (all expired): a new one, active at once
+        active = ws_pae_auth_lgtk_insert(pae_auth, c->lgtk_lifetime_s);
+        if (active >= 0) {
+            sec_prot_keys_gtk_status_active_set(lgtks, active);
+            ws_pae_auth_lgtk_changed(pae_auth, "installed and active");
+        }
+        return;
+    }
+
+    uint32_t lifetime = c->lgtk_lifetime_s;
+    uint32_t left = sec_prot_keys_gtk_lifetime_get(lgtks, active);
+    int8_t next = ws_pae_auth_lgtk_next_get(lgtks);
+    if (next < 0) {
+        if (left <= lifetime - (uint64_t)lifetime * c->lgtk_new_install_required / 100) {
+            if (ws_pae_auth_lgtk_insert(pae_auth, lifetime) >= 0) {
+                ws_pae_auth_lgtk_changed(pae_auth, "installed");
+            }
+        }
+        return;
+    }
+    if (left <= lifetime / c->lgtk_new_activation_time) {
+        if (pae_auth->lgtk_since_install_s < c->lgtk_activation_guard_s) {
+            if (!pae_auth->lgtk_guard_traced) {
+                pae_auth->lgtk_guard_traced = true;
+                tr_info("LGTK activation of index %i held for %"PRIu32" s (activation guard)", next,
+                        c->lgtk_activation_guard_s - pae_auth->lgtk_since_install_s);
+            }
+            return;
+        }
+        sec_prot_keys_gtk_status_active_set(lgtks, next);
+        tr_info("LGTK activated: index %i, %"PRIu32" s after its installation", next, pae_auth->lgtk_since_install_s);
+        ws_pae_auth_lgtk_changed(pae_auth, "activated");
+    }
+}
+
+void ws_pae_auth_lgtk_cb_register(protocol_interface_info_entry_t *interface_ptr, ws_pae_auth_lgtk_update *lgtk_update)
+{
+    pae_auth_t *pae_auth = ws_pae_auth_get(interface_ptr);
+    if (!pae_auth) {
+        return;
+    }
+    pae_auth->lgtk_update = lgtk_update;
+}
+
+int8_t ws_pae_auth_lgtk_rotate(protocol_interface_info_entry_t *interface_ptr)
+{
+    pae_auth_t *pae_auth = ws_pae_auth_get(interface_ptr);
+    if (!pae_auth || !pae_auth->lgtk_started) {
+        return -1;
+    }
+    const ws_lfn_settings_t *c = ws_pae_auth_lgtk_cfg(pae_auth);
+    sec_prot_gtk_keys_t *lgtks = pae_auth->sec_keys_nw_info->lgtks;
+    int8_t active = sec_prot_keys_gtk_status_active_get(lgtks);
+    if (!c || active < 0) {
+        return -1;
+    }
+    tr_info("LGTK rotation: active index %i", active);
+    if (ws_pae_auth_lgtk_next_get(lgtks) < 0) {
+        if (ws_pae_auth_lgtk_insert(pae_auth, c->lgtk_lifetime_s) < 0) {
+            return -1;
+        }
+        ws_pae_auth_lgtk_changed(pae_auth, "installed");
+    }
+    /* The active LGTK reaches its activation point once the guard has passed
+       (it then lives lifetime / lgtk_new_activation_time more) */
+    uint32_t left = sec_prot_keys_gtk_lifetime_get(lgtks, active);
+    uint32_t to_activation = c->lgtk_lifetime_s / c->lgtk_new_activation_time;
+    uint32_t guard_left = c->lgtk_activation_guard_s > pae_auth->lgtk_since_install_s ? c->lgtk_activation_guard_s - pae_auth->lgtk_since_install_s : 0;
+    if (left > to_activation + guard_left) {
+        sec_prot_keys_gtk_lifetime_decrement(lgtks, active, ws_pae_current_time_get(), left - to_activation - guard_left, false);
+    }
+    return 0;
+}
+
+#endif /* HAVE_PAE_AUTH */

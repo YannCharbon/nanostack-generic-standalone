@@ -146,6 +146,7 @@ typedef bool ws_neighbor_info_request(struct protocol_interface_info_entry *inte
  * @return true if the frame had a LUTT-IE
  */
 bool ws_llc_lfn_timing_update(struct protocol_interface_info_entry *interface, struct ws_neighbor_class_entry *ws_neighbor, const struct mcps_data_ie_list *ie_ext, uint32_t rx_timestamp);
+bool ws_llc_lfn_lpa_pending(struct protocol_interface_info_entry *interface, const uint8_t *dst64);
 
 /**
  * @brief ws_llc_create ws LLC module create

@@ -279,6 +279,30 @@ typedef int8_t ws_pae_auth_nw_frame_counter_read(protocol_interface_info_entry_t
  * \param nw_frame_cnt_read network frame counter read callback
  *
  */
+/**
+ * ws_pae_auth_lgtk_update LGTKs changed (FAN 1.1: installed, activated or expired)
+ *
+ * \param interface_ptr interface
+ * \param lgtks the LGTKs
+ * \param active_index the active LGTK (0-2), -1 none
+ * \param event what changed, for traces
+ */
+typedef void ws_pae_auth_lgtk_update(protocol_interface_info_entry_t *interface_ptr, sec_prot_gtk_keys_t *lgtks, int8_t active_index, const char *event);
+
+/**
+ * ws_pae_auth_lgtk_cb_register registers the LGTK change callback; LGTKs are
+ * generated once the interface parents LFNs (ws_management_lfn_parent_set())
+ */
+void ws_pae_auth_lgtk_cb_register(protocol_interface_info_entry_t *interface_ptr, ws_pae_auth_lgtk_update *lgtk_update);
+
+/**
+ * ws_pae_auth_lgtk_rotate starts an LGTK rotation now: a new LGTK is
+ * installed, and activated once the activation guard has passed
+ *
+ * \return < 0 failure (no LGTKs)
+ */
+int8_t ws_pae_auth_lgtk_rotate(protocol_interface_info_entry_t *interface_ptr);
+
 void ws_pae_auth_cb_register(protocol_interface_info_entry_t *interface_ptr, ws_pae_auth_gtk_hash_set *hash_set, ws_pae_auth_nw_key_insert *nw_key_insert, ws_pae_auth_nw_key_index_set *nw_key_index_set, ws_pae_auth_nw_info_updated *nw_info_updated, ws_pae_auth_ip_addr_get *ip_addr_get, ws_pae_auth_congestion_get *congestion_get, ws_pae_auth_nw_frame_counter_read *nw_frame_cnt_read);
 
 #else
@@ -289,6 +313,8 @@ void ws_pae_auth_cb_register(protocol_interface_info_entry_t *interface_ptr, ws_
 #define ws_pae_auth_delete NULL
 #define ws_pae_auth_cb_register(interface_ptr, hash_set, nw_key_insert, nw_key_index_set, nw_info_updated, ip_addr_get, congestion_get, nw_frame_cnt_read) {(void) hash_set;}
 #define ws_pae_auth_start(interface_ptr)
+#define ws_pae_auth_lgtk_cb_register(interface_ptr, lgtk_update)
+#define ws_pae_auth_lgtk_rotate(interface_ptr) -1
 #define ws_pae_auth_gtks_updated NULL
 #define ws_pae_auth_nw_key_index_update NULL
 #define ws_pae_auth_nw_info_set NULL

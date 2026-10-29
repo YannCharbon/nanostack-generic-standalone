@@ -121,6 +121,7 @@ typedef struct ws_lfn_state_s {
     uint16_t lpas_timer_s;          /**< Next LPAS sweep */
     uint16_t lpcs_timer_s;          /**< LPCS retry */
     uint16_t lgtk_mismatch_timer_s; /**< Key request after an LGTK hash mismatch */
+    bool lgtk_request_sent: 1;      /**< Key request made for the current mismatch */
     uint16_t lfn_version;           /**< Last LFN version heard (LPC) */
     uint32_t reregister_s;          /**< Address re-registration */
 

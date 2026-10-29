@@ -945,6 +945,24 @@ uint8_t sec_prot_keys_gtk_count(sec_prot_gtk_keys_t *gtks)
     return count;
 }
 
+int8_t sec_prot_keys_lfn_set(sec_prot_keys_t *sec_keys, bool lfn)
+{
+    if (lfn && !sec_keys->lgtks) {
+        return -1;
+    }
+    if (lfn != sec_keys->lfn) {
+        // A role change: the GTK index to insert referred to the other set
+        sec_keys->gtk_set_index = -1;
+    }
+    sec_keys->lfn = lfn;
+    if (lfn) {
+        sec_keys->gtks = sec_keys->lgtks;
+    } else if (sec_keys->ffn_gtks) {
+        sec_keys->gtks = sec_keys->ffn_gtks;
+    }
+    return 0;
+}
+
 void sec_prot_keys_ptk_installed_gtk_hash_clear_all(sec_prot_keys_t *sec_keys)
 {
     for (uint8_t index = 0; index < GTK_NUM; index++) {

@@ -245,13 +245,14 @@ static int8_t auth_fwh_sec_prot_message_send(sec_prot_t *prot, fwh_sec_prot_msg_
             uint8_t gtk_index;
             uint8_t *gtk = sec_prot_keys_get_gtk_to_insert(prot->sec_keys, &gtk_index);
             if (gtk) {
-                kde_end = kde_gtk_write(kde_end, gtk_index, gtk);
+                // An LFN gets an LGTK (FAN 1.1; the supplicant's NR KDE)
+                kde_end = prot->sec_keys->lfn ? kde_lgtk_write(kde_end, gtk_index, gtk) : kde_gtk_write(kde_end, gtk_index, gtk);
 
                 uint32_t gtk_lifetime = sec_prot_keys_gtk_lifetime_get(prot->sec_keys->gtks, gtk_index);
                 kde_end = kde_lifetime_write(kde_end, gtk_lifetime);
             }
             uint8_t gtkl = sec_prot_keys_fresh_gtkl_get(prot->sec_keys->gtks);
-            kde_end = kde_gtkl_write(kde_end, gtkl);
+            kde_end = prot->sec_keys->lfn ? kde_lgtkl_write(kde_end, gtkl) : kde_gtkl_write(kde_end, gtkl);
             kde_padding_write(kde_end, kde_start + kde_len);
         }
         break;
@@ -386,6 +387,15 @@ static void auth_fwh_sec_prot_state_machine(sec_prot_t *prot)
                 if (auth_fwh_sec_prot_mic_validate(prot) < 0) {
                     memset(data->new_ptk, 0, PTK_LEN);
                     return;
+                }
+                if (prot->sec_keys->lfn) {
+                    // FAN 1.1 LFN: its NR KDE, in clear (the role was set from its key request)
+                    uint8_t node_role;
+                    const eapol_key_frame_t *key = &data->recv_eapol_pdu.msg.key;
+                    if (key->key_data && key->key_data_length &&
+                            kde_nr_read(key->key_data, key->key_data_length, &node_role) >= 0) {
+                        tr_info("4WH: Message 2 NR %u, eui-64: %s", node_role, trace_array(sec_prot_remote_eui_64_addr_get(prot), 8));
+                    }
                 }
 
                 // Sends 4WH Message 3

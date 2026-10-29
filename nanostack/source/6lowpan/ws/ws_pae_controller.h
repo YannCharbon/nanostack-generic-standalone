@@ -528,6 +528,32 @@ int8_t ws_pae_controller_nw_key_index_update(protocol_interface_info_entry_t *in
  */
 int8_t ws_pae_controller_first_installed_key_index_get(protocol_interface_info_entry_t *interface_ptr);
 
+/* FAN 1.1 LGTKs (docs/LFN_STACK.md §8). On the border router the LGTKs are in
+ * MAC key slots WS_LGTK_MAC_SLOT_FIRST..+2 with key indexes 5-7; an LFN keeps
+ * its LGTKs in its group key slots 0-2, with key indexes 5-7. */
+#define WS_LGTK_MAC_SLOT_FIRST 4
+#define WS_LGTK_KEY_INDEX_FIRST 5
+
+/**
+ * ws_pae_controller_lgtk_hash_update LFN: the parent's LGTK hash (LPC)
+ *
+ * \param lgtkhash three 8-byte hashes
+ * \param included bit i: hash i is present
+ *
+ * \return 2 (GTK_HASH_MISMATCH) an LGTK is missing, 1 one was removed, 0 match, < 0 failure
+ */
+int8_t ws_pae_controller_lgtk_hash_update(protocol_interface_info_entry_t *interface_ptr, const uint8_t *lgtkhash, uint8_t included);
+
+/**
+ * ws_pae_controller_lgtk_key_request LFN: a key request to the parent now
+ */
+int8_t ws_pae_controller_lgtk_key_request(protocol_interface_info_entry_t *interface_ptr);
+
+/**
+ * ws_pae_controller_lgtk_rotate border router: start an LGTK rotation
+ */
+int8_t ws_pae_controller_lgtk_rotate(protocol_interface_info_entry_t *interface_ptr);
+
 /**
  * ws_pae_controller_nw_keys_remove remove network keys
  *

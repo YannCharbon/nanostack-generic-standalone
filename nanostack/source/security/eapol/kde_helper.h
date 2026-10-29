@@ -28,6 +28,12 @@
 #define KDE_PTKID_LEN            6 + 16
 #define KDE_LIFETIME_LEN         6 + 4
 #define KDE_GTKL_LEN             6 + 1
+/* Wi-SUN FAN 1.1 (Wi-SUN OUI): LGTK as the GTK KDE, LGTKL and node role one
+ * byte each (types 5, 4 and 3; docs/LFN_STACK.md §8) */
+#define KDE_LGTK_LEN             6 + 2 + 16
+#define KDE_LGTKL_LEN            6 + 1
+#define KDE_NR_LEN               6 + 1
+#define KDE_NR_ROLE_LFN          2   // node role of an LFN (WS_NR_ROLE_LFN)
 
 /**
  * kde_padded_length_calc calculates padded length for kde (see IEEE 802.11 chapter 11.6.2 EAPOL-Key frames)
@@ -168,5 +174,41 @@ int8_t kde_lifetime_read(const uint8_t *ptr, uint16_t len, uint32_t *lifetime);
  *
  */
 int8_t kde_gtkl_read(const uint8_t *ptr, uint16_t len, uint8_t *gtkl);
+
+/**
+ * kde_lgtk_write writes an LGTK (Wi-SUN FAN 1.1, LFN group key)
+ *
+ * \param ptr pointer where to write
+ * \param key_id LGTK index (0, 1 or 2; MAC key index 5 + key_id)
+ * \param lgtk LGTK
+ *
+ * return incremented write pointer
+ */
+uint8_t *kde_lgtk_write(uint8_t *ptr, uint8_t key_id, const uint8_t *lgtk);
+
+/**
+ * kde_lgtkl_write writes LGTK liveness information (bit i: LGTK i live)
+ */
+uint8_t *kde_lgtkl_write(uint8_t *ptr, uint8_t lgtkl);
+
+/**
+ * kde_nr_write writes the node role (WS_NR_ROLE_*)
+ */
+uint8_t *kde_nr_write(uint8_t *ptr, uint8_t node_role);
+
+/**
+ * kde_lgtk_read reads an LGTK; < 0 if none (or a key index above 2)
+ */
+int8_t kde_lgtk_read(const uint8_t *ptr, uint16_t len, uint8_t *key_id, uint8_t *lgtk);
+
+/**
+ * kde_lgtkl_read reads LGTK liveness information; < 0 if none
+ */
+int8_t kde_lgtkl_read(const uint8_t *ptr, uint16_t len, uint8_t *lgtkl);
+
+/**
+ * kde_nr_read reads the node role; < 0 if none
+ */
+int8_t kde_nr_read(const uint8_t *ptr, uint16_t len, uint8_t *node_role);
 
 #endif /* KDE_HELPER_H_ */
