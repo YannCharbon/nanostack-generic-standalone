@@ -56,6 +56,9 @@
 #include "6lowpan/ws/ws_pae_nvm_data.h"
 #include "6lowpan/ws/ws_eapol_pdu.h"
 #include "6lowpan/mac/mpx_api.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 
 #define TRACE_GROUP "wsps"
@@ -762,6 +765,19 @@ static void ws_pae_supp_tasklet_handler(arm_event_s *event)
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Every tick while a supplicant's timer runs (authentication, KMPs) */
+uint32_t ws_pae_supp_fast_timer_next(void)
+{
+    ns_list_foreach(pae_supp_t, pae_supp, &pae_supp_list) {
+        if (ws_pae_supp_timer_running(pae_supp)) {
+            return 1;
+        }
+    }
+    return UINT32_MAX;
+}
+
+#endif
 void ws_pae_supp_fast_timer(uint16_t ticks)
 {
     ns_list_foreach(pae_supp_t, pae_supp, &pae_supp_list) {
@@ -794,6 +810,28 @@ static bool ws_pae_supp_authentication_ongoing(pae_supp_t *pae_supp)
     return false;
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until a key retry or the initial key is due, or the GTK request
+ * trickle acts (GTK lifetimes only run down) */
+uint32_t ws_pae_supp_slow_timer_next(void)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(pae_supp_t, pae_supp, &pae_supp_list) {
+        if (pae_supp->initial_key_retry_timer) {
+            next = protocol_timer_next_min(next, pae_supp->initial_key_retry_timer);
+        }
+        if (pae_supp->gtk_update_trickle_running) {
+            next = protocol_timer_next_min(next, trickle_timer_next(&pae_supp->gtk_req_trickle_timer, &pae_supp->gtk_req_trickle_params));
+        }
+        if (pae_supp->initial_key_timer > 0) {
+            next = protocol_timer_next_min(next, pae_supp->initial_key_timer);
+        }
+    }
+    return next;
+}
+
+#endif
 void ws_pae_supp_slow_timer(uint16_t seconds)
 {
     ns_list_foreach(pae_supp_t, pae_supp, &pae_supp_list) {

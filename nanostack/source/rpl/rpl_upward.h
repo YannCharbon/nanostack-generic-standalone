@@ -55,6 +55,9 @@ uint16_t rpl_rank_max_at_level(const rpl_dodag_t *dodag, uint16_t a);
 
 /* Internal APIs */
 void rpl_upward_dio_timer(rpl_instance_t *instance, uint16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t rpl_upward_dio_timer_next(rpl_instance_t *instance);
+#endif
 
 rpl_instance_t *rpl_lookup_instance(const rpl_domain_t *domain, uint8_t instance_id, const uint8_t *addr);
 rpl_instance_t *rpl_create_instance(rpl_domain_t *domain, uint8_t instance_id);

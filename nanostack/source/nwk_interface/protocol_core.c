@@ -88,7 +88,11 @@ int protocol_core_buffers_in_event_queue;
 protocol_interface_info_entry_t *protocol_core_multicast_upstream;
 
 typedef struct {
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+    uint16_t core_timer_ticks;
+#else
     uint8_t core_timer_ticks;
+#endif
     bool core_timer_event;
 } lowpan_core_timer_structures_s;
 
@@ -110,6 +114,36 @@ static int8_t net_interface_get_free_id(void);
 static void nwk_net_event_post(arm_nwk_interface_status_type_e posted_event, int8_t net_tasklet, int8_t nwk_id);
 
 static uint16_t  protocol_core_seconds_timer = 10;
+
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/*
+ * Idle-tick skipping of the core timer (docs/PORTING.md, "Idle-tick skipping
+ * of the protocol timers"). The core timer keeps its 100 ms grid (two 50 ms
+ * protocol timer grid points), but runs only on the grid point at which a
+ * module has something to do: core_timer_next() asks each module when that
+ * is. The grid points in between are handed to the modules later, in one
+ * call with ticksUpdate > 1:
+ *  - by the next core run;
+ *  - before an event is dispatched (protocol_core_timer_catch_up(), a hook
+ *    of the event loop), so that the stack never sees module timers that lag
+ *    behind the grid, as with the periodic timer;
+ * and core_timer_next() is asked again when the event queue becomes empty
+ * after events (protocol_core_timer_recheck()), so that a module that got
+ * work from an event is run on the next grid point after it.
+ */
+// The core grid point last handed to the modules, in protocol_timer_ticks_applied
+static uint32_t core_grid_applied;
+// At most this many 100 ms ticks between two core runs
+// (2500: some slow timers take their seconds as uint8_t)
+#define CORE_TIMER_MAX_TICKS    2500
+static void core_timer_rearm(void);
+static void protocol_core_timer_catch_up(void);
+static void protocol_core_timer_recheck(void);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_STATS
+static void core_stats_wake(void);
+static void core_stats_print(void);
+#endif
+#endif
 
 int8_t protocol_read_tasklet_id(void)
 {
@@ -200,7 +234,7 @@ static void nwk_bootstrap_timer(protocol_interface_info_entry_t *cur)
     }
 }
 
-void core_timer_event_handle(uint16_t ticksUpdate)
+static void core_timer_run(uint16_t ticksUpdate)
 {
     protocol_core_monotonic_time += ticksUpdate;
 
@@ -287,14 +321,50 @@ void core_timer_event_handle(uint16_t ticksUpdate)
     rpl_control_fast_timer(ticksUpdate);
     icmpv6_radv_timer(ticksUpdate);
     ws_pae_controller_fast_timer(ticksUpdate);
+}
+
+void core_timer_event_handle(uint16_t ticksUpdate)
+{
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+    /* As the periodic timer would have run them: the grid points before the
+     * last one first (nothing is due on them, so one call does), then the
+     * last one on its own, with the slow timers first if it is a second */
+    if (ticksUpdate > 1) {
+        core_timer_run(ticksUpdate - 1);
+    }
+    if (ticksUpdate) {
+        core_timer_run(1);
+    }
+#else
+    core_timer_run(ticksUpdate);
+#endif
     platform_enter_critical();
     protocol_core_timer_info.core_timer_event = false;
     platform_exit_critical();
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+    core_timer_rearm();
+#endif
 }
 
 void protocol_core_cb(uint16_t ticksUpdate)
 {
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+    // The core grid points passed, counted on the protocol timer's grid;
+    // the core timer is restarted after the modules ran (core_timer_rearm())
+    (void)ticksUpdate;
+#ifdef NS_PROTOCOL_TIMERS_SKIP_STATS
+    core_stats_wake();
+#endif
+    ticksUpdate = (protocol_timer_ticks_applied - core_grid_applied) / 2;
+    core_grid_applied += 2 * ticksUpdate;
+    if (!ticksUpdate) {
+        // Restarted for a grid point already passed: half a core tick
+        core_timer_rearm();
+        return;
+    }
+#else
     protocol_timer_start(PROTOCOL_TIMER_STACK_TIM, protocol_core_cb, 100);
+#endif
     protocol_core_timer_info.core_timer_ticks += ticksUpdate;
     if (!protocol_core_timer_info.core_timer_event) {
         protocol_core_timer_info.core_timer_event = true;
@@ -326,8 +396,218 @@ void protocol_core_init(void)
     protocol_core_timer_info.core_timer_event = false;
     protocol_core_timer_info.core_timer_ticks = 0;
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+    core_grid_applied = protocol_timer_ticks_applied;
+    eventOS_scheduler_dispatch_hooks_set(protocol_core_timer_catch_up, protocol_core_timer_recheck);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_STATS
+    atexit(core_stats_print);
+#endif
+#endif
     protocol_timer_start(PROTOCOL_TIMER_STACK_TIM, protocol_core_cb, 100);
 }
+
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Statistics (NS_PROTOCOL_TIMERS_SKIP_STATS, for tuning, not for a product):
+ * which module asked for each core timer wake, printed on stderr at exit */
+#ifdef NS_PROTOCOL_TIMERS_SKIP_STATS
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define CORE_STATS_MAX 40
+static struct {
+    const char *name;
+    unsigned long wakes;
+} core_stats[CORE_STATS_MAX];
+static const char *core_next_who, *core_armed_who;
+static uint32_t core_next_best;
+#define CORE_NEXT(next, name, expr) do { \
+        uint32_t v_ = (expr); \
+        if (v_ < (next)) { (next) = v_; } \
+        if (v_ < core_next_best) { core_next_best = v_; core_next_who = (name); } \
+    } while (0)
+
+static void core_stats_wake(void)
+{
+    const char *who = core_armed_who ? core_armed_who : "(none)";
+    for (int i = 0; i < CORE_STATS_MAX; i++) {
+        if (!core_stats[i].name || !strcmp(core_stats[i].name, who)) {
+            core_stats[i].name = who;
+            core_stats[i].wakes++;
+            return;
+        }
+    }
+}
+
+static void core_stats_print(void)
+{
+    for (int i = 0; i < CORE_STATS_MAX && core_stats[i].name; i++) {
+        fprintf(stderr, "core timer wakes: %8lu %s\n", core_stats[i].wakes, core_stats[i].name);
+    }
+}
+#else
+#define CORE_NEXT(next, name, expr) ((next) = protocol_timer_next_min((next), (expr)))
+#endif
+
+/* Core ticks until a fast timer (100 ms) has something to do: 1 is the next
+ * grid point; PROTOCOL_TIMER_NEXT_NONE if none has. A module that cannot
+ * tell says 1 while it is active, as with the periodic timer. */
+static uint32_t core_fast_timer_next(void)
+{
+    uint32_t next = PROTOCOL_TIMER_NEXT_NONE;
+
+    ns_list_foreach(protocol_interface_info_entry_t, cur, &protocol_interface_info_list) {
+        if (cur->nwk_id == IF_6LoWPAN) {
+            if (cur->lowpan_info & INTERFACE_NWK_ACTIVE) {
+                if (cur->bootstrap_state_machine_cnt) {
+                    // Counted down by one per run, whatever ticksUpdate
+                    CORE_NEXT(next, "nwk_bootstrap_timer", 1);
+                }
+                CORE_NEXT(next, "nd_object_timer", nd_object_timer_next(cur));
+                if (ws_info(cur)) {
+                    CORE_NEXT(next, "ws_common_fast_timer", ws_common_fast_timer_next(cur));
+                }
+                CORE_NEXT(next, "lowpan_context_timer", lowpan_context_timer_next(&cur->lowpan_contexts));
+            }
+        } else if (cur->nwk_id == IF_IPV6) {
+            if (cur->ipv6_configure.ND_TIMER) {
+                // Counted down by one per run, whatever ticksUpdate
+                CORE_NEXT(next, "ipv6_core_timer_event_handle", 1);
+            }
+        }
+        CORE_NEXT(next, "ipv6_neighbour_cache_fast_timer", ipv6_neighbour_cache_fast_timer_next(&cur->ipv6_neighbour_cache));
+        CORE_NEXT(next, "addr_fast_timer", addr_fast_timer_next(cur));
+        CORE_NEXT(next, "mld_fast_timer", mld_fast_timer_next(cur));
+        // icmp_tokens: refilled by ticksUpdate, capped, read only by the stack
+    }
+    CORE_NEXT(next, "rpl_control_fast_timer", rpl_control_fast_timer_next());
+    CORE_NEXT(next, "icmpv6_radv_timer", icmpv6_radv_timer_next());
+    CORE_NEXT(next, "ws_pae_controller_fast_timer", ws_pae_controller_fast_timer_next());
+    return next;
+}
+
+/* Seconds until a slow timer (1 s) has something to do: 1 is the next
+ * second; PROTOCOL_TIMER_NEXT_NONE if none has. */
+static uint32_t core_slow_timer_next(void)
+{
+    uint32_t next = PROTOCOL_TIMER_NEXT_NONE;
+    unsigned interfaces = 0;
+
+    ns_list_foreach(protocol_interface_info_entry_t, cur, &protocol_interface_info_list) {
+        interfaces++;
+        if (cur->nwk_id == IF_6LoWPAN) {
+            if (cur->lowpan_info & INTERFACE_NWK_ACTIVE) {
+                if (ws_info(cur)) {
+                    CORE_NEXT(next, "ws_common_seconds_timer", ws_common_seconds_timer_next(cur));
+                } else if (cur->lowpan_info & INTERFACE_NWK_ROUTER_DEVICE) {
+                    // Logs an error every second
+                    CORE_NEXT(next, "core_timer_event_handle", 1);
+                }
+                CORE_NEXT(next, "mac_neighbor_table_neighbor_timeout", mac_neighbor_table_neighbor_timeout_next(mac_neighbor_info(cur)));
+                CORE_NEXT(next, "etx_cache_timer", etx_cache_timer_next(cur->id));
+                CORE_NEXT(next, "lowpan_adaptation_interface_slow_timer", lowpan_adaptation_interface_slow_timer_next(cur));
+            }
+        } else if (cur->nwk_id == IF_IPV6) {
+            // ipv6_core_slow_timer_event_handle(): counts calls
+            CORE_NEXT(next, "ipv6_core_slow_timer_event_handle", 1);
+        }
+        CORE_NEXT(next, "addr_slow_timer", addr_slow_timer_next(cur));
+        CORE_NEXT(next, "ipv6_neighbour_cache_slow_timer", ipv6_neighbour_cache_slow_timer_next(&cur->ipv6_neighbour_cache));
+        // Re-rolled (random) when it runs out
+        CORE_NEXT(next, "reachable_time", cur->reachable_time_ttl ? cur->reachable_time_ttl : 1);
+        // icmp_ra_tokens: refilled by the seconds, capped, read only by the stack
+    }
+    CORE_NEXT(next, "mld_slow_timer", mld_slow_timer_next(interfaces));
+    CORE_NEXT(next, "mpl_slow_timer", mpl_slow_timer_next());
+    CORE_NEXT(next, "rpl_control_slow_timer", rpl_control_slow_timer_next());
+    CORE_NEXT(next, "ipv6_route_table_ttl_update", ipv6_route_table_ttl_update_next());
+    CORE_NEXT(next, "ipv6_destination_cache_timer", ipv6_destination_cache_timer_next());
+    CORE_NEXT(next, "ipv6_frag_timer", ipv6_frag_timer_next());
+    CORE_NEXT(next, "cipv6_frag_timer", cipv6_frag_timer_next());
+    CORE_NEXT(next, "net_dns_timer_seconds", net_dns_timer_seconds_next());
+    CORE_NEXT(next, "ws_pae_controller_slow_timer", ws_pae_controller_slow_timer_next());
+    return next;
+}
+
+static uint32_t core_timer_next(void)
+{
+#ifdef NS_PROTOCOL_TIMERS_SKIP_STATS
+    core_next_best = PROTOCOL_TIMER_NEXT_NONE;
+    core_next_who = NULL;
+    uint32_t next = core_fast_timer_next();
+    const char *fast_who = core_next_who;
+    core_next_best = PROTOCOL_TIMER_NEXT_NONE;
+    core_next_who = NULL;
+    uint32_t slow = core_slow_timer_next();
+    const char *who = fast_who;
+    if (slow != PROTOCOL_TIMER_NEXT_NONE && protocol_core_seconds_timer + 10 * (slow - 1) < next) {
+        who = core_next_who;
+    }
+    core_next_who = who;
+#else
+    uint32_t next = core_fast_timer_next();
+    uint32_t slow = core_slow_timer_next();
+#endif
+
+    if (slow != PROTOCOL_TIMER_NEXT_NONE) {
+        next = protocol_timer_next_min(next, protocol_core_seconds_timer + 10 * (slow - 1));
+    }
+    if (next > CORE_TIMER_MAX_TICKS) {
+#ifdef NS_PROTOCOL_TIMERS_SKIP_STATS
+        core_next_who = "(maximum wait)";
+#endif
+        next = CORE_TIMER_MAX_TICKS;
+    }
+    return next ? next : 1;
+}
+
+/* Restarts the core timer for the grid point of the next work */
+static void core_timer_rearm(void)
+{
+    protocol_timer_start_at(PROTOCOL_TIMER_STACK_TIM, protocol_core_cb, core_grid_applied + 2 * core_timer_next());
+#ifdef NS_PROTOCOL_TIMERS_SKIP_STATS
+    core_armed_who = core_next_who;
+#endif
+}
+
+/* Event loop hook, before each event: hands the core grid points passed to
+ * the modules, unless the core event or the protocol event is pending (they
+ * will). None of them is due: the core timer runs on that one. */
+static void protocol_core_timer_catch_up(void)
+{
+    uint32_t ticks;
+
+    if (protocol_core_timer_info.core_timer_event || protocol_timer_event_pending()) {
+        return;
+    }
+    protocol_timer_catch_up();
+    ticks = (protocol_timer_ticks_applied - core_grid_applied) / 2;
+    if (!ticks) {
+        return;
+    }
+    core_grid_applied += 2 * ticks;
+    // As in the core event, which runs in the root tasklet
+    eventOS_scheduler_set_active_tasklet(protocol_root_tasklet_ID);
+    core_timer_event_handle(ticks);
+}
+
+/* Event loop hook, when the queue is empty: an event may have given a module
+ * work before the grid point the core timer waits for */
+static void protocol_core_timer_recheck(void)
+{
+    uint32_t due, at;
+
+    if (protocol_core_timer_info.core_timer_event || protocol_timer_event_pending()) {
+        return;
+    }
+    at = core_grid_applied + 2 * core_timer_next();
+    if (!protocol_timer_due_at(PROTOCOL_TIMER_STACK_TIM, &due) || (int32_t)(due - at) > 0) {
+        protocol_timer_start_at(PROTOCOL_TIMER_STACK_TIM, protocol_core_cb, at);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_STATS
+        core_armed_who = core_next_who;
+#endif
+    }
+}
+#endif
 
 void protocol_core_interface_info_reset(protocol_interface_info_entry_t *entry)
 {

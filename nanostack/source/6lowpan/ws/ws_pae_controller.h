@@ -688,6 +688,9 @@ int8_t ws_pae_controller_auth_cb_register(protocol_interface_info_entry_t *inter
  *
  */
 void ws_pae_controller_fast_timer(uint16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_pae_controller_fast_timer_next(void);
+#endif
 
 /**
  * ws_pae_controller_slow_timer PAE controller slow timer call
@@ -696,6 +699,9 @@ void ws_pae_controller_fast_timer(uint16_t ticks);
  *
  */
 void ws_pae_controller_slow_timer(uint16_t seconds);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_pae_controller_slow_timer_next(void);
+#endif
 
 struct nvm_tlv *ws_pae_controller_nvm_tlv_get(protocol_interface_info_entry_t *interface_ptr);
 

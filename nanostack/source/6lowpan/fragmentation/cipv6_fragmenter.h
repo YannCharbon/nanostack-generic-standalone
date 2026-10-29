@@ -23,6 +23,9 @@ int8_t reassembly_interface_init(int8_t interface_id, uint8_t reassembly_session
 int8_t reassembly_interface_free(int8_t interface_id);
 
 void cipv6_frag_timer(uint16_t seconds);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t cipv6_frag_timer_next(void);
+#endif
 struct buffer *cipv6_frag_reassembly(int8_t interface_id, struct buffer *buf);
 
 

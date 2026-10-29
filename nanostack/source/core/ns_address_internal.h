@@ -152,6 +152,12 @@ uint8_t addr_check_broadcast(const address_t addr, addrtype_t addr_type);
 
 void address_module_init(void);
 void addr_fast_timer(struct protocol_interface_info_entry *cur, uint_fast16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t addr_fast_timer_next(const struct protocol_interface_info_entry *cur);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t addr_slow_timer_next(const struct protocol_interface_info_entry *cur);
+#endif
+#endif
 void addr_slow_timer(struct protocol_interface_info_entry *cur, uint_fast16_t seconds);
 struct if_address_entry *addr_add(struct protocol_interface_info_entry *cur, const uint8_t address[__static 16], uint_fast8_t prefix_len, if_address_source_t source, uint32_t valid_lifetime, uint32_t preferred_lifetime, bool skip_dad);
 int_fast8_t addr_delete(struct protocol_interface_info_entry *cur, const uint8_t address[__static 16]);

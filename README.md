@@ -46,6 +46,7 @@ the fire-alarm protocol stack, which takes no code from it.
 | `tests/cross/` | — | Cross-build check: Cortex-M33, stub port |
 | `tests/port_sim/` | — | Unit tests of the simulation port |
 | `tests/eventloop/` | — | Event loop timers: periodic tick against idle-tick skipping |
+| `tests/protocol_timers/` | — | Protocol and core timers: periodic against idle-tick skipping ([docs/PORTING.md](docs/PORTING.md)) |
 | `tests/fhss_lfn/` | — | FAN 1.1 LFN unicast mechanics in the FHSS ([docs/LFN_MAC.md](docs/LFN_MAC.md)) |
 
 `rcp/` keeps its own `mac/rf_driver_storage.h`, which differs slightly from
@@ -118,6 +119,10 @@ Options:
 - `NANOSTACK_EVENTLOOP_SKIP_IDLE_TICKS` (default ON): the event loop's 10 ms tick
   timer runs only when an event timer is due (`docs/PORTING.md`, "Idle-tick
   skipping"). `OFF` gives the periodic tick of the reference.
+- `NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE` (default ON): the 50 ms protocol timer
+  and the core timer (the modules' 100 ms and 1 s timers) run only on the grid
+  points at which a module has work (`docs/PORTING.md`, "Idle-tick skipping of
+  the protocol timers"). `OFF` gives the periodic timers of the reference.
 - `nanostack_add_rcp_library(<name> INPROCESS)` builds the MAC for an image
   that also holds the upper layers: it leaves out `rcp/`'s copy of
   `rf_driver_storage.c`.
@@ -206,6 +211,15 @@ The event loop's timers, periodic tick against idle-tick skipping, on a fake por
 
 ```bash
 tests/eventloop/run.sh [build dir]
+```
+
+The protocol timer and the core timer (`protocol_timer.c`, `protocol_core.c`),
+periodic against idle-tick skipping, with fake modules on a fake port
+([docs/PORTING.md](docs/PORTING.md), "Idle-tick skipping of the protocol
+timers"):
+
+```bash
+tests/protocol_timers/run.sh [build dir]
 ```
 
 The FAN 1.1 LFN unicast mechanics in the FHSS (listen windows, the parent's

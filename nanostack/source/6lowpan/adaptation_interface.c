@@ -1111,6 +1111,16 @@ bool lowpan_adaptation_expedite_forward_state_get(protocol_interface_info_entry_
     return true;
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Every second while in the high-priority state */
+uint32_t lowpan_adaptation_interface_slow_timer_next(protocol_interface_info_entry_t *cur)
+{
+    fragmenter_interface_t *interface_ptr = lowpan_adaptation_interface_discover(cur->id);
+
+    return interface_ptr && interface_ptr->last_rx_high_priority ? 1 : UINT32_MAX;
+}
+
+#endif
 void lowpan_adaptation_interface_slow_timer(protocol_interface_info_entry_t *cur)
 {
     fragmenter_interface_t *interface_ptr = lowpan_adaptation_interface_discover(cur->id);

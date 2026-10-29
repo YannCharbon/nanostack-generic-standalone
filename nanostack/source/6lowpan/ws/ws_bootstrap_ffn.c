@@ -76,6 +76,9 @@
 #include "6lowpan/ws/ws_neighbor_class.h"
 #include "6lowpan/ws/ws_pae_controller.h"
 #include "6lowpan/ws/ws_stats.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 #ifdef HAVE_WS_ROUTER
 
@@ -974,6 +977,28 @@ void ws_bootstrap_ffn_state_machine(protocol_interface_info_entry_t *cur)
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_bootstrap_ffn_seconds_timer_next(protocol_interface_info_entry_t *cur)
+{
+    uint32_t next = UINT32_MAX;
+    uint32_t t = cur->ws_info->pan_timeout_timer;
+
+    if (t) {
+        // Expiry, and below a tenth of the timeout a DAO check every second
+        uint32_t tenth = cur->ws_info->cfg->timing.pan_timeout / 10;
+        next = t >= tenth ? t - tenth + 1 : 1;
+        if (t < next) {
+            next = t;
+        }
+    }
+    if (cur->ws_info->aro_registration_timer) {
+        next = protocol_timer_next_min(next, cur->ws_info->aro_registration_timer);
+    }
+    // The BSI block only expires: read by the stack only
+    return next;
+}
+
+#endif
 void ws_bootstrap_ffn_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seconds)
 {
     /* Border router keep alive check

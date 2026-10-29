@@ -97,6 +97,9 @@ nd_router_t *nd_get_object_by_nwk_id(nwk_interface_id nwk_id);
 /* Returns "false" if ABRO suggested it was a stale message, so not worth handling in the normal code */
 extern bool nd_ra_process_abro(struct protocol_interface_info_entry *cur, buffer_t *buf, const uint8_t *dptr, uint8_t ra_flags, uint16_t router_lifetime);
 extern void nd_object_timer(struct protocol_interface_info_entry *cur_interface, uint16_t ticks_update);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+extern uint32_t nd_object_timer_next(const struct protocol_interface_info_entry *cur_interface);
+#endif
 extern uint32_t nd_object_time_to_next_nd_reg(void);
 
 extern void icmp_nd_router_object_reset(nd_router_t *router_object);

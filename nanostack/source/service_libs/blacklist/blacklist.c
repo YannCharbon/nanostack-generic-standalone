@@ -171,6 +171,26 @@ void blacklist_free(void)
     blacklist_data = NULL;
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until the purge (a random draw) or an entry's expiry */
+uint32_t blacklist_ttl_update_next(void)
+{
+    uint32_t next;
+
+    if (!blacklist_data) {
+        return UINT32_MAX;
+    }
+    next = blacklist_data->blacklist_purge_ttl ? blacklist_data->blacklist_purge_ttl : 1;
+    ns_list_foreach(blacklist_entry_t, blacklist_entry, &blacklist_data->blacklist) {
+        uint32_t t = blacklist_entry->ttl ? blacklist_entry->ttl : 1;
+        if (t < next) {
+            next = t;
+        }
+    }
+    return next;
+}
+
+#endif
 void blacklist_ttl_update(uint16_t ticks)
 {
     if (!blacklist_data) {

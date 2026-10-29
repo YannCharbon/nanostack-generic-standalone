@@ -64,6 +64,9 @@ int8_t ws_pae_supp_delete(protocol_interface_info_entry_t *interface_ptr);
  *
  */
 void ws_pae_supp_fast_timer(uint16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_pae_supp_fast_timer_next(void);
+#endif
 
 /**
  * ws_pae_supp_slow_timer PAE supplicant slow timer call
@@ -72,6 +75,9 @@ void ws_pae_supp_fast_timer(uint16_t ticks);
  *
  */
 void ws_pae_supp_slow_timer(uint16_t seconds);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_pae_supp_slow_timer_next(void);
+#endif
 
 /**
  * ws_pae_supp_authenticate start EAPOL authentication

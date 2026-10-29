@@ -466,6 +466,24 @@ static void reassembly_entry_timer_update(reassembly_interface_t *interface_ptr,
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until a reassembly times out */
+uint32_t cipv6_frag_timer_next(void)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(reassembly_interface_t, interface_ptr, &reassembly_interface_list) {
+        ns_list_foreach(reassembly_entry_t, reassembly_entry, &interface_ptr->rx_list) {
+            uint32_t t = reassembly_entry->ttl ? reassembly_entry->ttl : 1;
+            if (t < next) {
+                next = t;
+            }
+        }
+    }
+    return next;
+}
+
+#endif
 void cipv6_frag_timer(uint16_t seconds)
 {
     ns_list_foreach(reassembly_interface_t, interface_ptr, &reassembly_interface_list) {

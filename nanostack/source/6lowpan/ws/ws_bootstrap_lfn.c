@@ -82,6 +82,9 @@
 #include "6lowpan/ws/ws_lfn_parent.h"
 #include "nanostack/mac/fhss_ws_extension.h"
 #include "common_protocols/icmpv6.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 #ifdef HAVE_WS_HOST
 
@@ -536,6 +539,37 @@ void ws_bootstrap_lfn_state_machine(protocol_interface_info_entry_t *cur)
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_bootstrap_lfn_seconds_timer_next(protocol_interface_info_entry_t *cur)
+{
+    ws_lfn_state_t *lfn;
+    uint32_t next = UINT32_MAX;
+
+    if (!wisun_mode_host(cur) || !(cur->lowpan_info & INTERFACE_NWK_ACTIVE)) {
+        return next;
+    }
+    lfn = &cur->ws_info->lfn;
+    if (cur->nwk_bootstrap_state == ER_ACTIVE_SCAN && !lfn->parent_known && lfn->lpas_timer_s) {
+        next = protocol_timer_next_min(next, lfn->lpas_timer_s);
+    }
+    if (cur->nwk_bootstrap_state == ER_SCAN && !lfn->lpc_received && lfn->lpcs_timer_s) {
+        next = protocol_timer_next_min(next, lfn->lpcs_timer_s);
+    }
+    if (lfn->reregister_s) {
+        next = protocol_timer_next_min(next, lfn->reregister_s);
+    }
+    // ws_lfn_parent_lgtk_timer(): nothing yet
+    if (lfn->parent_known && cur->nwk_bootstrap_state != ER_PANA_AUTH) {
+        // Lost on the first call that sees more than the limit since the
+        // last frame (the uptime is incremented before this timer runs)
+        uint32_t limit = ws_lfn_sync_period_s(cur) * cur->ws_info->lfn_cfg.maintain_parent_time * 3 / 2;
+        uint32_t since = cur->ws_info->uptime - lfn->parent_rx_s;
+        next = protocol_timer_next_min(next, since < limit ? limit - since + 1 : 1);
+    }
+    return next;
+}
+
+#endif
 void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seconds)
 {
     ws_lfn_state_t *lfn;

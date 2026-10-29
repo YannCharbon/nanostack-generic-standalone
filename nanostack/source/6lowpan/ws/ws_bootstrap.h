@@ -89,8 +89,14 @@ int ws_bootstrap_aro_failure(protocol_interface_info_entry_t *cur, const uint8_t
 void ws_bootstrap_configuration_trickle_reset(protocol_interface_info_entry_t *cur);
 
 void ws_bootstrap_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seconds);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_bootstrap_seconds_timer_next(protocol_interface_info_entry_t *cur);
+#endif
 
 void ws_bootstrap_trickle_timer(protocol_interface_info_entry_t *cur, uint16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_bootstrap_trickle_timer_next(protocol_interface_info_entry_t *cur);
+#endif
 
 void ws_bootstrap_primary_parent_update(protocol_interface_info_entry_t *interface, mac_neighbor_table_entry_t *neighbor);
 
@@ -99,6 +105,9 @@ void ws_bootstrap_secondary_parent_update(protocol_interface_info_entry_t *inter
 void ws_nud_entry_remove_active(protocol_interface_info_entry_t *cur, void *neighbor);
 
 void ws_nud_active_timer(protocol_interface_info_entry_t *cur, uint16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_nud_active_timer_next(protocol_interface_info_entry_t *cur);
+#endif
 
 void ws_dhcp_client_address_request(protocol_interface_info_entry_t *cur, uint8_t *prefix, uint8_t *parent_link_local);
 

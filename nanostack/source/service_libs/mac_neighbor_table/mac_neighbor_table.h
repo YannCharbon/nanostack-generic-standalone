@@ -72,6 +72,12 @@ typedef void neighbor_entry_remove_notify(mac_neighbor_table_entry_t *entry_ptr,
  * \return false When NUD is not generated
  */
 typedef bool neighbor_entry_nud_notify(mac_neighbor_table_entry_t *entry_ptr, void *user_data);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until user_nud_notify_cb would act on the entry (start a NUD or
+ * probe, draw a random number), its lifetime going down by one a second;
+ * UINT32_MAX if never while nothing else changes */
+typedef uint32_t neighbor_entry_nud_next(mac_neighbor_table_entry_t *entry_ptr, void *user_data);
+#endif
 
 /**
  * Neighbor table class structure
@@ -86,6 +92,9 @@ typedef struct mac_neighbor_table {
     void *table_user_identifier;                            /*!< Table user identifier like interface pointer */
     neighbor_entry_remove_notify *user_remove_notify_cb;    /*!< Neighbor Remove Callback notify */
     neighbor_entry_nud_notify *user_nud_notify_cb;          /*!< Trig NUD process for neighbor */
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+    neighbor_entry_nud_next *user_nud_next_cb;              /*!< When user_nud_notify_cb would act, NULL: every second */
+#endif
     mac_neighbor_table_entry_t neighbor_entry_buffer[];     /*!< Pointer for allocated neighbor table entries*/
 } mac_neighbor_table_t;
 
@@ -126,6 +135,9 @@ void mac_neighbor_table_neighbor_list_clean(mac_neighbor_table_t *table_class);
  *
  */
 void mac_neighbor_table_neighbor_timeout_update(mac_neighbor_table_t *table_class, uint32_t time_update);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t mac_neighbor_table_neighbor_timeout_next(mac_neighbor_table_t *table_class);
+#endif
 
 
 /**

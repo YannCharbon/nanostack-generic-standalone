@@ -53,6 +53,9 @@
 #include "rpl_downward.h"
 #include "rpl_policy.h"
 #include "rpl_control.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 #define TRACE_GROUP "rplc"
 
@@ -1846,6 +1849,21 @@ buffer_t *rpl_control_source_route_error_handler(buffer_t *buf, protocol_interfa
 }
 #endif
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t rpl_control_fast_timer_next(void)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(rpl_domain_t, domain, &rpl_domains) {
+        ns_list_foreach(rpl_instance_t, instance, &domain->instances) {
+            next = protocol_timer_next_min(next, rpl_upward_dio_timer_next(instance));
+            next = protocol_timer_next_min(next, rpl_downward_dao_timer_next(instance));
+        }
+    }
+    return next;
+}
+
+#endif
 void rpl_control_fast_timer(uint16_t ticks)
 {
     ns_list_foreach(rpl_domain_t, domain, &rpl_domains) {
@@ -1865,6 +1883,19 @@ static void trace_info_print(const char *fmt, ...)
     vtracef(TRACE_LEVEL_INFO, TRACE_GROUP, fmt, ap);
     va_end(ap);
 }
+#endif
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Not converted: every second while an instance exists */
+uint32_t rpl_control_slow_timer_next(void)
+{
+    ns_list_foreach(rpl_domain_t, domain, &rpl_domains) {
+        if (!ns_list_is_empty(&domain->instances)) {
+            return 1;
+        }
+    }
+    return UINT32_MAX;
+}
+
 #endif
 void rpl_control_slow_timer(uint16_t seconds)
 {

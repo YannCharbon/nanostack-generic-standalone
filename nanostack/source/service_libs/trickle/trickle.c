@@ -102,6 +102,27 @@ bool trickle_running(const trickle_t *t, const trickle_params_t *params)
 
 
 /* Returns true if you should transmit now */
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t trickle_timer_next(const trickle_t *t, const trickle_params_t *params)
+{
+    uint32_t next;
+
+    if (!trickle_running(t, params)) {
+        return UINT32_MAX;
+    }
+    /* RFC 6206 Rule 5: a new interval when now reaches I */
+    next = t->I > t->now ? t->I - t->now : 1;
+    /* RFC 6206 Rule 4: a transmission when now reaches t, unless suppressed
+     * (c only grows until the next interval) */
+    if (t->now < t->t && (t->c < params->k || params->k == 0)) {
+        if ((uint32_t)(t->t - t->now) < next) {
+            next = t->t - t->now;
+        }
+    }
+    return next;
+}
+#endif
+
 bool trickle_timer(trickle_t *t, const trickle_params_t *params, uint16_t ticks)
 {
     if (!trickle_running(t, params)) {

@@ -1524,6 +1524,19 @@ static uint8_t nd_router_bootstrap_timer(nd_router_t *cur, protocol_interface_in
 }
 
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Not converted: every tick while the interface has an ND router entry */
+uint32_t nd_object_timer_next(const protocol_interface_info_entry_t *cur_interface)
+{
+    ns_list_foreach(nd_router_t, cur, &nd_router_list) {
+        if (cur_interface->nwk_id == cur->nwk_id) {
+            return 1;
+        }
+    }
+    return UINT32_MAX;
+}
+
+#endif
 void nd_object_timer(protocol_interface_info_entry_t *cur_interface, uint16_t ticks_update)
 {
     ns_list_foreach_safe(nd_router_t, cur, &nd_router_list) {

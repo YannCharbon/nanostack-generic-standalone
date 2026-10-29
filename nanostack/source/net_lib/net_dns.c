@@ -308,6 +308,26 @@ int8_t net_dns_query_result_get(int8_t interface_id, uint8_t address[16], const 
 /**
  * Generic timeout handler for all interfaces and entries.
  */
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until a cached query or a server entry expires */
+uint32_t net_dns_timer_seconds_next(void)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(dns_query_t, cur_ptr, &dns_query_list) {
+        if (cur_ptr->lifetime != 0xffffffff && (cur_ptr->lifetime ? cur_ptr->lifetime : 1) < next) {
+            next = cur_ptr->lifetime ? cur_ptr->lifetime : 1;
+        }
+    }
+    ns_list_foreach(dns_server_info_t, cur_ptr, &dns_server_list) {
+        if (cur_ptr->lifetime != 0xffffffff && (cur_ptr->lifetime ? cur_ptr->lifetime : 1) < next) {
+            next = cur_ptr->lifetime ? cur_ptr->lifetime : 1;
+        }
+    }
+    return next;
+}
+
+#endif
 void net_dns_timer_seconds(uint32_t seconds)
 {
     ns_list_foreach_safe(dns_query_t, cur_ptr, &dns_query_list) {

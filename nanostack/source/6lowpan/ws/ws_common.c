@@ -50,6 +50,9 @@
 #include "6lowpan/ws/ws_phy.h"
 #include "rpl/rpl_protocol.h"
 #include "rpl/rpl_control.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 #define TRACE_GROUP "wscm"
 
@@ -655,6 +658,23 @@ void ws_common_state_machine(protocol_interface_info_entry_t *cur)
 
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_common_seconds_timer_next(protocol_interface_info_entry_t *cur)
+{
+    uint32_t next;
+
+    if (cur->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_BORDER_ROUTER) {
+        // ws_bbr_seconds_timer(), ws_bootstrap_6lbr_seconds_timer(): every second
+        return 1;
+    }
+    next = ws_bootstrap_seconds_timer_next(cur);
+    next = protocol_timer_next_min(next, ws_bootstrap_ffn_seconds_timer_next(cur));
+    next = protocol_timer_next_min(next, ws_bootstrap_lfn_seconds_timer_next(cur));
+    next = protocol_timer_next_min(next, blacklist_ttl_update_next());
+    return next;
+}
+
+#endif
 void ws_common_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seconds)
 {
     ws_bbr_seconds_timer(cur, seconds);
@@ -665,6 +685,17 @@ void ws_common_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seco
     blacklist_ttl_update(seconds);
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_common_fast_timer_next(protocol_interface_info_entry_t *cur)
+{
+    uint32_t next = ws_bootstrap_trickle_timer_next(cur);
+
+    next = protocol_timer_next_min(next, ws_nud_active_timer_next(cur));
+    next = protocol_timer_next_min(next, ws_llc_fast_timer_next(cur));
+    return next;
+}
+
+#endif
 void ws_common_fast_timer(protocol_interface_info_entry_t *cur, uint16_t ticks)
 {
     ws_bootstrap_trickle_timer(cur, ticks);

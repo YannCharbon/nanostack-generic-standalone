@@ -26,6 +26,9 @@
 #include "nanostack/mac/platform/topo_trace.h"
 #include "nanostack/mac/fhss_ws_extension.h"
 #include "core/ns_address_internal.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 mac_neighbor_table_t *mac_neighbor_table_create(uint8_t table_size, neighbor_entry_remove_notify *remove_cb, neighbor_entry_nud_notify *nud_cb, void *user_indentifier)
 {
@@ -92,6 +95,33 @@ void mac_neighbor_table_neighbor_list_clean(mac_neighbor_table_t *table_class)
 }
 
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until an entry expires or the NUD callback would act on it */
+uint32_t mac_neighbor_table_neighbor_timeout_next(mac_neighbor_table_t *table_class)
+{
+    uint32_t next = UINT32_MAX;
+
+    if (!table_class) {
+        return next;
+    }
+    ns_list_foreach(mac_neighbor_table_entry_t, cur, &table_class->neighbour_list) {
+        if (cur->lifetime == 0xffffffff && cur->link_lifetime == 0xffffffff) {
+            continue;
+        }
+        // Removed on the call that finds lifetime <= the seconds
+        next = protocol_timer_next_min(next, cur->lifetime ? cur->lifetime : 1);
+        if (!table_class->user_nud_notify_cb || table_class->active_nud_process > ACTIVE_NUD_PROCESS_MAX || cur->nud_active || !cur->rx_on_idle) {
+            continue;
+        }
+        if (!table_class->user_nud_next_cb) {
+            return 1;
+        }
+        next = protocol_timer_next_min(next, table_class->user_nud_next_cb(cur, table_class->table_user_identifier));
+    }
+    return next;
+}
+
+#endif
 void mac_neighbor_table_neighbor_timeout_update(mac_neighbor_table_t *table_class, uint32_t time_update)
 {
     if (!table_class) {

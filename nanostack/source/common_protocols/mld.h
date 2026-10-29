@@ -40,5 +40,12 @@ void mld_stop_listening(struct protocol_interface_info_entry *interface, struct 
 
 void mld_slow_timer(struct protocol_interface_info_entry *interface, uint_fast16_t seconds);
 void mld_fast_timer(struct protocol_interface_info_entry *interface, uint_fast16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t mld_fast_timer_next(const struct protocol_interface_info_entry *interface);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* calls: mld_slow_timer() calls per second (one per interface) */
+uint32_t mld_slow_timer_next(unsigned calls);
+#endif
+#endif
 
 #endif /* MLD_H_ */

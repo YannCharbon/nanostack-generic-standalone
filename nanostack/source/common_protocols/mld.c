@@ -331,9 +331,27 @@ void mld_stop_listening(protocol_interface_info_entry_t *interface, if_group_ent
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+static uint8_t query_timer;
+
+/* Seconds until the query timer reaches 125 (it resets, with a query if we
+ * are the querier); every interface's call adds the seconds */
+uint32_t mld_slow_timer_next(unsigned calls)
+{
+    uint32_t left = query_timer < 125 ? 125 - query_timer : 1;
+
+    if (!calls) {
+        return UINT32_MAX;
+    }
+    return (left + calls - 1) / calls;
+}
+#endif
+
 void mld_slow_timer(protocol_interface_info_entry_t *interface, uint_fast16_t seconds)
 {
+#ifndef NS_PROTOCOL_TIMERS_SKIP_IDLE
     static uint8_t query_timer;
+#endif
     query_timer += seconds;
     if (query_timer >= 125) {
         query_timer = 0;
@@ -343,6 +361,21 @@ void mld_slow_timer(protocol_interface_info_entry_t *interface, uint_fast16_t se
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Ticks until a group's report timer expires */
+uint32_t mld_fast_timer_next(const protocol_interface_info_entry_t *interface)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(if_group_entry_t, entry, &interface->ip_groups) {
+        if (entry->mld_timer && entry->mld_timer < next) {
+            next = entry->mld_timer;
+        }
+    }
+    return next;
+}
+
+#endif
 void mld_fast_timer(protocol_interface_info_entry_t *interface, uint_fast16_t ticks)
 {
     ns_list_foreach(if_group_entry_t, entry, &interface->ip_groups) {

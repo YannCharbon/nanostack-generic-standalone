@@ -119,12 +119,12 @@ are skipped, so the CPU is not woken for nothing.
 
 What a port must change: nothing in its API, but **its run loop must not rely
 on the tick to wake up**. A timeout on its wait becomes a periodic wake of its
-own. The FG25 firmware keeps its 100 ms safety timeout until idle-tick skipping
-is validated on the boards; `FW_RUNLOOP_SAFETY_MS=0` in its CMake removes it.
+own. The FG25 firmware's safety timeout (`FW_RUNLOOP_SAFETY_MS`) defaults to 0
+since idle-tick skipping was validated on the boards.
 
-What it does not remove: the protocol timer (50 ms, `protocol_timer.c`) and the
-FHSS timers have callback timers of their own. On a Wi-SUN FFN in the emulator
-the wakes go from about 115 to about 39 per second once joined (emulator
+What it does not remove: the protocol timers (next section) and the FHSS
+timers have callback timers of their own. On a Wi-SUN FFN in the emulator the
+wakes go from about 115 to about 39 per second once joined (emulator
 `docs/POWER_MODEL.md`).
 
 Checks: `tests/eventloop/run.sh` runs one schedule of event timers (one-shot,
@@ -132,6 +132,133 @@ periodic, chained from handlers, cancelled, long idle gaps, the 32-bit clock
 wrap) with the periodic tick and with idle-tick skipping, on a fake port, and requires the
 same deliveries at the same µs. `OFF` gives the periodic tick of the
 reference.
+
+### Idle-tick skipping of the protocol timers
+
+`NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE` (CMake, default ON; it defines
+`NS_PROTOCOL_TIMERS_SKIP_IDLE` for `nanostack_eventloop` and its consumers)
+applies the same principle to the upper stack's periodic timers (decision
+DI6). Without it, these timers wake the CPU 20 times a second whether or not a
+module has work:
+
+- the protocol timer (`nwk_interface/protocol_timer.c`): a 50 ms callback
+  timer that re-arms itself and posts the protocol event. It drives three
+  timers: the core timer, TCP's and MPL's;
+- the core timer (`protocol_core.c`, `protocol_core_cb()` and
+  `core_timer_event_handle()`): every 100 ms it runs every module's fast
+  timer, and every tenth time the modules' 1 s slow timers.
+
+**The grids stay.** The protocol timer keeps its 50 ms grid, which starts at
+`protocol_timer_init()` as before, and the core timer its 100 ms and 1 s grid
+points. Only the grid points at which nothing is due are skipped.
+
+**Protocol timer.** The callback timer is armed only for the grid point at
+which the earliest of the three timers expires, and stopped when none runs.
+The grid points passed are counted from `ns_port_time_us()`, as in the event
+loop: by the callback timer when it fires (handed to the protocol event as
+before), and before a timer is started (`protocol_timer_catch_up()`, applied
+to the running timers up to the one before the earliest expiry), so that a new
+timer counts from the current grid point. It stays a callback timer of its
+own, on its own grid: moving it onto the event-timer service would put it on
+the 10 ms tick grid with another phase, so every run would differ from the
+periodic one, and its wakes would no longer be told apart in the emulator's
+power ledger. The arming limits are those of the event loop's tick: 3.28 s
+with 16-bit slots, 2^30 µs with `NS_PORT_TIMER_USEC`; a longer wait wakes once
+on the way and re-arms. TCP and MPL re-arm their 50 ms and 200 ms ticks only
+while they have work, as before.
+
+**Core timer.** After each run, `core_timer_next()` asks every module when it
+next has something to do, and the core timer is restarted for that grid point
+(`protocol_timer_start_at()`), at most 250 s ahead. Each module that the core
+timer drives has a `..._next()` function next to its timer function, under
+`NS_PROTOCOL_TIMERS_SKIP_IDLE`:
+
+- fast timers return the number of 100 ms ticks until the handler would act,
+  slow timers the number of seconds; `UINT32_MAX` means nothing is due;
+- "act" means anything other than counting down: send, change state, log,
+  draw a random number. A countdown that only runs down, or a capped refill
+  (`icmp_tokens`), needs no wake;
+- a module that cannot tell returns 1 while it is active, which is today's
+  behaviour. Skipping therefore works when it is only partly applied: a
+  module without a real `..._next()` only keeps the timer at its own period.
+
+The skipped grid points are handed to the modules later, in one call with
+`ticksUpdate` > 1, which the handlers already accepted:
+
+- by the next run of the core timer. It runs the grid points before the last
+  one in one call, then the last one on its own, so that on a 1 s point the
+  slow timers run first and see the fast timers' state as they would with
+  the periodic timer;
+- **before an event is dispatched** (`protocol_core_timer_catch_up()`, a hook
+  of `eventOS_scheduler_dispatch_event()`), unless the protocol or the core
+  event is pending. Code that runs in an event therefore never sees a module
+  counter that lags behind the grid, and work it gives a module counts from
+  the current grid point, as with the periodic timer.
+
+And when the event queue becomes empty after events were dispatched
+(`protocol_core_timer_recheck()`, the other hook), `core_timer_next()` is
+asked again: an event may have given a module work due before the grid point
+the core timer waits for.
+
+For this, two handlers that counted calls now count the seconds they are
+given, under the option: the Wi-SUN uptime and the join-state statistics
+(`ws_bootstrap_seconds_timer()`). The MAC neighbour table asks its user when
+its NUD callback would act (`user_nud_next_cb`, `ws_neighbor_entry_nud_next()`
+for Wi-SUN), since that callback runs every second for every neighbour.
+`CORE_TIMER_MAX_TICKS` (2500, 250 s) keeps the seconds handed over in one
+call below 256: some slow timers take them as `uint8_t`.
+
+**Covered.** Fast: the bootstrap state machine counter, ND router objects
+(every tick while one exists), the Wi-SUN trickles (PAS, PCS every tick, PA,
+PC), Wi-SUN NUD, EDFE, 6LoWPAN contexts, the IPv6 neighbour cache, address
+state timers, MLD reports, RPL DIO trickle and DAO timers, router
+advertisements, the PAE supplicant (every tick while its timer runs). Slow:
+the Wi-SUN seconds timers (FFN, LFN, uptime and MDR analysis, EAPOL temporary
+entries, the blacklist), the MAC neighbour table and its NUD callback, ETX,
+address lifetimes, the IPv6 neighbour cache
+and its GC, `ReachableTime`, MLD's query timer, MPL seeds, routes, the
+destination cache GC, both reassembly timers, DNS, the PAE supplicant and the
+frame-counter store.
+
+**Not covered** (every tick or second while active, as before): the RPL slow
+timers (`rpl_control_slow_timer()`, every second while an RPL instance
+exists: on an FFN about 0.9 wake per second once joined), the border router's
+own timers (`ws_bbr_seconds_timer()`, the 6LBR and LFN-parent timers, the PAE
+authenticator), the IPv6 backhaul interface's ND timers (`IF_IPV6`), MPL
+seeds that hold messages, and the 6LoWPAN high-priority state.
+
+**What a port must change: nothing.** No porting API changes and no new
+callback timer. Its run loop must dispatch events through
+`eventOS_scheduler_dispatch_event()` (or `eventOS_scheduler_run_until_idle()`),
+which runs the hooks. A port without `NS_PORT_TIMER_USEC` wakes every 3.28 s
+during a long idle period (16-bit slots); implementing
+`eventOS_callback_timer_start_usec()` removes these wakes, for the event
+loop's tick as well.
+
+**Limit.** A module whose timer state is changed outside an event (from a
+callback timer or a poll hook) and that no event follows is re-checked only
+at the next event. In the stack, the MAC hands its indications and confirms
+to the upper layers from its tasklet, and the paths that run from a callback
+timer post events.
+
+Statistics: `-DNS_PROTOCOL_TIMERS_SKIP_STATS` (C flag, for tuning) prints on
+stderr at exit which module asked for each core timer wake.
+
+Effect in the emulator (FG25 profile, EU mode 3; emulator
+`docs/POWER_MODEL.md` §15): an idle LFN (3 seeds, 3600 s) from 41.6–42.4 µA and
+20.6 wakes/s to 16.6–17.3 µA and 0.66 wakes/s; Wi-SUN FFN routers once joined
+(`dag_simple`, 10 seeds) from 37.7 to 19.3 wakes/s (protocol timer 20.0 to
+1.17).
+
+Checks: `tests/protocol_timers/run.sh` runs the stack's `protocol_timer.c`,
+`protocol_core.c` and event loop on a fake port with fake modules (countdowns
+in ticks and in seconds, a module counting calls, a period that keeps its
+phase, TCP and MPL style users), one schedule of events that start work and
+read the modules' state at arbitrary instants, long idle gaps and the 32-bit
+clock wrap. It requires the same actions and observations with the periodic
+timers, with skipping on µs timers and with 50 µs slots. `OFF` gives the
+periodic timers of the reference; with `ON`, `dag_simple` and the LFN tests
+give the same logs as `OFF` (emulator `docs/POWER_MODEL.md` §15).
 
 ### `sched.h`: scheduler signal and run loop
 

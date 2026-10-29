@@ -957,6 +957,28 @@ static void mpl_fast_timer(uint16_t ticks)
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until a seed expires; every second while a seed holds messages
+ * (their deletion depends on the core time) */
+uint32_t mpl_slow_timer_next(void)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(mpl_domain_t, domain, &mpl_domains) {
+        ns_list_foreach(mpl_seed_t, seed, &domain->seeds) {
+            if (!ns_list_is_empty(&seed->messages)) {
+                return 1;
+            }
+            uint32_t t = seed->lifetime ? seed->lifetime : 1;
+            if (t < next) {
+                next = t;
+            }
+        }
+    }
+    return next;
+}
+
+#endif
 void mpl_slow_timer(uint16_t seconds)
 {
     ns_list_foreach(mpl_domain_t, domain, &mpl_domains) {

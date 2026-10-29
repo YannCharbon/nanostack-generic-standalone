@@ -246,8 +246,14 @@ void ws_llc_set_pan_information_pointer(struct protocol_interface_info_entry *in
 void ws_llc_hopping_schedule_config(struct protocol_interface_info_entry *interface, struct ws_hopping_schedule_s *hopping_schedule);
 
 void ws_llc_timer_seconds(struct protocol_interface_info_entry *interface, uint16_t seconds_update);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_llc_timer_seconds_next(struct protocol_interface_info_entry *interface);
+#endif
 
 void ws_llc_fast_timer(struct protocol_interface_info_entry *interface, uint16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_llc_fast_timer_next(struct protocol_interface_info_entry *interface);
+#endif
 
 bool ws_llc_eapol_relay_forward_filter(struct protocol_interface_info_entry *interface, const uint8_t *joiner_eui64, uint8_t mac_sequency, uint32_t rx_timestamp);
 

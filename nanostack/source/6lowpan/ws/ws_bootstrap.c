@@ -82,6 +82,9 @@
 #include "6lowpan/ws/ws_pae_controller.h"
 #include "6lowpan/ws/ws_phy.h"
 #include "6lowpan/ws/ws_stats.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 #define TRACE_GROUP "wsbs"
 
@@ -104,6 +107,9 @@ static void ws_bootstrap_pan_version_increment(protocol_interface_info_entry_t *
 static ws_nud_table_entry_t *ws_nud_entry_discover(protocol_interface_info_entry_t *cur, void *neighbor);
 static void ws_nud_entry_remove(protocol_interface_info_entry_t *cur, mac_neighbor_table_entry_t *entry_ptr);
 static bool ws_neighbor_entry_nud_notify(mac_neighbor_table_entry_t *entry_ptr, void *user_data);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+static uint32_t ws_neighbor_entry_nud_next(mac_neighbor_table_entry_t *entry_ptr, void *user_data);
+#endif
 static void ws_bootstrap_dhcp_neighbour_update_cb(int8_t interface_id, uint8_t ll_addr[static 16]);
 static void ws_bootstrap_dhcp_info_notify_cb(int8_t interface, dhcp_option_notify_t *options, dhcp_server_notify_info_t *server_info);
 static void ws_bootstrap_test_procedure_trigger_timer(protocol_interface_info_entry_t *cur, uint32_t seconds);
@@ -488,6 +494,20 @@ static bool ws_nud_message_build(protocol_interface_info_entry_t *cur, mac_neigh
     return false;
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Ticks until an active NUD entry's timer (ms) expires */
+uint32_t ws_nud_active_timer_next(protocol_interface_info_entry_t *cur)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(ws_nud_table_entry_t, entry, &cur->ws_info->active_nud_process) {
+        uint32_t ticks = entry->timer / 100 + (entry->timer % 100 != 0);
+        next = protocol_timer_next_min(next, ticks ? ticks : 1);
+    }
+    return next;
+}
+
+#endif
 void ws_nud_active_timer(protocol_interface_info_entry_t *cur, uint16_t ticks)
 {
     //Convert TICKS to real milliseconds
@@ -1516,6 +1536,71 @@ static uint32_t ws_probe_init_time_get(protocol_interface_info_entry_t *cur)
     return WS_NORMAL_PROBE_INIT_BASE_SECONDS;
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/*
+ * When ws_neighbor_entry_nud_notify() would act on the entry (start a NUD or
+ * a probe, or draw a random number), in calls from now: on the j-th call the
+ * entry's lifetime is j lower, so its time from start is j higher. The other
+ * inputs only change with the stack's events.
+ */
+static uint32_t ws_neighbor_entry_nud_next(mac_neighbor_table_entry_t *entry_ptr, void *user_data)
+{
+    protocol_interface_info_entry_t *cur = user_data;
+    uint8_t ll_address[16];
+    uint32_t next = UINT32_MAX;
+
+    ws_neighbor_class_entry_t *ws_neighbor = ws_neighbor_class_entry_get(&cur->ws_info->neighbor_storage, entry_ptr->index);
+    etx_storage_t *etx_entry = etx_storage_entry_get(cur->id, entry_ptr->index);
+
+    if (!entry_ptr->trusted_device || !ws_neighbor || !etx_entry || entry_ptr->link_lifetime <= WS_NEIGHBOUR_TEMPORARY_NEIGH_MAX_LIFETIME) {
+        return next;
+    }
+    if (ws_lfn_parent_neighbor_keep(cur, entry_ptr)) {
+        return next;
+    }
+    if (lowpan_adaptation_expedite_forward_state_get(cur)) {
+        // Ends with time
+        return 1;
+    }
+    ws_common_create_ll_address(ll_address, entry_ptr->mac64);
+    uint32_t time_from_start = entry_ptr->link_lifetime - entry_ptr->lifetime;
+    // First call with time_from_start > WS_NEIGHBOR_NUD_TIMEOUT
+    uint32_t j_nud = time_from_start >= WS_NEIGHBOR_NUD_TIMEOUT ? 1 : WS_NEIGHBOR_NUD_TIMEOUT - time_from_start + 1;
+    bool child = ipv6_neighbour_has_registered_by_eui64(&cur->ipv6_neighbour_cache, entry_ptr->mac64);
+    bool candidate_parent = rpl_control_is_dodag_parent_candidate(cur, ll_address, cur->ws_info->cfg->gen.rpl_parent_candidate_max);
+
+    if (child || candidate_parent) {
+        next = j_nud;
+        if (child) {
+            // Not before time_from_start >= WS_NEIGHBOR_NUD_TIMEOUT * 1.8
+            double need = WS_NEIGHBOR_NUD_TIMEOUT * 1.8 - time_from_start;
+            if (need > next) {
+                next = (uint32_t)need;
+                if (next < need) {
+                    next++;
+                }
+            }
+        }
+    }
+    if (j_nud > 1 && etx_entry->etx_samples < WS_NEIGHBOR_ETX_SAMPLE_MAX && rpl_control_probe_parent_candidate(cur, ll_address)) {
+        // Before that: a probe once time_from_start >= probe_period, or a
+        // random draw once it is > time_block
+        uint32_t probe_period = ws_probe_init_time_get(cur) << etx_entry->etx_samples;
+        uint32_t time_block = 1 << etx_entry->etx_samples;
+        uint32_t j = time_from_start >= probe_period ? 1 : probe_period - time_from_start;
+        uint32_t j_block = time_from_start >= time_block ? 1 : time_block - time_from_start + 1;
+        if (j_block < j) {
+            j = j_block;
+        }
+        if (j < j_nud && j < next) {
+            next = j;
+        }
+    }
+    return next;
+}
+
+#endif
+
 static bool ws_neighbor_entry_nud_notify(mac_neighbor_table_entry_t *entry_ptr, void *user_data)
 {
     uint32_t time_from_start = entry_ptr->link_lifetime - entry_ptr->lifetime;
@@ -1701,6 +1786,9 @@ int ws_bootstrap_init(int8_t interface_id, net_6lowpan_mode_e bootstrap_mode)
         ret_val = -1;
         goto init_fail;
     }
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+    mac_neighbor_info(cur)->user_nud_next_cb = ws_neighbor_entry_nud_next;
+#endif
 
     if (wisun_mode_host(cur)) {
         // Configure for LFN device
@@ -3183,6 +3271,29 @@ void ws_bootstrap_network_down(protocol_interface_info_entry_t *cur)
     ws_nwk_event_post(cur, ARM_NWK_NWK_CONNECTION_DOWN);
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_bootstrap_trickle_timer_next(protocol_interface_info_entry_t *cur)
+{
+    uint32_t next = UINT32_MAX;
+
+    if (cur->ws_info->trickle_pas_running) {
+        next = protocol_timer_next_min(next, trickle_timer_next(&cur->ws_info->trickle_pan_advertisement_solicit, &cur->ws_info->trickle_params_pan_discovery));
+    }
+    if (cur->ws_info->trickle_pcs_running) {
+        // Its timeout and solicit count are checked on every run
+        next = 1;
+    }
+    if (cur->ws_info->trickle_pa_running) {
+        next = protocol_timer_next_min(next, trickle_timer_next(&cur->ws_info->trickle_pan_advertisement, &cur->ws_info->trickle_params_pan_discovery));
+    }
+    if (cur->ws_info->trickle_pc_running) {
+        // The consistency block period is only read when a PAN config arrives
+        next = protocol_timer_next_min(next, trickle_timer_next(&cur->ws_info->trickle_pan_config, &cur->ws_info->trickle_params_pan_discovery));
+    }
+    return next;
+}
+
+#endif
 void ws_bootstrap_trickle_timer(protocol_interface_info_entry_t *cur, uint16_t ticks)
 {
     if (cur->ws_info->trickle_pas_running &&
@@ -3254,23 +3365,56 @@ void ws_bootstrap_asynch_trickle_stop(protocol_interface_info_entry_t *cur)
 }
 
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* The skipped seconds are handed over in one call: count them all */
+#define WS_SECONDS_COUNT seconds
+#else
+#define WS_SECONDS_COUNT 1
+#endif
+
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+static bool auto_test_proc_trg_enabled;   // defined below
+
+uint32_t ws_bootstrap_seconds_timer_next(protocol_interface_info_entry_t *cur)
+{
+    uint32_t next = UINT32_MAX;
+
+    if (auto_test_proc_trg_enabled) {
+        // ws_bootstrap_test_procedure_trigger_timer(): every second
+        return 1;
+    }
+    // ws_neighbour_mdr_mode_analyze() acts on the calls that see an uptime
+    // that is a multiple of 10 (it sees the uptime before the increment)
+    if (ws_bootstrap_state_active(cur) && ws_version_1_1(cur) && cur->ws_info->phy_cap_info.length_of_list) {
+        uint32_t u = cur->ws_info->uptime;
+        next = (u && u % 10 == 0) ? 1 : (10 - u % 10) % 10 + 1;
+    }
+    next = protocol_timer_next_min(next, ws_llc_timer_seconds_next(cur));
+    return next;
+}
+
+#endif
 void ws_bootstrap_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seconds)
 {
     /*Update join state statistics*/
     if (ws_bootstrap_state_discovery(cur)) {
-        ws_stats_update(cur, STATS_WS_STATE_1, 1);
+        ws_stats_update(cur, STATS_WS_STATE_1, WS_SECONDS_COUNT);
     } else if (ws_bootstrap_state_authenticate(cur)) {
-        ws_stats_update(cur, STATS_WS_STATE_2, 1);
+        ws_stats_update(cur, STATS_WS_STATE_2, WS_SECONDS_COUNT);
     } else if (ws_bootstrap_state_configure(cur)) {
-        ws_stats_update(cur, STATS_WS_STATE_3, 1);
+        ws_stats_update(cur, STATS_WS_STATE_3, WS_SECONDS_COUNT);
     } else if (ws_bootstrap_state_wait_rpl(cur)) {
-        ws_stats_update(cur, STATS_WS_STATE_4, 1);
+        ws_stats_update(cur, STATS_WS_STATE_4, WS_SECONDS_COUNT);
     } else if (ws_bootstrap_state_active(cur)) {
-        ws_stats_update(cur, STATS_WS_STATE_5, 1);
+        ws_stats_update(cur, STATS_WS_STATE_5, WS_SECONDS_COUNT);
         //Update neighbour MDR phy capability mode id
         ws_neighbour_mdr_mode_analyze(cur);
     }
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+    cur->ws_info->uptime += seconds;
+#else
     cur->ws_info->uptime++;
+#endif
 
     ws_llc_timer_seconds(cur, seconds);
 

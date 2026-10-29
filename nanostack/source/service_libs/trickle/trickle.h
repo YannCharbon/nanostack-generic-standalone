@@ -71,6 +71,12 @@ void trickle_inconsistent_heard(trickle_t *t, const trickle_params_t *params);
  */
 bool trickle_timer(trickle_t *t, const trickle_params_t *params, uint16_t ticks);
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Ticks until trickle_timer() would do something: transmit, or begin a new
+ * interval; UINT32_MAX if never (stopped) */
+uint32_t trickle_timer_next(const trickle_t *t, const trickle_params_t *params);
+#endif
+
 /* Indicate whether the timer is running (e < TimerExpirations) */
 bool trickle_running(const trickle_t *t, const trickle_params_t *params);
 

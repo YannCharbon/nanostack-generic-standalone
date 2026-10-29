@@ -1876,7 +1876,8 @@ void rpl_instance_slow_timer(rpl_instance_t *instance, uint16_t seconds)
 }
 
 
-void rpl_upward_dio_timer(rpl_instance_t *instance, uint16_t ticks)
+/* The DODAG whose DIO trickle timer runs, NULL if it does not run now */
+static rpl_dodag_t *rpl_upward_dio_timer_dodag(rpl_instance_t *instance)
 {
     rpl_dodag_version_t *dodag_version = instance->current_dodag_version;
     rpl_dodag_t *dodag;
@@ -1893,12 +1894,12 @@ void rpl_upward_dio_timer(rpl_instance_t *instance, uint16_t ticks)
     }
 
     if (!dodag || !dodag_version) {
-        return;
+        return NULL;
     }
 
     /* Leaves don't send normal periodic DIOs */
     if (rpl_dodag_am_leaf(dodag) && !instance->poison_count) {
-        return;
+        return NULL;
     }
 
     /* Delay sending first DIO if we are still potentially gathering info */
@@ -1907,19 +1908,40 @@ void rpl_upward_dio_timer(rpl_instance_t *instance, uint16_t ticks)
 
         //Validate Parent is selected and registered
         if (!rpl_instance_parent_selected(instance)) {
-            return;
+            return NULL;
         }
         //Verify that DAO is registered
         if (!rpl_instance_dao_route_registered(instance)) {
-            return;
+            return NULL;
         }
     }
+    return dodag;
+}
 
+void rpl_upward_dio_timer(rpl_instance_t *instance, uint16_t ticks)
+{
+    rpl_dodag_t *dodag = rpl_upward_dio_timer_dodag(instance);
+
+    if (!dodag) {
+        return;
+    }
     if (trickle_timer(&instance->dio_timer, &dodag->dio_timer_params, ticks)) {
         instance->dio_not_consistent = false;
         rpl_instance_dio_trigger(instance, NULL, NULL);
     }
 }
+
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t rpl_upward_dio_timer_next(rpl_instance_t *instance)
+{
+    rpl_dodag_t *dodag = rpl_upward_dio_timer_dodag(instance);
+
+    if (!dodag) {
+        return UINT32_MAX;
+    }
+    return trickle_timer_next(&instance->dio_timer, &dodag->dio_timer_params);
+}
+#endif
 
 void rpl_upward_print_neighbour(const rpl_neighbour_t *neighbour, route_print_fn_t *print_fn)
 {

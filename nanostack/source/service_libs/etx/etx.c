@@ -32,6 +32,9 @@
 
 //TODO: Refactor this away!
 #include "mac/rf_driver_storage.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 #define TRACE_GROUP "etx"
 
@@ -886,6 +889,39 @@ void etx_neighbor_remove(int8_t interface_id, uint8_t attribute_index, const uin
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until a neighbour's cached samples give a new ETX
+ * (etx_update_possible() with a non-zero time) */
+uint32_t etx_cache_timer_next(int8_t interface_id)
+{
+    uint32_t next = UINT32_MAX;
+
+    if (!etx_info.cache_sample_requested) {
+        return next;
+    }
+    protocol_interface_info_entry_t *interface = protocol_stack_interface_info_get_by_id(interface_id);
+    if (!interface || !mac_neighbor_info(interface)) {
+        return next;
+    }
+    ns_list_foreach(mac_neighbor_table_entry_t, neighbour, &mac_neighbor_info(interface)->neighbour_list) {
+        etx_storage_t *etx_entry = etx_storage_entry_get(interface_id, neighbour->index);
+        if (!etx_entry || etx_entry->tmp_etx || etx_entry->etx_samples <= etx_info.init_etx_sample_count) {
+            continue;
+        }
+        etx_sample_storage_t *storage = etx_info.etx_cache_storage_list + neighbour->index;
+        if (storage->transition_count < etx_info.min_attempts_count && storage->transition_count == storage->received_acks) {
+            // Not before more samples come
+            continue;
+        }
+        if (storage->attempts_count == 0xffff || storage->received_acks == 0xff || storage->etx_timer == 0) {
+            return 1;
+        }
+        next = protocol_timer_next_min(next, storage->etx_timer);
+    }
+    return next;
+}
+
+#endif
 void etx_cache_timer(int8_t interface_id, uint16_t seconds_update)
 {
     if (!etx_info.cache_sample_requested) {

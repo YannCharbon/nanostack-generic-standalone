@@ -43,5 +43,8 @@ int8_t net_dns_query_result_get(int8_t interface_id, uint8_t address[16], const 
  * Generic timeout handler for all interfaces and entries.
  */
 void net_dns_timer_seconds(uint32_t seconds);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t net_dns_timer_seconds_next(void);
+#endif
 
 #endif /* NET_DNS_INTERNAL_H_ */

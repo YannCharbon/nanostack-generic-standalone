@@ -43,6 +43,9 @@
 #include "6lowpan/ws/ws_pae_nvm_data.h"
 #include "6lowpan/ws/ws_pae_time.h"
 #include "6lowpan/ws/ws_pae_key_storage.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 
 #define TRACE_GROUP "wspc"
@@ -1681,6 +1684,26 @@ int8_t ws_pae_controller_gtk_hash_update(protocol_interface_info_entry_t *interf
     return 0;
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_pae_controller_fast_timer_next(void)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(pae_controller_t, entry, &pae_controller_list) {
+        if (!entry->pae_fast_timer) {
+            continue;
+        }
+        if (entry->pae_fast_timer == ws_pae_supp_fast_timer) {
+            next = protocol_timer_next_min(next, ws_pae_supp_fast_timer_next());
+        } else {
+            // The authenticator: every tick
+            next = 1;
+        }
+    }
+    return next;
+}
+
+#endif
 void ws_pae_controller_fast_timer(uint16_t ticks)
 {
     ns_list_foreach(pae_controller_t, entry, &pae_controller_list) {
@@ -1690,6 +1713,30 @@ void ws_pae_controller_fast_timer(uint16_t ticks)
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_pae_controller_slow_timer_next(void)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(pae_controller_t, entry, &pae_controller_list) {
+        if (entry->pae_slow_timer == ws_pae_supp_slow_timer) {
+            next = protocol_timer_next_min(next, ws_pae_supp_slow_timer_next());
+        } else if (entry->pae_slow_timer) {
+            // The authenticator: every second
+            return 1;
+        }
+        // ws_pae_controller_frame_counter_timer(): the periodic check and
+        // the forced store
+        next = protocol_timer_next_min(next, entry->frame_cnt_store_timer ? entry->frame_cnt_store_timer : 1);
+        if (entry->frame_cnt_store_force_timer) {
+            next = protocol_timer_next_min(next, entry->frame_cnt_store_force_timer);
+        }
+    }
+    // ws_pae_current_time_update(): adds the seconds
+    return next;
+}
+
+#endif
 void ws_pae_controller_slow_timer(uint16_t seconds)
 {
     ns_list_foreach(pae_controller_t, entry, &pae_controller_list) {

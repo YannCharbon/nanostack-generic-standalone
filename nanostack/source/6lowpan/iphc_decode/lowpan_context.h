@@ -78,6 +78,9 @@ void lowpan_context_list_free(lowpan_context_list_t *list);
  *
  */
 void lowpan_context_timer(lowpan_context_list_t *list, uint_fast16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t lowpan_context_timer_next(const lowpan_context_list_t *list);
+#endif
 /**
  * \brief Get Context entry from the list by context ID
  *

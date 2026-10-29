@@ -296,14 +296,40 @@ void eventOS_scheduler_set_active_tasklet(int8_t tasklet)
  * Function Read and handle Cores Event and switch/enable tasklet which are event receiver. WhenEvent queue is empty it goes to sleep
  *
  */
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+static void (*dispatch_hook_before)(void);
+static void (*dispatch_hook_idle)(void);
+static bool dispatched_since_idle;
+
+void eventOS_scheduler_dispatch_hooks_set(void (*before)(void), void (*idle)(void))
+{
+    dispatch_hook_before = before;
+    dispatch_hook_idle = idle;
+}
+#endif
+
 bool eventOS_scheduler_dispatch_event(void)
 {
     curr_tasklet = 0;
 
     arm_event_storage_t *cur_event = event_core_read();
     if (!cur_event) {
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+        // Once per run of events, not on every empty poll
+        if (dispatch_hook_idle && dispatched_since_idle) {
+            dispatched_since_idle = false;
+            dispatch_hook_idle();
+            curr_tasklet = 0;
+        }
+#endif
         return false;
     }
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+    dispatched_since_idle = true;
+    if (dispatch_hook_before) {
+        dispatch_hook_before();
+    }
+#endif
 
     curr_tasklet = cur_event->data.receiver;
 

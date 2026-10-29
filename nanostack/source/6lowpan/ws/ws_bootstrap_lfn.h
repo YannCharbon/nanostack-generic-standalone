@@ -25,6 +25,9 @@ void ws_bootstrap_lfn_asynch_confirm(struct protocol_interface_info_entry *inter
 void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_event_s *event);
 void ws_bootstrap_lfn_state_machine(protocol_interface_info_entry_t *cur);
 void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seconds);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_bootstrap_lfn_seconds_timer_next(protocol_interface_info_entry_t *cur);
+#endif
 void ws_bootstrap_lfn_address_register(protocol_interface_info_entry_t *cur);
 void ws_bootstrap_lfn_parent_heard(protocol_interface_info_entry_t *cur, const uint8_t *src64);
 
@@ -37,6 +40,7 @@ void ws_bootstrap_lfn_parent_heard(protocol_interface_info_entry_t *cur, const u
 #define ws_bootstrap_ffn_event_handler(cur, event) ((void) 0)
 #define ws_bootstrap_lfn_state_machine(cur) ((void) 0)
 #define ws_bootstrap_lfn_seconds_timer(cur, seconds) ((void) 0)
+#define ws_bootstrap_lfn_seconds_timer_next(cur) UINT32_MAX
 #define ws_bootstrap_lfn_address_register(cur) ((void) 0)
 #define ws_bootstrap_lfn_parent_heard(cur, src64) ((void) 0)
 

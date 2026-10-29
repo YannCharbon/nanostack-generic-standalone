@@ -37,6 +37,8 @@ jobs:
         run: tests/eventloop/run.sh build-eventloop-tests
       - name: FAN 1.1 LFN unicast mechanics in the FHSS
         run: tests/fhss_lfn/run.sh build-fhss-lfn-tests
+      - name: Protocol timers, periodic against idle-tick skipping
+        run: tests/protocol_timers/run.sh build-protocol-timers-tests
       - name: Build mbedTLS v3.0.0
         run: |
           git clone --depth 1 --branch v3.0.0 https://github.com/Mbed-TLS/mbedtls.git ../mbedtls

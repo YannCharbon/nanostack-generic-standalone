@@ -125,6 +125,22 @@ void lowpan_context_list_free(lowpan_context_list_t *list)
 }
 
 /* ticks is in 1/10s */
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Ticks until a context's lifetime runs out */
+uint32_t lowpan_context_timer_next(const lowpan_context_list_t *list)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(lowpan_context_t, ctx, list) {
+        uint32_t ticks = ctx->lifetime ? ctx->lifetime : 1;
+        if (ticks < next) {
+            next = ticks;
+        }
+    }
+    return next;
+}
+
+#endif
 void lowpan_context_timer(lowpan_context_list_t *list, uint_fast16_t ticks)
 {
     ns_list_foreach_safe(lowpan_context_t, ctx, list) {

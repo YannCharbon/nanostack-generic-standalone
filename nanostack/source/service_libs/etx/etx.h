@@ -254,6 +254,9 @@ void etx_neighbor_remove(int8_t interface_id, uint8_t attribute_index, const uin
  *
  */
 void etx_cache_timer(int8_t interface_id, uint16_t seconds_update);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t etx_cache_timer_next(int8_t interface_id);
+#endif
 
 /**
  * \brief A function for enable cached ETX mode and parametrs

@@ -48,6 +48,16 @@ project(nanostack-generic-standalone C)
 #                               the reference. Defines
 #                               NS_EVENTLOOP_SKIP_IDLE_TICKS for nanostack_eventloop
 #                               and its consumers (a port can test it)
+#   NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE
+#                               idle-tick skipping of the protocol timers
+#                               (docs/PORTING.md, "Idle-tick skipping of the
+#                               protocol timers"): the 50 ms protocol timer
+#                               and the 100 ms / 1 s core timer run only on
+#                               the grid points at which a module has work.
+#                               Default ON; OFF gives the periodic timers of
+#                               the reference. Defines
+#                               NS_PROTOCOL_TIMERS_SKIP_IDLE for
+#                               nanostack_eventloop and its consumers
 # mbedTLS: if the consumer already defines MbedTLS::mbedtls,
 # MbedTLS::mbedcrypto and MbedTLS::mbedx509, they are used as they are;
 # otherwise find_package(MbedTLS) looks for v3.0.0.
@@ -58,6 +68,7 @@ set(NANOSTACK_PORT nanostack_port_posix CACHE STRING "Target implementing the Na
 option(NANOSTACK_FILE_NO_STDIO "Compile out the stdio fallback of ns_file_system.c" OFF)
 option(NANOSTACK_TLS_STRONG_PORT_ENTROPY "The port's random source is a TRNG: strong TLS entropy source" OFF)
 option(NANOSTACK_EVENTLOOP_SKIP_IDLE_TICKS "Idle-tick skipping: the 10 ms tick runs only when an event timer is due" ON)
+option(NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE "Idle-tick skipping of the protocol timers: they run only when a module has work" ON)
 
 if(NANOSTACK_PORT MATCHES "^nanostack_port_(posix|sim)$")
     include(CheckIncludeFile)
@@ -116,6 +127,9 @@ target_include_directories(nanostack_eventloop PUBLIC
 target_link_libraries(nanostack_eventloop PUBLIC nanostack_libservice ${NANOSTACK_PORT})
 if(NANOSTACK_EVENTLOOP_SKIP_IDLE_TICKS)
     target_compile_definitions(nanostack_eventloop PUBLIC NS_EVENTLOOP_SKIP_IDLE_TICKS)
+endif()
+if(NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE)
+    target_compile_definitions(nanostack_eventloop PUBLIC NS_PROTOCOL_TIMERS_SKIP_IDLE)
 endif()
 
 if(NANOSTACK_PORT STREQUAL "nanostack_port_posix")

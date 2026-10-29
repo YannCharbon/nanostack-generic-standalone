@@ -63,5 +63,8 @@ void lowpan_adaptation_expedite_forward_enable(struct protocol_interface_info_en
 bool lowpan_adaptation_expedite_forward_state_get(struct protocol_interface_info_entry *cur);
 
 void lowpan_adaptation_interface_slow_timer(struct protocol_interface_info_entry *cur);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t lowpan_adaptation_interface_slow_timer_next(struct protocol_interface_info_entry *cur);
+#endif
 
 #endif /* LOWPAN_ADAPTATION_INTERFACE_H_ */

@@ -331,6 +331,19 @@ static void icmpv6_send_ra(protocol_interface_info_entry_t *cur, const uint8_t *
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Ticks until the first queued advertisement fires (relative queue) */
+uint32_t icmpv6_radv_timer_next(void)
+{
+    icmp_queued_ra_t *ra = ns_list_get_first(&icmp_ra_queue);
+
+    if (!ra) {
+        return UINT32_MAX;
+    }
+    return ra->ticks ? ra->ticks : 1;
+}
+
+#endif
 void icmpv6_radv_timer(uint16_t ticks)
 {
     /* This initialises to empty (on every call) */

@@ -1735,6 +1735,22 @@ void rpl_downward_dao_slow_timer(rpl_instance_t *instance, uint16_t seconds)
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Ticks until the DAO retry or the delayed DAO is due */
+uint32_t rpl_downward_dao_timer_next(const rpl_instance_t *instance)
+{
+    uint32_t next = UINT32_MAX;
+
+    if (instance->dao_retry_timer) {
+        next = instance->dao_retry_timer;
+    }
+    if (instance->delay_dao_timer && instance->delay_dao_timer < next) {
+        next = instance->delay_dao_timer;
+    }
+    return next;
+}
+
+#endif
 void rpl_downward_dao_timer(rpl_instance_t *instance, uint16_t ticks)
 {
     if (instance->dao_retry_timer) {

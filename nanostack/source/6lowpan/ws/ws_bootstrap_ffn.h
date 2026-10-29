@@ -25,6 +25,9 @@ void ws_bootstrap_ffn_asynch_confirm(struct protocol_interface_info_entry *inter
 void ws_bootstrap_ffn_event_handler(protocol_interface_info_entry_t *cur, arm_event_s *event);
 void ws_bootstrap_ffn_state_machine(protocol_interface_info_entry_t *cur);
 void ws_bootstrap_ffn_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seconds);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_bootstrap_ffn_seconds_timer_next(protocol_interface_info_entry_t *cur);
+#endif
 
 #define wisun_mode_router(cur) (cur->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_ROUTER)
 
@@ -35,6 +38,7 @@ void ws_bootstrap_ffn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
 #define ws_bootstrap_ffn_event_handler(cur, event) ((void) 0)
 #define ws_bootstrap_ffn_state_machine(cur) ((void) 0)
 #define ws_bootstrap_ffn_seconds_timer(cur, seconds) ((void) 0)
+#define ws_bootstrap_ffn_seconds_timer_next(cur) UINT32_MAX
 
 #define wisun_mode_router(cur) (false)
 

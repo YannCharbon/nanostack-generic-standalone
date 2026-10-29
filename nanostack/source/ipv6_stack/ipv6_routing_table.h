@@ -169,6 +169,14 @@ extern void ipv6_neighbour_reachability_confirmation(const uint8_t ip_address[__
 extern void ipv6_neighbour_reachability_problem(const uint8_t ip_address[__static 16], int8_t interface_id);
 extern void ipv6_neighbour_update_from_na(ipv6_neighbour_cache_t *cache, ipv6_neighbour_t *entry, uint8_t flags, addrtype_t ll_type, const uint8_t *ll_address);
 extern void ipv6_neighbour_cache_fast_timer(ipv6_neighbour_cache_t *cache, uint16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+extern uint32_t ipv6_neighbour_cache_fast_timer_next(const ipv6_neighbour_cache_t *cache);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+extern uint32_t ipv6_neighbour_cache_slow_timer_next(const ipv6_neighbour_cache_t *cache);
+extern uint32_t ipv6_route_table_ttl_update_next(void);
+extern uint32_t ipv6_destination_cache_timer_next(void);
+#endif
+#endif
 extern void ipv6_neighbour_cache_slow_timer(ipv6_neighbour_cache_t *cache, uint8_t seconds);
 extern void ipv6_neighbour_cache_print(const ipv6_neighbour_cache_t *cache, route_print_fn_t *print_fn);
 extern void ipv6_router_gone(ipv6_neighbour_cache_t *cache, ipv6_neighbour_t *entry);

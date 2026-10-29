@@ -39,6 +39,9 @@ buffer_t *mpl_control_handler(buffer_t *buf, struct protocol_interface_info_entr
 bool mpl_forwarder_process_message(buffer_t *buf, mpl_domain_t *domain, bool decrement_hop_limit);
 
 void mpl_slow_timer(uint16_t seconds);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t mpl_slow_timer_next(void);
+#endif
 
 void mpl_clear_realm_scope_seeds(struct protocol_interface_info_entry *cur);
 

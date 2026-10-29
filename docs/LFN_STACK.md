@@ -78,7 +78,6 @@ Limits: one LFN parent per LFN, and only the border router parents LFNs (FFN rou
 - LFN broadcast schedule, LTS frames, window widening with drift (stage 4); FFN routers as parents (stage 5).
 - RFC 9685 multicast subscriptions; LCP/FLUS and LND-slot answers (interoperability).
 - LGTK (§8).
-- The 50 ms protocol timer still wakes the LFN 20 times a second (§7).
 
 ## 7. Tests and results
 
@@ -91,7 +90,7 @@ Test hook: `ws_test_lfn_parent_silence()` (`net_ws_test.h`) makes the border rou
 
 **Results** (emulator `docs/POWER_MODEL.md` §14; FG25 profile, EU mode 3, +10 dBm, −50 dBm link):
 - 10 seeds with test traffic, 1800 s: all checks pass; operational 37–67 s after start; LFN 74.6–79.5 µA.
-- Idle, 3 seeds, 3600 s: 41.6–42.4 µA, of which about 24 µA come from the 50 ms protocol timer (20 wakes/s), 5.8 µA from listening.
+- Idle, 3 seeds, 3600 s: 41.6–42.4 µA, of which about 24 µA come from the 50 ms protocol timer (20 wakes/s), 5.8 µA from listening. With idle-tick skipping of the protocol timers (`PORTING.md`, DI6): 16.6–17.3 µA, 0.66 wakes/s, of which 0.07/s from the protocol timers; with test traffic 49.6–54.5 µA (emulator `docs/POWER_MODEL.md` §15).
 - Parent loss, 3 seeds: declared 375.2–375.7 s after the last frame from the parent, rejoin without EAPOL in 21–22 s (Silicon Labs' LFN: 375 s, 21.6–21.9 s [M items 45–47]).
 
 Non-regression (FAN 1.0, no LFN): `dag_simple` in virtual time, 10 seeds, logs byte-identical to the previous stack commit (`compare_logs.py --mask-pointers --mask-source-lines`; the second option masks the programs' own `function():line` trace prefixes, which move when their source is edited).

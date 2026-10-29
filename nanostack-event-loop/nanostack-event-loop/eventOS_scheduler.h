@@ -71,4 +71,19 @@ extern  void eventOS_scheduler_set_active_tasklet(int8_t tasklet);
  */
 extern void eventOS_scheduler_signal(void);
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/**
+ * \brief Hooks around event dispatch, for the stack's idle-tick skipping of
+ * its protocol timers (docs/PORTING.md, "Idle-tick skipping of the protocol
+ * timers"). Not for applications.
+ *
+ * \param before called by eventOS_scheduler_dispatch_event() before it
+ *               dispatches an event (the event is already off the queue),
+ *               NULL for none
+ * \param idle   called by eventOS_scheduler_dispatch_event() when it finds
+ *               the queue empty after it dispatched events, NULL for none
+ */
+extern void eventOS_scheduler_dispatch_hooks_set(void (*before)(void), void (*idle)(void));
+#endif
+
 #endif /* EVENTOS_SCHEDULER_H_ */

@@ -2206,6 +2206,19 @@ void ws_llc_hopping_schedule_config(struct protocol_interface_info_entry *interf
     base->ie_params.hopping_schedule = hopping_schedule;
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Ticks until the EDFE wait (ms) times out */
+uint32_t ws_llc_fast_timer_next(struct protocol_interface_info_entry *interface)
+{
+    llc_data_base_t *base = ws_llc_discover_by_interface(interface);
+
+    if (!base || !base->edfe_rx_wait_timer) {
+        return UINT32_MAX;
+    }
+    return base->edfe_rx_wait_timer / 100 + (base->edfe_rx_wait_timer % 100 != 0);
+}
+
+#endif
 void ws_llc_fast_timer(struct protocol_interface_info_entry *interface, uint16_t ticks)
 {
     llc_data_base_t *base = ws_llc_discover_by_interface(interface);
@@ -2239,6 +2252,27 @@ void ws_llc_fast_timer(struct protocol_interface_info_entry *interface, uint16_t
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until an EAPOL temporary entry times out (its relay filter only
+ * expires: read by the stack only) */
+uint32_t ws_llc_timer_seconds_next(struct protocol_interface_info_entry *interface)
+{
+    llc_data_base_t *base = ws_llc_discover_by_interface(interface);
+    uint32_t next = UINT32_MAX;
+
+    if (!base) {
+        return next;
+    }
+    ns_list_foreach(ws_neighbor_temp_class_t, entry, &base->temp_entries->active_eapol_temp_neigh) {
+        uint32_t t = entry->eapol_temp_info.eapol_timeout;
+        if ((t ? t : 1) < next) {
+            next = t ? t : 1;
+        }
+    }
+    return next;
+}
+
+#endif
 void ws_llc_timer_seconds(struct protocol_interface_info_entry *interface, uint16_t seconds_update)
 {
     llc_data_base_t *base = ws_llc_discover_by_interface(interface);

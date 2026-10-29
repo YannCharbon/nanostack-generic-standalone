@@ -38,6 +38,9 @@
 
 #include "rpl/rpl_control.h"
 #include "nwk_interface/protocol.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 #define TRACE_GROUP "addr"
 
@@ -805,6 +808,24 @@ void addr_delete_entry(protocol_interface_info_entry_t *cur, if_address_entry_t 
 }
 
 /* ticks is in 1/10s */
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Ticks until an address's state timer expires */
+uint32_t addr_fast_timer_next(const protocol_interface_info_entry_t *cur)
+{
+    uint32_t next = UINT32_MAX;
+
+    if (!(cur->lowpan_info & INTERFACE_NWK_ACTIVE)) {
+        return next;
+    }
+    ns_list_foreach(if_address_entry_t, addr, &cur->ip_addresses) {
+        if (addr->state_timer && addr->state_timer < next) {
+            next = addr->state_timer;
+        }
+    }
+    return next;
+}
+
+#endif
 void addr_fast_timer(protocol_interface_info_entry_t *cur, uint_fast16_t ticks)
 {
     /* Fast timers only run while the interface is active. */
@@ -869,6 +890,31 @@ void addr_fast_timer(protocol_interface_info_entry_t *cur, uint_fast16_t ticks)
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until an address is deprecated or invalidated */
+uint32_t addr_slow_timer_next(const protocol_interface_info_entry_t *cur)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(if_address_entry_t, addr, &cur->ip_addresses) {
+        if (addr->preferred_lifetime != 0xffffffff && addr->preferred_lifetime != 0 && addr->preferred_lifetime < next) {
+            next = addr->preferred_lifetime;
+        }
+        if (addr->valid_lifetime != 0xffffffff) {
+            next = protocol_timer_next_min(next, addr->valid_lifetime ? addr->valid_lifetime : 1);
+        }
+    }
+#ifdef MULTICAST_FORWARDING
+    ns_list_foreach(if_group_fwd_entry_t, group, &cur->ip_groups_fwd) {
+        if (group->lifetime != 0xffffffff) {
+            next = protocol_timer_next_min(next, group->lifetime ? group->lifetime : 1);
+        }
+    }
+#endif
+    return next;
+}
+
+#endif
 void addr_slow_timer(protocol_interface_info_entry_t *cur, uint_fast16_t seconds)
 {
     /* Slow (lifetime) timers run whether the interface is active or not */

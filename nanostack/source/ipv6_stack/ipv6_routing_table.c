@@ -47,6 +47,9 @@
 #include "common_protocols/ipv6_constants.h"
 #include "common_protocols/icmpv6.h"
 #include "common_protocols/ipv6_resolution.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 #define TRACE_GROUP "rout"
 
@@ -750,6 +753,44 @@ static void ipv6_neighbour_cache_gc_periodic(ipv6_neighbour_cache_t *cache)
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until an entry's lifetime expires or the periodic GC */
+uint32_t ipv6_neighbour_cache_slow_timer_next(const ipv6_neighbour_cache_t *cache)
+{
+    uint32_t next = cache->gc_timer ? cache->gc_timer : 1;
+
+    ns_list_foreach(ipv6_neighbour_t, cur, &cache->list) {
+        if (cur->lifetime == 0 || cur->lifetime == 0xffffffff) {
+            continue;
+        }
+        if (cur->lifetime < next) {
+            next = cur->lifetime;
+        }
+    }
+    return next;
+}
+
+/* Seconds until a route expires (a probe timer only runs down) */
+uint32_t ipv6_route_table_ttl_update_next(void)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(ipv6_route_t, r, &ipv6_routing_table) {
+        if (r->lifetime == 0xFFFFFFFF) {
+            continue;
+        }
+        next = protocol_timer_next_min(next, r->lifetime ? r->lifetime : 1);
+    }
+    return next;
+}
+
+/* Seconds until the periodic destination cache GC */
+uint32_t ipv6_destination_cache_timer_next(void)
+{
+    return dcache_gc_timer < DCACHE_GC_PERIOD ? DCACHE_GC_PERIOD - dcache_gc_timer : 1;
+}
+
+#endif
 void ipv6_neighbour_cache_slow_timer(ipv6_neighbour_cache_t *cache, uint8_t seconds)
 {
     ns_list_foreach_safe(ipv6_neighbour_t, cur, &cache->list) {
@@ -789,6 +830,25 @@ void ipv6_neighbour_cache_slow_timer(ipv6_neighbour_cache_t *cache, uint8_t seco
     ipv6_neighbour_cache_gc_periodic(cache);
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Ticks until an entry's timer (ms) expires */
+uint32_t ipv6_neighbour_cache_fast_timer_next(const ipv6_neighbour_cache_t *cache)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(ipv6_neighbour_t, cur, &cache->list) {
+        if (cur->timer == 0) {
+            continue;
+        }
+        uint32_t ticks = cur->timer / 100 + (cur->timer % 100 != 0);
+        if (ticks < next) {
+            next = ticks;
+        }
+    }
+    return next;
+}
+
+#endif
 void ipv6_neighbour_cache_fast_timer(ipv6_neighbour_cache_t *cache, uint16_t ticks)
 {
     uint32_t ms = (uint32_t) ticks * 100;

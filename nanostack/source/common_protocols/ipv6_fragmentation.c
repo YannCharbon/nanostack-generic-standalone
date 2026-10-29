@@ -142,6 +142,22 @@ uint16_t ipv6_frag_set_mru(uint16_t frag_mru)
     return ipv6_frag_mru;
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until a datagram being reassembled times out */
+uint32_t ipv6_frag_timer_next(void)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(ip_fragmented_datagram_t, dgram, &frag_list) {
+        uint32_t t = dgram->age < FRAG_TTL ? FRAG_TTL - dgram->age + 1 : 1;
+        if (t < next) {
+            next = t;
+        }
+    }
+    return next;
+}
+
+#endif
 void ipv6_frag_timer(uint8_t secs)
 {
     ns_list_foreach_safe(ip_fragmented_datagram_t, dgram, &frag_list) {
