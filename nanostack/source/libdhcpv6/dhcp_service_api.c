@@ -430,6 +430,9 @@ void recv_dhcp_relay_msg(void *cb_res)
 
     ns_msghdr_t msghdr;
     ns_iovec_t msg_data;
+    // The relay frame and the client's message, sent at the end: in this
+    // scope, not the else block's (msghdr points to it after that block)
+    ns_iovec_t msg_iov[2];
     msg_data.iov_base = socket_data;
     msg_data.iov_len = sckt_data->d_len;
     //Set messages name buffer
@@ -485,7 +488,6 @@ void recv_dhcp_relay_msg(void *cb_res)
             tr_error("No GP address");
             goto cleanup;
         }
-        ns_iovec_t msg_iov[2];
         uint8_t *ptr = relay_frame;
         //Build
         //ADD relay frame vector front of original data

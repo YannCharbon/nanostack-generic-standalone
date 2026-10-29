@@ -185,3 +185,13 @@ FAN 1.1 gives LFNs their own group keys, LGTKs, distinct from the GTKs of the FF
 **Fixed with stage 5.** The FHSS read the LTO-IE at sub-ID 14 (FLUS) instead of 17, so the stage 4 conversion of the LTO offset never ran: both sides applied the phase as an offset, which kept them consistent but did not place the LFN's slots against the broadcast slots. The unit test used the same wrong number; both are fixed.
 
 **Not done.** Router-to-router LFN handover (an LFN keeps its parent while the parent keeps it; it changes parent only after a loss); LGTKs and node roles in NVM; RFC 9685 subscriptions; the parents' LFN children on D-Bus; LCP/FLUS for interoperability.
+
+## 10. On the FG25 kits (stage 6)
+
+The firmware (`nanostack-efr32fg25-freertos`) builds the router program as an LFN (`wisun_lfn`) and the border router with LFN parenting (`FW_LFN_PARENT`); its README has the build, the board-specific parts and the measurements.
+
+**Memory errors found on the way.** The first LFN image faulted during EAPOL on the kit (an unaligned access in SHA-1, then a bus fault in the MAC's IE copy). Both were heap corruption, which the emulator did not show; the in-process programs built with AddressSanitizer (`-fsanitize=address`) found two errors:
+- `supp_fwh_sec_prot.c` (stage 3 code): the LFN's NR KDE in 4-way handshake message 2 was given both to `eapol_pdu_key_frame_init()` and to `sec_prot_lib_message_build()`, which copied it a second time, 7 bytes past the frame buffer. The frame sent was correct; the heap after it was not.
+- `dhcp_service_api.c` (inherited from Nanostack): the DHCPv6 relay's I/O vector was declared inside a block and used by `socket_sendmsg()` after it. FFN routers relay DHCPv6 too; with `-Os` on a target the stack slot can be reused.
+
+With both fixed, the LFN tests (one LFN with an LGTK rotation through a router, the six-LFN mesh, one LFN under the border router) and FAN 1.0 `dag_simple` (600 s) run clean under AddressSanitizer, and FAN 1.0 `dag_simple` logs are byte-identical to `b1b9cc5`.

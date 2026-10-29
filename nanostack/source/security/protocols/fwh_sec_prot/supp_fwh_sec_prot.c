@@ -254,7 +254,9 @@ static int8_t supp_fwh_sec_prot_message_send(sec_prot_t *prot, fwh_sec_prot_msg_
     if (msg == FWH_MESSAGE_2 && prot->sec_keys->lfn) {
         nr_kde_len = kde_nr_write(nr_kde, KDE_NR_ROLE_LFN) - nr_kde;
     }
-    uint16_t eapol_pdu_size = eapol_pdu_key_frame_init(&eapol_pdu, nr_kde_len, nr_kde_len ? nr_kde : NULL);
+    // The KDE length only: sec_prot_lib_message_build() copies the KDE (a
+    // data pointer here would write it twice, past the buffer)
+    uint16_t eapol_pdu_size = eapol_pdu_key_frame_init(&eapol_pdu, nr_kde_len, NULL);
 
     eapol_pdu.msg.key.key_information.pairwise_key = true;
 
