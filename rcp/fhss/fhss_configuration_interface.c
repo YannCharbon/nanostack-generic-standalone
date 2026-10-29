@@ -227,6 +227,15 @@ int ns_fhss_ws_lfn_bc_stop(const fhss_api_t *fhss_api)
     return fhss_ws_lfn_bc_stop(fhss_structure);
 }
 
+int ns_fhss_ws_lfn_discovery_set(const fhss_api_t *fhss_api, uint32_t start_us, uint32_t duration_us)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);
+    if (!fhss_structure || !fhss_structure->ws) {
+        return -1;
+    }
+    return fhss_ws_lfn_discovery_set(fhss_structure, start_us, duration_us);
+}
+
 int ns_fhss_ws_lfn_stats_get(const fhss_api_t *fhss_api, fhss_ws_lfn_stats_t *stats)
 {
     fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);

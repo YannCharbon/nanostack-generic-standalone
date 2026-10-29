@@ -1079,6 +1079,7 @@ void ws_management_lfn_settings_defaults(ws_lfn_settings_t *s)
     s->lpas_interval_s = WS_LFN_LPAS_INTERVAL_S_DEFAULT;
     s->lnd_slot_time_ms = WS_LFN_LND_SLOT_TIME_MS_DEFAULT;
     s->lnd_slots = WS_LFN_LND_SLOTS_DEFAULT;
+    s->lnd_response_delay_ms = WS_LFN_LND_RESPONSE_DELAY_MS_DEFAULT;
     s->lpcs_retry_intervals = WS_LFN_LPCS_RETRY_INTERVALS_DEFAULT;
     s->maintain_parent_time = WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT;
     s->lgtk_max_mismatch_s = WS_LFN_LGTK_MAX_MISMATCH_S_DEFAULT;
@@ -1131,8 +1132,9 @@ int ws_management_lfn_parent_set(int8_t interface_id, bool enable)
     if (!cur || !ws_info(cur)) {
         return -1;
     }
-#if defined(HAVE_WS_VERSION_1_1) && defined(HAVE_WS_BORDER_ROUTER)
-    if (enable && (!ws_version_1_1(cur) || !wisun_mode_border_router(cur))) {
+#if defined(HAVE_WS_VERSION_1_1) && (defined(HAVE_WS_BORDER_ROUTER) || defined(HAVE_WS_ROUTER))
+    // The border router or an FFN router (GS8 stage 5), not an LFN
+    if (enable && (!ws_version_1_1(cur) || cur->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_HOST)) {
         return -2;
     }
     cur->ws_info->lfn_parent = enable;

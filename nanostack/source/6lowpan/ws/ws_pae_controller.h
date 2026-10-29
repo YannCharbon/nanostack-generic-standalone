@@ -552,6 +552,24 @@ int8_t ws_pae_controller_lgtk_key_request(protocol_interface_info_entry_t *inter
 /**
  * ws_pae_controller_lgtk_rotate border router: start an LGTK rotation
  */
+/**
+ * ws_pae_controller_ffn_lgtk_install FAN 1.1 FFN router parenting LFNs: put
+ * its LGTKs on the MAC (key indexes 5-7)
+ */
+int8_t ws_pae_controller_ffn_lgtk_install(protocol_interface_info_entry_t *interface_ptr);
+
+/**
+ * ws_pae_controller_lgtk_is_set FAN 1.1 LFN parent: LGTK index (0-2) is held
+ */
+bool ws_pae_controller_lgtk_is_set(protocol_interface_info_entry_t *interface_ptr, uint8_t index);
+
+/**
+ * ws_pae_controller_ffn_lgtk_hash_update FAN 1.1 FFN router parenting LFNs:
+ * the LGTK hash of a PAN configuration (three 8-byte hashes, included: bit i
+ * for LGTK i); a mismatch starts a key request
+ */
+int8_t ws_pae_controller_ffn_lgtk_hash_update(protocol_interface_info_entry_t *interface_ptr, const uint8_t *lgtkhash, uint8_t included);
+
 int8_t ws_pae_controller_lgtk_rotate(protocol_interface_info_entry_t *interface_ptr);
 
 /**

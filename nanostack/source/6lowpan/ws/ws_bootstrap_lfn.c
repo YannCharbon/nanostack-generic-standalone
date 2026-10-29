@@ -178,9 +178,45 @@ static uint32_t ws_lfn_sync_period_s(protocol_interface_info_entry_t *cur)
     return (cur->ws_info->lfn_cfg.bc_interval_ms * cur->ws_info->lfn_cfg.bc_sync_period + 999) / 1000;
 }
 
+/* An LPA heard in the discovery window: the frame, kept until the window
+ * ends and the best parent is chosen (GS8 stage 5) */
+typedef struct ws_lfn_lpa_candidate {
+    mcps_data_ind_t ind;
+    uint16_t routing_cost;
+    uint16_t hdr_len, pl_len;
+    uint8_t ie[];                   // header IEs, then payload IEs
+} ws_lfn_lpa_candidate_t;
+
+static void ws_lfn_candidates_clear(protocol_interface_info_entry_t *cur)
+{
+    for (int i = 0; i < 4; i++) {
+        free(cur->ws_info->lfn.lpa[i]);
+        cur->ws_info->lfn.lpa[i] = NULL;
+    }
+    cur->ws_info->lfn.disc_decide_s = 0;
+}
+
 static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur)
 {
+    const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
     asynch_request_t req;
+
+    /* The discovery window: lnd_response_delay_ms after the sweep starts,
+       lnd_slots x lnd_slot_time_ms long; the parents answer in a random slot
+       of it [S: LND-IE; M items 4-5] */
+    uint32_t now = ns_sw_mac_read_current_timestamp(cur->mac_api);
+    uint32_t window_ms = (uint32_t)c->lnd_slots * c->lnd_slot_time_ms;
+    /* Never before the sweep can have ended: about 20 ms per channel [M:
+       16.8 ms on Silicon Labs' LFN, item 1], plus 300 ms [I] */
+    uint32_t delay_ms = c->lnd_response_delay_ms;
+    uint32_t sweep_ms = (uint32_t)cur->ws_info->hopping_schedule.number_of_channels * 20 + 300;
+    if (delay_ms < sweep_ms) {
+        delay_ms = sweep_ms;
+    }
+    ws_lfn_candidates_clear(cur);
+    if (window_ms && ns_fhss_ws_lfn_discovery_set(cur->ws_info->fhss_api, now + delay_ms * 1000u, window_ms * 1000u) == 0) {
+        cur->ws_info->lfn.disc_decide_s = cur->ws_info->uptime + (delay_ms + window_ms + 999) / 1000 + 1;
+    }
 
     memset(&req, 0, sizeof(req));
     req.message_type = WS_FT_LPAS;
@@ -191,9 +227,12 @@ static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur)
     req.wp_requested_nested_ie_list.us_ie = true;
     req.wp_requested_nested_ie_list.net_name_ie = true;
     req.security.SecurityLevel = 0;
+    // The channels of the plan, as an FFN's PAN advertisement solicits
     req.channel_list.channel_page = CHANNEL_PAGE_10;
     req.channel_list.next_channel_number = 0;
-    memcpy(req.channel_list.channel_mask, cur->ws_info->cfg->fhss.fhss_channel_mask, sizeof(req.channel_list.channel_mask));
+    ws_common_generate_channel_list(cur, req.channel_list.channel_mask, cur->ws_info->hopping_schedule.number_of_channels,
+                                    cur->ws_info->hopping_schedule.regulatory_domain, cur->ws_info->hopping_schedule.operating_class,
+                                    cur->ws_info->hopping_schedule.channel_plan_id);
     tr_info("LFN: LPAS sweep");
     ws_stats_update(cur, STATS_WS_ASYNCH_TX_PAS, 1);
     ws_llc_asynch_request(cur, &req);
@@ -281,6 +320,100 @@ static void ws_lfn_sync(protocol_interface_info_entry_t *cur, const struct mcps_
     }
     lfn->parent_rx_s = cur->ws_info->uptime;
     tr_debug("LFN: parent heard (sync)");
+}
+
+/* During the discovery window: keep the LPA (at most 4: a better one
+ * replaces the worst) */
+static bool ws_lfn_lpa_keep(protocol_interface_info_entry_t *cur, const struct mcps_data_ind_s *data, const struct mcps_data_ie_list *ie_ext)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+    ws_pan_information_t pan;
+    int slot = -1;
+
+    if (!lfn->disc_decide_s || lfn->parent_known || data->SrcAddrMode != MAC_ADDR_MODE_64_BIT) {
+        return false;
+    }
+    memset(&pan, 0, sizeof(pan));
+    if (!ws_wp_nested_pan_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &pan)) {
+        pan.routing_cost = 0xffff;
+    }
+    for (int i = 0; i < 4; i++) {
+        ws_lfn_lpa_candidate_t *c = lfn->lpa[i];
+        if (c && !memcmp(c->ind.SrcAddr, data->SrcAddr, 8)) {
+            slot = i;   // the same parent again: the newer one
+            break;
+        }
+        if (!c) {
+            if (slot < 0 || lfn->lpa[slot]) {
+                slot = i;
+            }
+        } else if (slot < 0 || (lfn->lpa[slot] && (c->routing_cost > lfn->lpa[slot]->routing_cost ||
+                                                   (c->routing_cost == lfn->lpa[slot]->routing_cost && c->ind.signal_dbm < lfn->lpa[slot]->ind.signal_dbm)))) {
+            slot = i;   // the worst so far
+        }
+    }
+    ws_lfn_lpa_candidate_t *worst = lfn->lpa[slot];
+    if (worst && memcmp(worst->ind.SrcAddr, data->SrcAddr, 8) &&
+            (worst->routing_cost < pan.routing_cost || (worst->routing_cost == pan.routing_cost && worst->ind.signal_dbm >= data->signal_dbm))) {
+        return true;    // no better than the ones kept
+    }
+    ws_lfn_lpa_candidate_t *c = malloc(sizeof(*c) + ie_ext->headerIeListLength + ie_ext->payloadIeListLength);
+    if (!c) {
+        return true;
+    }
+    c->ind = *data;
+    c->ind.msdu_ptr = NULL;
+    c->ind.msduLength = 0;
+    c->routing_cost = pan.routing_cost;
+    c->hdr_len = ie_ext->headerIeListLength;
+    c->pl_len = ie_ext->payloadIeListLength;
+    memcpy(c->ie, ie_ext->headerIeList, c->hdr_len);
+    memcpy(c->ie + c->hdr_len, ie_ext->payloadIeList, c->pl_len);
+    free(worst);
+    lfn->lpa[slot] = c;
+    tr_info("LFN: LPA from %s kept (routing cost %u, %d dBm)", trace_array(data->SrcAddr, 8), pan.routing_cost, data->signal_dbm);
+    return true;
+}
+
+static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struct mcps_data_ind_s *data, const struct mcps_data_ie_list *ie_ext);
+
+/* The discovery window has ended: the parent with the lowest routing cost
+ * among those heard CAND_PARENT_THRESHOLD dB above the device's minimum
+ * sensitivity (as an FFN chooses its candidate parents), the strongest on a
+ * tie; without one, the same among those above the minimum [I] */
+static void ws_lfn_lpa_choose(protocol_interface_info_entry_t *cur)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+    ws_lfn_lpa_candidate_t *best = NULL;
+    int min_dbm = (int)cur->ws_info->device_min_sens - 174;
+    bool best_good = false;
+
+    for (int i = 0; i < 4; i++) {
+        ws_lfn_lpa_candidate_t *c = lfn->lpa[i];
+        if (!c || c->ind.signal_dbm < min_dbm) {
+            if (c) {
+                tr_info("LFN: LPA from %s too weak (%d dBm)", trace_array(c->ind.SrcAddr, 8), c->ind.signal_dbm);
+            }
+            continue;
+        }
+        bool good = c->ind.signal_dbm >= min_dbm + CAND_PARENT_THRESHOLD;
+        if (!best || (good && !best_good) ||
+                (good == best_good && (c->routing_cost < best->routing_cost ||
+                                       (c->routing_cost == best->routing_cost && c->ind.signal_dbm > best->ind.signal_dbm)))) {
+            best = c;
+            best_good = good;
+        }
+    }
+    lfn->disc_decide_s = 0;
+    if (best) {
+        mcps_data_ie_list_t ie = {
+            .headerIeList = best->ie, .headerIeListLength = best->hdr_len,
+            .payloadIeList = best->ie + best->hdr_len, .payloadIeListLength = best->pl_len,
+        };
+        tr_info("LFN: parent chosen: %s (routing cost %u, %d dBm)", trace_array(best->ind.SrcAddr, 8), best->routing_cost, best->ind.signal_dbm);
+        ws_lfn_lpa_analyse(cur, &best->ind, &ie);
+    }
+    ws_lfn_candidates_clear(cur);
 }
 
 static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struct mcps_data_ind_s *data, const struct mcps_data_ie_list *ie_ext)
@@ -413,7 +546,11 @@ void ws_bootstrap_lfn_asynch_ind(struct protocol_interface_info_entry *cur, cons
     ws_stats_update(cur, STATS_WS_ASYNCH_RX, 1);
     switch (message_type) {
         case WS_FT_LPA:
-            ws_lfn_lpa_analyse(cur, data, ie_ext);
+            // In the discovery window: kept and compared at its end;
+            // otherwise (a parent that answers in a listen window) at once
+            if (!ws_lfn_lpa_keep(cur, data, ie_ext)) {
+                ws_lfn_lpa_analyse(cur, data, ie_ext);
+            }
             break;
         case WS_FT_LPC:
             ws_lfn_lpc_analyse(cur, data, ie_ext);
@@ -612,6 +749,10 @@ uint32_t ws_bootstrap_lfn_seconds_timer_next(protocol_interface_info_entry_t *cu
     if (cur->nwk_bootstrap_state == ER_ACTIVE_SCAN && !lfn->parent_known && lfn->lpas_timer_s) {
         next = protocol_timer_next_min(next, lfn->lpas_timer_s);
     }
+    if (lfn->disc_decide_s) {
+        uint32_t up = cur->ws_info->uptime;
+        next = protocol_timer_next_min(next, lfn->disc_decide_s > up ? lfn->disc_decide_s - up : 1);
+    }
     if (cur->nwk_bootstrap_state == ER_SCAN && !lfn->lpc_received && lfn->lpcs_timer_s) {
         next = protocol_timer_next_min(next, lfn->lpcs_timer_s);
     }
@@ -640,6 +781,10 @@ void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
         return;
     }
     lfn = &cur->ws_info->lfn;
+    // The end of a discovery window: choose among the LPAs heard
+    if (lfn->disc_decide_s && cur->ws_info->uptime >= lfn->disc_decide_s) {
+        ws_lfn_lpa_choose(cur);
+    }
     // Discovery: an LPAS sweep every lpas_interval_s until an LPA comes
     if (cur->nwk_bootstrap_state == ER_ACTIVE_SCAN && !lfn->parent_known && lfn->lpas_timer_s) {
         if (lfn->lpas_timer_s > seconds) {

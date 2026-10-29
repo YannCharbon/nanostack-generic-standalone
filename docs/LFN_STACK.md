@@ -1,11 +1,12 @@
 # Wi-SUN FAN 1.1 LFN in the upper layers: one LFN under the border router
 
-GS8 stages 3 and 4 (root repo: `documents/pre-study/investigation/LFN_FAN11_Study.md` §5, items U2–U13, U15). The MAC and FHSS mechanics are in `LFN_MAC.md`. This note describes what the LLC, the LFN bootstrap and the border router do, the settings, the sources each rule comes from, the deviations from Silicon Labs' implementation, and the tests.
+GS8 stages 3–5 (root repo: `documents/pre-study/investigation/LFN_FAN11_Study.md` §5, items U2–U13, U15). The MAC and FHSS mechanics are in `LFN_MAC.md`. This note describes what the LLC, the LFN bootstrap and the border router do, the settings, the sources each rule comes from, the deviations from Silicon Labs' implementation, and the tests.
 
 Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm codecs, Wireshark's dissector, `wisun-br-linux` and its `HIF.md`, RFC 8505; for LGTK, §8); **[M]** observed on Silicon Labs' LFN (root repo, `HW5_BlackBox_Phase1_Results.md`, item numbers); **[I]** our choice or inference, to check in black-box phase 2.
 
 ## 1. Summary
 
+- **FFN routers as parents** (stage 5, §9): a FAN 1.1 router with `ws_management_lfn_parent_set()` parents LFNs once it is operational and holds an LGTK, which it gets from the border router by EAPOL; LFNs choose among the parents that answer their discovery (LND slots); the router relays their EAPOL and DHCPv6 and registers their addresses with the border router (RPL DAO).
 - **Run-time only.** An interface is an LFN when the application starts it with `NET_6LOWPAN_HOST` (`arm_nwk_interface_configure_6lowpan_bootstrap_set()`); the router library contains the LFN code (`HAVE_WS_HOST`). A border router parents LFNs after `ws_management_lfn_parent_set(id, true)`, which needs FAN 1.1. With neither, nothing changes: FAN 1.0 `dag_simple` logs are byte-identical (§7).
 - **Join** (`ws_bootstrap_lfn.c`): LPAS sweeps → LPA in the LFN's next listen window → EAPOL with the parent as authenticator (shorter listen interval meanwhile) → LPCS → LPC → DHCPv6 through the parent → address registration (NS with ARO) to the parent. No RPL, no MPL forwarding; a default route through the parent.
 - **Parent side** (`ws_lfn_parent.c`, border router): LPAS → the LFN child and a unicast LPA with an LTO-IE; LPCS → LPC; frames to an LFN child wait for its listen window (FHSS parent role, `LFN_MAC.md` §4); an LPC to every LFN child every sync period; a MAC-unicast copy of each `ff02::1` multicast to every LFN child.
@@ -30,7 +31,7 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 - **Receiving**: a frame with a LUTT-IE and no UTT-IE is accepted (FAN 1.1 only); its LUTT/LUS fill the sender's `lfn_uc_timing_info` (`ws_llc_lfn_timing_update()`), instead of the UTT update. LPA, LPC, LPAS and LPCS go to the bootstrap's asynchronous handler.
 - **Unicast management frames** go through `ws_llc_asynch_request()` with `unicast` set: acknowledged, no channel list, so the MAC holds a frame to an LFN for its window. An LTO-IE that the LFN acknowledges is applied to the parent's view of its schedule on the ACK (`ns_fhss_ws_lfn_neighbor_lto()`).
 - **LBS-IE** now has its sync-period byte (7 bytes, as Wireshark's dissector and `wisun-br-linux`; the Arm codec had 6). Nothing called the old one.
-- **Deviations [I]**: the LPA has US and BS IEs (the LFN computes its parent's unicast channel and broadcast dwell from them) instead of FLUS and an LCP; the LPAS and LPCS carry the LFN's US-IE instead of an LCP; the LND-IE response delay is 0 and the parent answers in the LFN's next listen window, not in an LND slot (Silicon Labs' LFN listens 2.4 s for the LPA [M item 4], ours one window); no Silicon Labs vendor IE. These matter for interoperability (black-box phases 2–3), not inside our network.
+- **Deviations [I]**: the LPA has US and BS IEs (the LFN computes its parent's unicast channel and broadcast dwell from them) instead of FLUS and an LCP; the LPAS and LPCS carry the LFN's US-IE instead of an LCP; the channel the LFN listens on during its discovery window is our inference (`LFN_MAC.md` §2.4); no Silicon Labs vendor IE. These matter for interoperability (black-box phases 2–3), not inside our network.
 
 ## 3. The LFN (`ws_bootstrap_lfn.c`)
 
@@ -87,12 +88,13 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | `lgtk_new_activation_time` | 180 | parent | The next LGTK is activated `lgtk_lifetime_s` / this before the active one expires (12 h with the defaults) [S: `wsbrd` default] |
 | `lgtk_activation_guard_s` | 300 | parent | The next LGTK is activated no sooner than this after its installation [I] (§8) |
 
-Limits: one LFN parent per LFN, and only the border router parents LFNs (FFN routers as parents: stage 5). The split (Spinel) programs refuse the LFN roles (LFN study M12).
+| `lnd_response_delay_ms` | 1550 | LFN | The discovery window opens this long after the sweep starts, and never before 20 ms per channel plus 300 ms [M item 4] |
+
+Limits: one LFN parent per LFN. The split (Spinel) programs refuse the LFN roles (LFN study M12).
 
 ## 6. Not done here
 
-- FFN routers as parents (stage 5).
-- RFC 9685 multicast subscriptions; LCP/FLUS and LND-slot answers (interoperability).
+- RFC 9685 multicast subscriptions; LCP/FLUS (interoperability).
 - LGTK leftovers (§8): LGTKs and the node role are not stored in NVM; no LGTK revocation; no frame-counter-based LGTK lifetime check; the role-based PMK/PTK lifetimes of FAN 1.1.
 
 ## 7. Tests and results
@@ -154,3 +156,32 @@ FAN 1.1 gives LFNs their own group keys, LGTKs, distinct from the GTKs of the FF
 - `lgtk_max_mismatch_s` = 30 on the LFN, 3 seeds: key request 29.2–30.0 s after the LPC with the new hash.
 - Without the guard (`lgtk_activation_guard_s` 0) and `wsbrd`'s fast test timers (lifetime 360 s, install at 50 %, activation 120 s before expiry; 1 run): the border router activates 60 s after installation, before the LFN has the key; the LFN then took 142 and 147 s to follow, missed 12 of 23 unicast requests and 16 of 23 `ff02::1` requests, and stopped seeing new hashes. With the guard (300 s, so activation at expiry) the same run lost 1 of 23 unicast echoes, 1 of 23 `ff02::1` requests and 1 of 16 uplink echoes, around the expiries.
 - FAN 1.0 `dag_simple`, 10 seeds: logs byte-identical to the previous stack commit.
+
+## 9. FFN routers as LFN parents (stage 5)
+
+**Parents.** `ws_management_lfn_parent_set(id, true)` is accepted on a FAN 1.1 router as on the border router (emulator: `enable_lfn = true` in `wsnode`'s configuration). A router parents LFNs once it is operational (`ER_BOOTSTRAP_DONE`) and holds an LGTK: until then it ignores LPAS and LPCS and sends no sync frames. It then runs the same parent code as the border router (`ws_lfn_parent.c`): its own LFN broadcast schedule (the network's BSI, which the FHSS takes from its configuration once the router has learned it), LTS and broadcast LPCs while it has an LFN child, LPA and LPC answers, unicast frames held for the LFN's windows. Its seconds timer runs every second while it parents LFNs (`ws_bootstrap_ffn_seconds_timer_next()`).
+
+**LGTKs for a router** [S: `wsrd` sends GTKL, LGTKL and an NR KDE; `authenticator_key.c`: an FFN gets GTKs and LGTKs]. A router that parents LFNs sends a key request with its GTKL, its LGTKL and an NR KDE with the router role (`sec_prot_keys_t.ffn_lgtk`). The border router answers as before for the GTKs (EAP-TLS, 4-way handshake, group-key handshakes), then sends each LGTK the router lacks in a group-key handshake of its own [I: FAN 1.1 allows both in one message]. One handshake carries one set: `sec_prot_keys_lgtk_mode_set()` selects the set for each, and the KDE code reads and writes LGTK and LGTKL KDEs for it as for an LFN. The router puts its LGTKs on the MAC at key indexes 5–7 (`ws_pae_controller_ffn_lgtk_install()`), and follows the LFN version and LGTK hash of the border router's PAN configurations: a hash it does not match starts a key request at once [I: the border router activates a new LGTK `lgtk_activation_guard_s` after installing it, and the router's children fetch it through the router, so the GTK update trickle, minutes long, is too slow], and each new LFN version gives its children a broadcast LPC. It secures its LFN frames with the active LGTK once it holds it, until then with the one it used last.
+
+**Discovery and choice** (`LFN_MAC.md` §2.4). The LPAS sweep covers the channels of the plan (as an FFN's PAN advertisement solicit), and its LND-IE gives the discovery window: `lnd_response_delay_ms` after the sweep starts (and after the sweep's end, at about 20 ms per channel), `lnd_slots` × `lnd_slot_time_ms` long (40 × 60 ms, [M item 4]). Each parent sends its LPA in a random slot of it, a quarter into the slot [S: `wsbrd`]. The LFN keeps up to four LPAs and, after the window, chooses the parent with the lowest routing cost (PAN-IE) among those heard `CAND_PARENT_THRESHOLD` (10 dB) above its minimum sensitivity, the strongest on a tie; without one, the same among those above the minimum [I: an FFN's candidate-parent margin]. An LPA heard outside a discovery window is taken at once, as before. A parent counts an LFN that sent it an LPAS as a candidate child for 600 s; the LFN's LPCS and its secured frames make it a child for twice its registration lifetime [I].
+
+**Through the router.** EAPOL: the LFN's authenticator target is its parent, and the router relays as for an FFN joiner. DHCPv6: through the router's relay. Registration: the LFN's NS with ARO to the router; the router publishes the address to RPL (DAO target) and the border router routes to the LFN through it. The route exists once RPL's DAO delay has passed (1–7 s in the runs below), so a downlink in the first seconds after the LFN's registration can be lost. Multicast: a router copies the `ff02::1` multicasts it sends to its LFN children; the border router's `ff02::1` does not reach LFNs under a router (link-local), and other groups need RFC 9685 subscriptions (not implemented).
+
+**Tests** (emulator, virtual time, each node's clock drawn in ±20 ppm):
+
+| Test | What |
+| --- | --- |
+| `test_lfn_join.sh` with `MESH=1` | Border router – router – LFN: the router gets an LGTK, answers the LPAS, the LFN chooses it and joins through it; unicast both ways; LGTK rotation through the router (`LGTK_ROTATE_AT`) |
+| `MESH=2`, `MESH=3` | The LFN also hears the border router: at −97 dBm (below its minimum sensitivity: it must choose the router) or at −70 dBm (it must choose the border router, routing cost 0) |
+| `test_lfn_mesh.sh` | `dag_simple`'s 14 routers, all LFN parents, and six LFNs at the edge, each hearing two or three parents: every LFN joins, keeps a parent among its neighbours, exchanges unicast both ways with the border router, and receives only in its windows |
+
+**Results.**
+- `MESH=1`: 3 seeds × 1800 s, all checks pass; LFN operational 119–130 s after start (the router joins first); LFN 46.2–47.1 µA with test traffic. LGTK rotation at 600 s, 3 seeds: the router fetched the new LGTK at once, the LFN fetched it through the router 119–120 s after the LPC showing its hash, and took it as active 15–35 s after the border router activated it; no parent loss.
+- `MESH=2`: 3 seeds, the router chosen, operational 109–119 s. `MESH=3`: 3 seeds, the border router chosen, operational 29–44 s.
+- `test_lfn_mesh.sh`, 10 seeds × 1800 s: all 60 LFN joins pass; operational 29–396 s after start (an LFN behind a router waits until that router has joined); 1 573 downlink and 1 086 uplink requests, all received and echoed; every frame inside a window; LFNs 42.4–48.7 µA with test traffic (a request each way every 60–90 s).
+- One LFN under the border router (the stage 4 set, rerun): traffic 10/10, idle 6/6 (24.0–24.7 µA), parent loss 3/3 (376.0 s), LGTK rotation 3/3, short lifetimes 3/3. With the sweep over the plan's channels only (59 frames, not 240), an LFN whose parent is gone draws 842 µA instead of 2 002 µA while it rediscovers.
+- FAN 1.0 `dag_simple`, 10 seeds: logs byte-identical to `b1b9cc5`.
+
+**Fixed with stage 5.** The FHSS read the LTO-IE at sub-ID 14 (FLUS) instead of 17, so the stage 4 conversion of the LTO offset never ran: both sides applied the phase as an offset, which kept them consistent but did not place the LFN's slots against the broadcast slots. The unit test used the same wrong number; both are fixed.
+
+**Not done.** Router-to-router LFN handover (an LFN keeps its parent while the parent keeps it; it changes parent only after a loss); LGTKs and node roles in NVM; RFC 9685 subscriptions; the parents' LFN children on D-Bus; LCP/FLUS for interoperability.

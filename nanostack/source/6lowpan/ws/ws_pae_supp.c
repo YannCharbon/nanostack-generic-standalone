@@ -140,6 +140,8 @@ static bool ws_pae_supp_authentication_ongoing(pae_supp_t *pae_supp);
 static int8_t ws_pae_supp_timer_if_start(kmp_service_t *service, kmp_api_t *kmp);
 static int8_t ws_pae_supp_timer_if_stop(kmp_service_t *service, kmp_api_t *kmp);
 static int8_t ws_pae_supp_timer_start(pae_supp_t *pae_supp);
+static void ws_pae_supp_ffn_lgtk_setup(pae_supp_t *pae_supp);
+static int8_t ws_pae_supp_key_request_now(pae_supp_t *pae_supp);
 static int8_t ws_pae_supp_timer_stop(pae_supp_t *pae_supp);
 static bool ws_pae_supp_timer_running(pae_supp_t *pae_supp);
 static void ws_pae_supp_kmp_service_addr_get(kmp_service_t *service, kmp_api_t *kmp, kmp_addr_t *local_addr, kmp_addr_t *remote_addr);
@@ -222,6 +224,7 @@ int8_t ws_pae_supp_authenticate(protocol_interface_info_entry_t *interface_ptr, 
 
     pae_supp->auth_requested = true;
     pae_supp->entry.sec_keys.lfn = interface_ptr->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_HOST;
+    ws_pae_supp_ffn_lgtk_setup(pae_supp);
 
     // Randomizes the sending of initial EAPOL-Key message
     pae_supp->initial_key_timer = rand_get_random_in_range(INITIAL_KEY_TIMER_MIN, INITIAL_KEY_TIMER_MAX);
@@ -347,6 +350,64 @@ int8_t ws_pae_supp_gtk_hash_update(protocol_interface_info_entry_t *interface_pt
     return 0;
 }
 
+/* FAN 1.1 FFN router parenting LFNs (GS8 stage 5): it holds the LGTKs too
+ * (GTKL, LGTKL and NR KDE in its key requests) */
+static void ws_pae_supp_ffn_lgtk_setup(pae_supp_t *pae_supp)
+{
+    protocol_interface_info_entry_t *cur = pae_supp->interface_ptr;
+    sec_prot_keys_t *k = &pae_supp->entry.sec_keys;
+
+    k->ffn_lgtk = false;
+#ifdef HAVE_WS_VERSION_1_1
+    if (cur->ws_info && cur->ws_info->lfn_parent && cur->bootstrap_mode != ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_HOST &&
+            pae_supp->sec_keys_nw_info->lgtks) {
+        k->ffn_gtks = pae_supp->sec_keys_nw_info->gtks;
+        k->lgtks = pae_supp->sec_keys_nw_info->lgtks;
+        k->ffn_lgtk = true;
+    }
+#endif
+}
+
+int8_t ws_pae_supp_ffn_lgtk_hash_update(protocol_interface_info_entry_t *interface_ptr, uint8_t *lgtkhash)
+{
+    pae_supp_t *pae_supp = ws_pae_supp_get(interface_ptr);
+    if (!pae_supp || !pae_supp->entry.sec_keys.ffn_lgtk) {
+        return -1;
+    }
+    gtk_mismatch_e mismatch = sec_prot_keys_gtks_hash_update(pae_supp->sec_keys_nw_info->lgtks, lgtkhash, true);
+    ws_pae_controller_ffn_lgtk_install(interface_ptr);
+    if (mismatch > GTK_NO_MISMATCH) {
+        /* A key request now [I]: the border router activates a new LGTK
+           lgtk_activation_guard_s after installing it, and the router's LFN
+           children fetch it through the router, so the GTK update trickle
+           (minutes) is too slow */
+        tr_info("LGTK hash mismatch: key request");
+        ws_pae_supp_key_request_now(pae_supp);
+    }
+    return mismatch;
+}
+
+/* A key request now, unless an authentication or a key request is already
+ * on its way; the retries are those of an FFN's key update */
+static int8_t ws_pae_supp_key_request_now(pae_supp_t *pae_supp)
+{
+    if (pae_supp->auth_requested || ws_pae_lib_kmp_list_count(&pae_supp->entry.kmp_list) > 0 ||
+            pae_supp->gtk_update_trickle_running || pae_supp->initial_key_retry_timer) {
+        return 0;
+    }
+    pae_supp->tx_failure_on_initial_key = false;
+    pae_supp->initial_key_retry_cnt = KEY_UPDATE_RETRY_COUNT;
+    if (ws_pae_supp_initial_key_send(pae_supp) < 0) {
+        tr_info("EAPOL-Key send failed");
+    }
+    pae_supp->initial_key_retry_cnt--;
+    pae_supp->initial_key_retry_max_value = pae_supp->sec_cfg->prot_cfg.initial_key_retry_max;
+    pae_supp->initial_key_retry_timer = rand_get_random_in_range(pae_supp->sec_cfg->prot_cfg.initial_key_retry_min,
+                                                                 pae_supp->initial_key_retry_max_value);
+    ws_pae_supp_timer_start(pae_supp);
+    return 1;
+}
+
 #ifdef HAVE_WS_HOST
 int8_t ws_pae_supp_lgtk_hash_update(protocol_interface_info_entry_t *interface_ptr, uint8_t *lgtkhash)
 {
@@ -376,19 +437,10 @@ int8_t ws_pae_supp_lgtk_key_request(protocol_interface_info_entry_t *interface_p
         return 0;
     }
 
-    /* Key request now (the wait was the LFN's lgtk_max_mismatch_s); the
-       retries are those of an FFN's key update */
-    pae_supp->tx_failure_on_initial_key = false;
-    pae_supp->initial_key_retry_cnt = KEY_UPDATE_RETRY_COUNT;
-    if (ws_pae_supp_initial_key_send(pae_supp) < 0) {
-        tr_info("EAPOL-Key send failed");
+    /* Key request now (the wait was the LFN's lgtk_max_mismatch_s) */
+    if (ws_pae_supp_key_request_now(pae_supp)) {
+        tr_info("LGTK key request, retry in %i s", pae_supp->initial_key_retry_timer);
     }
-    pae_supp->initial_key_retry_cnt--;
-    pae_supp->initial_key_retry_max_value = pae_supp->sec_cfg->prot_cfg.initial_key_retry_max;
-    pae_supp->initial_key_retry_timer = rand_get_random_in_range(pae_supp->sec_cfg->prot_cfg.initial_key_retry_min,
-                                                                 pae_supp->initial_key_retry_max_value);
-    ws_pae_supp_timer_start(pae_supp);
-    tr_info("LGTK key request, retry in %i s", pae_supp->initial_key_retry_timer);
     return 1;
 }
 #endif
@@ -647,6 +699,7 @@ int8_t ws_pae_supp_init(protocol_interface_info_entry_t *interface_ptr, const se
     sec_prot_keys_init(&pae_supp->entry.sec_keys, pae_supp->sec_keys_nw_info->gtks, certs);
     // FAN 1.1 LFN: its group keys are LGTKs (NR, LGTK and LGTKL KDEs)
     pae_supp->entry.sec_keys.lfn = interface_ptr->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_HOST;
+    ws_pae_supp_ffn_lgtk_setup(pae_supp);
     memset(pae_supp->new_br_eui_64, 0, 8);
 
     pae_supp->kmp_service = kmp_service_create();
@@ -970,6 +1023,14 @@ void ws_pae_supp_slow_timer(uint16_t seconds)
             }
             uint64_t current_time = ws_pae_current_time_get();
             sec_prot_keys_gtk_lifetime_decrement(pae_supp->sec_keys_nw_info->gtks, i, current_time, seconds, false);
+        }
+        // and an LFN parent's LGTK lifetimes
+        if (pae_supp->entry.sec_keys.ffn_lgtk) {
+            for (uint8_t i = 0; i < LGTK_NUM; i++) {
+                if (sec_prot_keys_gtk_is_set(pae_supp->sec_keys_nw_info->lgtks, i)) {
+                    sec_prot_keys_gtk_lifetime_decrement(pae_supp->sec_keys_nw_info->lgtks, i, ws_pae_current_time_get(), seconds, false);
+                }
+            }
         }
 
         if (pae_supp->initial_key_timer > 0) {
@@ -1318,7 +1379,14 @@ static bool ws_pae_supp_kmp_api_finished_indication(kmp_api_t *kmp, kmp_result_e
     if ((type == IEEE_802_11_4WH || type == IEEE_802_11_GKH) && result == KMP_RESULT_OK) {
         if (sec_keys) {
             sec_prot_keys_t *keys = sec_keys;
-            pae_supp->nw_key_insert(pae_supp->interface_ptr, keys->gtks, false);
+            if (keys->ffn_lgtk) {
+                // An LFN parent: its GTKs and its LGTKs, whichever came
+                sec_prot_keys_lgtk_mode_set(keys, false);
+                pae_supp->nw_key_insert(pae_supp->interface_ptr, pae_supp->sec_keys_nw_info->gtks, false);
+                ws_pae_controller_ffn_lgtk_install(pae_supp->interface_ptr);
+            } else {
+                pae_supp->nw_key_insert(pae_supp->interface_ptr, keys->gtks, false);
+            }
         }
 
         ws_pae_supp_authenticate_response(pae_supp, AUTH_RESULT_OK);

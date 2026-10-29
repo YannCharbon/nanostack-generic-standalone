@@ -197,6 +197,15 @@ typedef enum {
 typedef fhss_lfn_tx_e fhss_lfn_tx_check(const fhss_api_t *api, const uint8_t *destination_address, uint32_t queued_since_us, uint32_t *tx_time);
 
 /**
+ * @brief A frame to an LFN at a requested time (an LPA in an LND discovery
+ * slot, GS8 stage 5): NOW when the time is less than the parent's lead away
+ * (*tx_time: the requested time, or the earliest possible), WAIT before
+ * (the FHSS polls the queue), EXPIRED once it has passed by more than
+ * 20 ms; NOT_LFN if the destination has no LFN schedule. Optional.
+ */
+typedef fhss_lfn_tx_e fhss_lfn_tx_at(const fhss_api_t *api, const uint8_t *destination_address, uint32_t requested_us, uint32_t *tx_time);
+
+/**
  * \brief Struct fhss_api defines interface between software MAC and FHSS.
  * Application creates fhss_api_s object by calling FHSS creator function.
  * Then object is passed to software MAC which then initialises it's own callback functions.
@@ -215,6 +224,7 @@ struct fhss_api {
     fhss_write_synch_info *write_synch_info;            /**< Write synchronization info to TX frame*/
     fhss_init_callbacks *init_callbacks;                /**< Initialize MAC functions. */
     fhss_lfn_tx_check *lfn_tx_check;                    /**< LFN destination check (FAN 1.1 parent). Optional, may be NULL. */
+    fhss_lfn_tx_at *lfn_tx_at;                          /**< Frame to an LFN at a requested time (FAN 1.1 parent). Optional, may be NULL. */
 };
 
 /**

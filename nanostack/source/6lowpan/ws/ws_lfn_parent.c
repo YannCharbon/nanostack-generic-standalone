@@ -138,7 +138,7 @@ static void ws_lfn_security_set(protocol_interface_info_entry_t *cur, asynch_req
     req->security.KeyIndex = mac_helper_default_key_index_get(cur);
 }
 
-static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t *dst, const ws_nr_ie_t *nr, uint32_t proposed_ms)
+static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t *dst, const ws_nr_ie_t *nr, uint32_t proposed_ms, const ws_lnd_ie_t *lnd, uint32_t rx_timestamp)
 {
     const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
     asynch_request_t req;
@@ -147,6 +147,15 @@ static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t 
     req.message_type = WS_FT_LPA;
     req.unicast = true;
     memcpy(req.dst_address, dst, 8);
+    if (lnd && lnd->discovery_slots && lnd->discovery_slot_time && lnd->discovery_first_slot < lnd->discovery_slots) {
+        /* In a random slot of the LFN's discovery window [S: wsbrd
+           ws_mngt_lpa_schedule; M items 4-5], a quarter into it */
+        uint16_t k = rand_get_random_in_range(lnd->discovery_first_slot, lnd->discovery_slots - 1);
+        req.tx_at_set = true;
+        req.tx_at = rx_timestamp + lnd->response_delay * 1000u + k * lnd->discovery_slot_time * 1000u +
+                    lnd->discovery_slot_time * 250u;
+        tr_debug("LPA to %s in LND slot %u", trace_array(dst, 8), k);
+    }
     req.wh_requested_ie_list.utt_ie = true;
     req.wh_requested_ie_list.bt_ie = true;
     req.wh_requested_ie_list.nr_ie = true;
@@ -255,10 +264,22 @@ static bool ws_lfn_is_child(protocol_interface_info_entry_t *cur, mac_neighbor_t
     return true;
 }
 
-/* Keep an LFN child: it is silent for long, so no FFN timeouts or probes */
-static void ws_lfn_child_refresh(protocol_interface_info_entry_t *cur, mac_neighbor_table_entry_t *n)
+/* Keep an LFN child: it is silent for long, so no FFN timeouts or probes.
+ * An LPAS makes a candidate child for WS_LFN_CANDIDATE_LIFETIME_S (another
+ * parent may be chosen); the LFN's LPCS and its secured frames make it a
+ * child for twice its registration lifetime [I]. */
+#define WS_LFN_CANDIDATE_LIFETIME_S 600
+static void ws_lfn_child_refresh(protocol_interface_info_entry_t *cur, mac_neighbor_table_entry_t *n, bool chosen)
 {
     uint32_t life = (uint32_t)cur->ws_info->lfn_cfg.registration_lifetime_min * 60 * 2;
+
+    if (!chosen) {
+        if (n->link_lifetime > WS_LFN_CANDIDATE_LIFETIME_S && n->lifetime > WS_LFN_CANDIDATE_LIFETIME_S) {
+            // already a child: an LPAS (a rediscovery) does not shorten it
+            return;
+        }
+        life = WS_LFN_CANDIDATE_LIFETIME_S;
+    }
 
     n->ffd_device = false;
     n->link_lifetime = life;
@@ -274,8 +295,43 @@ void ws_lfn_parent_frame_rx(protocol_interface_info_entry_t *cur, const uint8_t 
     }
     n = mac_neighbor_table_address_discover(mac_neighbor_info(cur), src64, MAC_ADDR_MODE_64_BIT);
     if (n && ws_lfn_is_child(cur, n, NULL)) {
-        ws_lfn_child_refresh(cur, n);
+        ws_lfn_child_refresh(cur, n, true);
     }
+}
+
+/* An FFN router (GS8 stage 5): the LGTK it secures its LFN frames with. The
+ * active one the border router announces once it holds it; until then the
+ * one it used last (its LFN children have no newer one either: they fetch it
+ * through this router); -1 if it holds none. */
+static int8_t ws_lfn_parent_router_lgtk(protocol_interface_info_entry_t *cur)
+{
+    ws_lfn_state_t *st = &cur->ws_info->lfn;
+    uint8_t active = cur->ws_info->lfngtk.active_key_index;
+
+    if (cur->ws_info->lfngtk.lfn_version_learned && ws_pae_controller_lgtk_is_set(cur, active)) {
+        st->tx_lgtk = active;
+        st->tx_lgtk_valid = true;
+        return active;
+    }
+    if (st->tx_lgtk_valid && ws_pae_controller_lgtk_is_set(cur, st->tx_lgtk)) {
+        return st->tx_lgtk;
+    }
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        if (ws_pae_controller_lgtk_is_set(cur, i)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* An FFN router parents LFNs once it is operational and holds an LGTK; the
+ * border router always */
+static bool ws_lfn_parent_ready(protocol_interface_info_entry_t *cur)
+{
+    if (wisun_mode_border_router(cur)) {
+        return true;
+    }
+    return cur->nwk_bootstrap_state == ER_BOOTSTRAP_DONE && ws_lfn_parent_router_lgtk(cur) >= 0;
 }
 
 bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct mcps_data_ind_s *data, const struct mcps_data_ie_list *ie_ext, uint8_t message_type)
@@ -288,7 +344,7 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
     if (message_type != WS_FT_LPAS && message_type != WS_FT_LPCS) {
         return false;
     }
-    if (!cur->ws_info->lfn_parent || cur->ws_info->lfn.test_silent) {
+    if (!cur->ws_info->lfn_parent || cur->ws_info->lfn.test_silent || !ws_lfn_parent_ready(cur)) {
         return true;
     }
     if (message_type == WS_FT_LPAS) {
@@ -322,7 +378,7 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
         if (!ws_llc_lfn_timing_update(cur, ni.ws_neighbor, ie_ext, data->timestamp)) {
             return true;
         }
-        ws_lfn_child_refresh(cur, ni.neighbor);
+        ws_lfn_child_refresh(cur, ni.neighbor, false);
         if (ws_llc_lfn_lpa_pending(cur, data->SrcAddr)) {
             /* The LPA of an earlier sweep is still waiting for a window: a
                second one would carry a second LTO-IE, which the LFN ignores
@@ -332,7 +388,9 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
             return true;
         }
         tr_info("LPAS from LFN %s: interval %"PRIu32" ms", trace_array(data->SrcAddr, 8), (uint32_t)lus.listen_interval);
-        ws_lfn_lpa_send(cur, data->SrcAddr, &nr, lus.listen_interval);
+        ws_lnd_ie_t lnd;
+        bool has_lnd = ws_wh_lnd_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lnd);
+        ws_lfn_lpa_send(cur, data->SrcAddr, &nr, lus.listen_interval, has_lnd ? &lnd : NULL, data->timestamp);
         return true;
     }
     // LPCS: from a known LFN, secured
@@ -343,7 +401,7 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
         ws_neighbor_class_neighbor_unicast_schedule_set(cur, ni.ws_neighbor, &us, &cur->ws_info->hopping_schedule, data->SrcAddr);
     }
     ws_llc_lfn_timing_update(cur, ni.ws_neighbor, ie_ext, data->timestamp);
-    ws_lfn_child_refresh(cur, ni.neighbor);
+    ws_lfn_child_refresh(cur, ni.neighbor, true);
     mac_neighbor_table_trusted_neighbor(mac_neighbor_info(cur), ni.neighbor, true);
     tr_info("LPCS from LFN %s: LPC", trace_array(data->SrcAddr, 8));
     ws_lfn_lpc_send(cur, data->SrcAddr);
@@ -373,7 +431,7 @@ void ws_lfn_parent_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t 
     uint32_t start;
 
     (void)seconds;
-    if (!cur->ws_info->lfn_parent || st->test_silent) {
+    if (!cur->ws_info->lfn_parent || st->test_silent || !ws_lfn_parent_ready(cur)) {
         return;
     }
     if (!ws_lfn_has_child(cur)) {
@@ -456,6 +514,10 @@ static uint8_t ws_lfn_parent_lgtk_key_index(protocol_interface_info_entry_t *cur
     ws_lfn_lgtk_t *g = &cur->ws_info->lfngtk;
     if (!cur->ws_info->lfn_parent || !(g->active_hash_1 || g->active_hash_2 || g->active_hash_3)) {
         return 0;
+    }
+    if (!wisun_mode_border_router(cur)) {
+        int8_t i = ws_lfn_parent_router_lgtk(cur);
+        return i < 0 ? 0 : WS_LGTK_KEY_INDEX_FIRST + i;
     }
     return WS_LGTK_KEY_INDEX_FIRST + g->active_key_index;
 }

@@ -963,6 +963,23 @@ int8_t sec_prot_keys_lfn_set(sec_prot_keys_t *sec_keys, bool lfn)
     return 0;
 }
 
+int8_t sec_prot_keys_lgtk_mode_set(sec_prot_keys_t *sec_keys, bool lgtk)
+{
+    if (!sec_keys->ffn_lgtk || lgtk == sec_keys->lfn) {
+        return sec_keys->ffn_lgtk || !lgtk ? 0 : -1;
+    }
+    if (lgtk && !sec_keys->lgtks) {
+        return -1;
+    }
+    uint8_t gtkl = sec_keys->gtkl;
+    sec_keys->gtkl = sec_keys->lgtkl;
+    sec_keys->lgtkl = gtkl;
+    sec_keys->gtk_set_index = -1;
+    sec_keys->lfn = lgtk;
+    sec_keys->gtks = lgtk ? sec_keys->lgtks : sec_keys->ffn_gtks;
+    return 0;
+}
+
 void sec_prot_keys_ptk_installed_gtk_hash_clear_all(sec_prot_keys_t *sec_keys)
 {
     for (uint8_t index = 0; index < GTK_NUM; index++) {

@@ -127,12 +127,16 @@ typedef struct ws_lfn_state_s {
     uint32_t lbs_interval_ms;       /**< Parent's LFN broadcast schedule (LBS-IE): interval, 0 unknown */
     uint16_t lbs_bsi;               /**< Its schedule identifier */
     uint8_t lbs_sync_period;        /**< Its sync period, in broadcast intervals */
+    uint32_t disc_decide_s;         /**< Uptime at which the LPAs of the discovery window are compared; 0: none pending */
+    struct ws_lfn_lpa_candidate *lpa[4]; /**< LPAs heard in the discovery window (GS8 stage 5) */
 
     /* Parent (border router) */
     uint8_t lpc_pending;            /**< An LGTK event: a broadcast LPC in the next LFN broadcast slot */
     uint8_t bc_lpc_left;            /**< Sync periods whose sync frame is still an LPC instead of an LTS */
     bool bc_slot_queued_valid: 1;   /**< A frame is queued for bc_slot_queued */
     uint16_t bc_slot_queued;        /**< LFN broadcast slot of the last frame queued */
+    bool tx_lgtk_valid: 1;          /**< FFN router: tx_lgtk is set */
+    uint8_t tx_lgtk;                /**< FFN router: the LGTK (0-2) its LFN frames use (ws_lfn_parent.c) */
     bool test_silent;               /**< Test hook: answer no LFN and send no LPC (ws_test_lfn_parent_silence()) */
 
 } ws_lfn_state_t;

@@ -169,6 +169,12 @@ static int8_t key_sec_prot_initial_key_send(sec_prot_t *prot, sec_prot_keys_t *s
     if (sec_keys->lfn) {
         kde_len = KDE_LGTKL_LEN + KDE_NR_LEN;
     }
+    if (sec_keys->ffn_lgtk) {
+        // An FFN that parents LFNs: GTKL, LGTKL and its node role; the
+        // request lists the GTKs (sec_prot_keys_lgtk_mode_set)
+        sec_prot_keys_lgtk_mode_set(sec_keys, false);
+        kde_len = KDE_GTKL_LEN + KDE_LGTKL_LEN + KDE_NR_LEN;
+    }
 
     uint8_t *pmk = sec_prot_keys_pmk_get(sec_keys);
     uint8_t pmkid[PMKID_LEN];
@@ -206,7 +212,15 @@ static int8_t key_sec_prot_initial_key_send(sec_prot_t *prot, sec_prot_keys_t *s
     }
 
     uint8_t gtkl = sec_prot_keys_fresh_gtkl_get(sec_keys->gtks);
-    if (sec_keys->lfn) {
+    if (sec_keys->ffn_lgtk) {
+        /* FAN 1.1 FFN parenting LFNs: GTKL, LGTKL and NR KDE with the router
+           role [S: wsrd writes GTKL, LGTKL and NR]; it gets GTKs and LGTKs */
+        uint8_t lgtkl = sec_keys->lgtks ? sec_prot_keys_fresh_gtkl_get(sec_keys->lgtks) : 0;
+        kde_end = kde_gtkl_write(kde_end, gtkl);
+        kde_end = kde_lgtkl_write(kde_end, lgtkl);
+        kde_end = kde_nr_write(kde_end, KDE_NR_ROLE_ROUTER);
+        tr_info("Initial EAPOL-Key send, PMKID %s PTKID %s GTKL %x LGTKL %x NR router", pmk ? "set" : "not set", ptk ? "set" : "not set", gtkl, lgtkl);
+    } else if (sec_keys->lfn) {
         /* FAN 1.1 LFN: its LGTKL and its node role (Wi-SUN FAN 1.1 6.5.2.2, as
            quoted in wisun-br-linux authenticator_key.c: the NR KDE tells the
            authenticator the role; an LFN gets LGTKs) */
@@ -235,7 +249,9 @@ static int8_t key_sec_prot_initial_key_send(sec_prot_t *prot, sec_prot_keys_t *s
     eapol_pdu.msg.key.key_length = 0;
     eapol_write_pdu_frame(eapol_decoded_data + prot->header_size, &eapol_pdu);
 
-    if (sec_keys->lfn) {
+    if (sec_keys->ffn_lgtk) {
+        // traced above
+    } else if (sec_keys->lfn) {
         tr_info("Initial EAPOL-Key send, PMKID %s PTKID %s LGTKL %x NR LFN", pmk ? "set" : "not set", ptk ? "set" : "not set", gtkl);
     } else {
         tr_info("Initial EAPOL-Key send, PMKID %s PTKID %s GTKL %x", pmk ? "set" : "not set", ptk ? "set" : "not set", gtkl);
@@ -305,7 +321,19 @@ static int8_t key_sec_prot_receive(sec_prot_t *prot, void *pdu, uint16_t size)
         /* FAN 1.1: the node role KDE; an LFN indicates its LGTKL and gets
            LGTKs, any other node (or no NR KDE: FAN 1.0) its GTKL and GTKs */
         uint8_t node_role;
-        bool lfn = kde_nr_read(kde, kde_len, &node_role) >= 0 && node_role == KDE_NR_ROLE_LFN;
+        bool nr = kde_nr_read(kde, kde_len, &node_role) >= 0;
+        bool lfn = nr && node_role == KDE_NR_ROLE_LFN;
+        /* An FFN with an NR KDE and an LGTKL parents LFNs: it gets the
+           LGTKs too, by a group key handshake after its GTKs */
+        uint8_t lgtkl = 0;
+        bool ffn_lgtk = nr && !lfn && prot->sec_keys->lgtks && kde_lgtkl_read(kde, kde_len, &lgtkl) >= 0;
+        if (prot->sec_keys->ffn_lgtk) {
+            sec_prot_keys_lgtk_mode_set(prot->sec_keys, false);
+        }
+        prot->sec_keys->ffn_lgtk = ffn_lgtk;
+        if (ffn_lgtk) {
+            prot->sec_keys->lgtkl = lgtkl;
+        }
         if (sec_prot_keys_lfn_set(prot->sec_keys, lfn) < 0) {
             tr_error("LFN key request but no LGTKs");
             free(kde);
@@ -322,7 +350,9 @@ static int8_t key_sec_prot_receive(sec_prot_t *prot, void *pdu, uint16_t size)
             return -1;
         }
 
-        if (lfn) {
+        if (ffn_lgtk) {
+            tr_info("PMK %s PTK %s GTKL %x LGTKL %x NR router", prot->sec_keys->pmk_mismatch ? "not live" : "live", prot->sec_keys->ptk_mismatch ? "not live" : "live", gtkl, lgtkl);
+        } else if (lfn) {
             tr_info("PMK %s PTK %s LGTKL %x NR LFN", prot->sec_keys->pmk_mismatch ? "not live" : "live", prot->sec_keys->ptk_mismatch ? "not live" : "live", gtkl);
         } else {
             tr_info("PMK %s PTK %s GTKL %x", prot->sec_keys->pmk_mismatch ? "not live" : "live", prot->sec_keys->ptk_mismatch ? "not live" : "live", gtkl);

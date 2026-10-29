@@ -1942,24 +1942,17 @@ int8_t ws_pae_controller_first_installed_key_index_get(protocol_interface_info_e
     return -1;
 }
 
-#ifdef HAVE_PAE_AUTH
-/* Border router, FAN 1.1: LGTKs changed (installed, activated, expired). They
- * go to MAC key slots WS_LGTK_MAC_SLOT_FIRST..+2, key indexes 5-7, as GAKs
- * derived like those of the GTKs; then the LFN parent updates the LFN version
- * and the LGTK hash and sends LPCs (ws_lfn_parent.c). */
-static void ws_pae_controller_lgtk_update(protocol_interface_info_entry_t *interface_ptr, sec_prot_gtk_keys_t *lgtks, int8_t active_index, const char *event)
+/* FAN 1.1, an LFN parent (border router or FFN router): its LGTKs go to MAC
+ * key slots WS_LGTK_MAC_SLOT_FIRST..+2, key indexes 5-7, as GAKs derived like
+ * those of the GTKs. Returns -1 if the MAC key table is too small. */
+static int8_t ws_pae_controller_lgtk_mac_install(pae_controller_t *controller, protocol_interface_info_entry_t *interface_ptr, sec_prot_gtk_keys_t *lgtks)
 {
-    pae_controller_t *controller = ws_pae_controller_get(interface_ptr);
-    if (!controller) {
-        return;
-    }
     mac_description_storage_size_t sizes;
     if (!interface_ptr->mac_api || !interface_ptr->mac_api->mac_storage_sizes_get ||
             interface_ptr->mac_api->mac_storage_sizes_get(interface_ptr->mac_api, &sizes) != 0 ||
             sizes.key_description_table_size < WS_LGTK_MAC_SLOT_FIRST + LGTK_NUM) {
         tr_error("LGTK: the MAC key table needs %d entries", WS_LGTK_MAC_SLOT_FIRST + LGTK_NUM);
-        ws_lfn_parent_lgtk_update(interface_ptr, lgtks, active_index, event);
-        return;
+        return -1;
     }
     for (uint8_t i = 0; i < LGTK_NUM; i++) {
         nw_key_t *k = &controller->nw_lkey[i];
@@ -1990,9 +1983,59 @@ static void ws_pae_controller_lgtk_update(protocol_interface_info_entry_t *inter
         memcpy(k->gtk, lgtk, GTK_LEN);
         tr_info("LGTK set: %i, key index %i, hash: %s", i, slot + 1, trace_array(hash, GTK_HASH_LEN));
     }
+    return 0;
+}
+
+#ifdef HAVE_PAE_AUTH
+/* Border router, FAN 1.1: LGTKs changed (installed, activated, expired): on
+ * the MAC, then the LFN parent updates the LFN version and the LGTK hash and
+ * sends LPCs (ws_lfn_parent.c). */
+static void ws_pae_controller_lgtk_update(protocol_interface_info_entry_t *interface_ptr, sec_prot_gtk_keys_t *lgtks, int8_t active_index, const char *event)
+{
+    pae_controller_t *controller = ws_pae_controller_get(interface_ptr);
+    if (!controller) {
+        return;
+    }
+    ws_pae_controller_lgtk_mac_install(controller, interface_ptr, lgtks);
     ws_lfn_parent_lgtk_update(interface_ptr, lgtks, active_index, event);
 }
 #endif
+
+bool ws_pae_controller_lgtk_is_set(protocol_interface_info_entry_t *interface_ptr, uint8_t index)
+{
+    pae_controller_t *controller = ws_pae_controller_get(interface_ptr);
+    return controller && index < LGTK_NUM && sec_prot_keys_gtk_is_set(&controller->lgtks, index);
+}
+
+/* FAN 1.1 FFN router parenting LFNs (GS8 stage 5): its LGTKs, from the
+ * group key handshakes with the border router, on the MAC */
+int8_t ws_pae_controller_ffn_lgtk_install(protocol_interface_info_entry_t *interface_ptr)
+{
+    pae_controller_t *controller = ws_pae_controller_get(interface_ptr);
+    if (!controller) {
+        return -1;
+    }
+    return ws_pae_controller_lgtk_mac_install(controller, interface_ptr, &controller->lgtks);
+}
+
+/* FAN 1.1 FFN router parenting LFNs: the LGTK hash of a PAN configuration
+ * (LGTKHASH-IE). LGTKs no longer listed are removed; a listed one it lacks
+ * starts a key request, as a GTK hash mismatch does. */
+int8_t ws_pae_controller_ffn_lgtk_hash_update(protocol_interface_info_entry_t *interface_ptr, const uint8_t *lgtkhash, uint8_t included)
+{
+    pae_controller_t *controller = ws_pae_controller_get(interface_ptr);
+    uint8_t hashes[GTK_NUM * GTK_HASH_LEN];
+    if (!controller) {
+        return -1;
+    }
+    memset(hashes, 0, sizeof(hashes));
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        if (included & (1 << i)) {
+            memcpy(hashes + i * GTK_HASH_LEN, lgtkhash + i * GTK_HASH_LEN, GTK_HASH_LEN);
+        }
+    }
+    return ws_pae_supp_ffn_lgtk_hash_update(interface_ptr, hashes);
+}
 
 int8_t ws_pae_controller_lgtk_rotate(protocol_interface_info_entry_t *interface_ptr)
 {

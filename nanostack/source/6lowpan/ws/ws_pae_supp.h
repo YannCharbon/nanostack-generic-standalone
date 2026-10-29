@@ -152,6 +152,12 @@ int8_t ws_pae_supp_gtk_hash_update(protocol_interface_info_entry_t *interface_pt
 int8_t ws_pae_supp_lgtk_hash_update(protocol_interface_info_entry_t *interface_ptr, uint8_t *lgtkhash);
 
 /**
+ * ws_pae_supp_ffn_lgtk_hash_update FAN 1.1 FFN router parenting LFNs: the LGTK
+ * hash of a PAN configuration; a mismatch starts a key request
+ */
+int8_t ws_pae_supp_ffn_lgtk_hash_update(protocol_interface_info_entry_t *interface_ptr, uint8_t *lgtkhash);
+
+/**
  * ws_pae_supp_lgtk_key_request FAN 1.1 LFN: sends a key request to the parent now
  *
  * \return 1 sent, 0 one already on its way, < 0 failure

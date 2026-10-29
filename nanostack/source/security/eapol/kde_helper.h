@@ -34,6 +34,7 @@
 #define KDE_LGTKL_LEN            6 + 1
 #define KDE_NR_LEN               6 + 1
 #define KDE_NR_ROLE_LFN          2   // node role of an LFN (WS_NR_ROLE_LFN)
+#define KDE_NR_ROLE_ROUTER       1   // node role of an FFN router (WS_NR_ROLE_ROUTER)
 
 /**
  * kde_padded_length_calc calculates padded length for kde (see IEEE 802.11 chapter 11.6.2 EAPOL-Key frames)

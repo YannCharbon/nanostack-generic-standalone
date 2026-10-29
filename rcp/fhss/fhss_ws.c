@@ -70,7 +70,8 @@ void (*fhss_bc_switch)(void) = NULL;
 #define WH_SUB_ID_BT    2
 #define WH_SUB_ID_LUTT  10
 #define WH_SUB_ID_LBT   11
-#define WH_SUB_ID_LTO   14
+#define WH_SUB_ID_LND   16
+#define WH_SUB_ID_LTO   17
 
 
 struct ws_ie_t {
@@ -102,6 +103,8 @@ static fhss_ws_neighbor_timing_info_t *fhss_ws_lfn_neighbor(fhss_structure_t *fh
 static bool fhss_ws_lfn_neighbor_sched(fhss_structure_t *fhss_structure, fhss_ws_neighbor_timing_info_t *info, fhss_lfn_sched_t *sched);
 static int32_t fhss_ws_lfn_neighbor_channel(fhss_structure_t *fhss_structure, fhss_ws_neighbor_timing_info_t *info, uint16_t slot, uint8_t *eui64);
 static fhss_lfn_tx_e fhss_ws_lfn_tx_check_callback(const fhss_api_t *api, const uint8_t *destination_address, uint32_t queued_since_us, uint32_t *tx_time);
+static fhss_lfn_tx_e fhss_ws_lfn_tx_at_callback(const fhss_api_t *api, const uint8_t *destination_address, uint32_t requested_us, uint32_t *tx_time);
+static void fhss_ws_lfn_disc_timer(fhss_structure_t *fhss_structure);
 static bool fhss_ws_lfn_uplink_blocked(fhss_structure_t *fhss_structure, uint32_t t, uint16_t frame_length, uint8_t phy_header_length, uint8_t phy_tail_length);
 
 // This function supports rounding up
@@ -1049,6 +1052,12 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
     if (fhss_structure->ws->lfn.bc_enabled) {
         fhss_ws_lfn_write_lbt_lto(fhss_structure, ptr, length, tx_time);
     }
+    // LFN: the LND-IE response delay, from this frame to its discovery
+    // window (GS8 stage 5), as Silicon Labs' LFN rewrites it per frame [M]
+    if (fhss_structure->ws->lfn.disc_set && fhss_ws_ie_header_discover(ptr, length, &header_ie, WH_SUB_ID_LND) >= 8) {
+        int32_t delay_us = (int32_t)(fhss_structure->ws->lfn.disc_start - tx_time);
+        common_write_24_bit_inverse(delay_us > 0 ? (uint32_t)delay_us / 1000 : 0, header_ie.content_ptr + 1);
+    }
     platform_exit_critical();
     //TODO return destination channel here
     return fhss_structure->rx_channel;
@@ -1259,6 +1268,7 @@ int fhss_ws_set_callbacks(fhss_structure_t *fhss_structure)
     fhss_structure->fhss_api->write_synch_info = &fhss_ws_write_synch_info_callback;
     fhss_structure->fhss_api->init_callbacks = &fhss_init_callbacks_cb;
     fhss_structure->fhss_api->lfn_tx_check = &fhss_ws_lfn_tx_check_callback;
+    fhss_structure->fhss_api->lfn_tx_at = &fhss_ws_lfn_tx_at_callback;
     return 0;
 }
 
@@ -1400,6 +1410,11 @@ int fhss_ws_configuration_set(fhss_structure_t *fhss_structure, const fhss_ws_co
         fhss_structure->ws->unicast_timer_running = true;
     }
     fhss_structure->ws->fhss_configuration = *fhss_configuration;
+    // LFN parent: the LFN broadcast schedule uses the network's BSI, which a
+    // router learns after its FHSS started (the LBS-IE carries it)
+    if (fhss_structure->ws->lfn.bc_enabled) {
+        fhss_structure->ws->lfn.bc_cfg.bsi = fhss_configuration->bsi;
+    }
     if (channel_count_uc == 0) {
         //If Unicast channel is empty use Domain mask
         for (uint8_t i = 0; i < 8; i++) {
@@ -2072,7 +2087,12 @@ static void fhss_ws_lfn_bc_timer_handler(const fhss_api_t *fhss_api, uint16_t de
 {
     (void) delay;
     fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);
-    if (!fhss_structure || !fhss_structure->ws->lfn.listen_running || !fhss_structure->ws->lfn.pbc_valid) {
+    if (!fhss_structure || !fhss_structure->ws->lfn.listen_running ||
+            (!fhss_structure->ws->lfn.pbc_valid && !fhss_structure->ws->lfn.disc_set)) {
+        return;
+    }
+    if (fhss_structure->ws->lfn.disc_set) {
+        fhss_ws_lfn_disc_timer(fhss_structure);
         return;
     }
     struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
@@ -2282,4 +2302,130 @@ int fhss_ws_lfn_bc_stop(fhss_structure_t *fhss_structure)
         lfn->own.interval_us = lfn->listen_cfg.listen_interval_ms * 1000u;
     }
     return 0;
+}
+
+/* ------------------------------------------------------------------------
+ * LND discovery (GS8 stage 5, docs/LFN_MAC.md §2.4) [S, M, I].
+ *
+ * LFN: after an LPAS sweep it listens continuously during its discovery
+ * window (the LND-IE's slots), on the channel of its own unicast slot
+ * nearest to the current time, retuned at each half interval [I]. The
+ * window uses the broadcast-window timer: there is no parent schedule yet.
+ * Parent: an LPA at a requested time (a random LND slot), on the LFN's
+ * channel of its slot nearest to that time (tx_handle, as any frame to an
+ * LFN).
+ * ------------------------------------------------------------------------ */
+
+static void fhss_ws_lfn_disc_timer(fhss_structure_t *fhss_structure)
+{
+    struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+    uint32_t now = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
+    uint32_t half = lfn->own.interval_us / 2;
+    uint16_t slot = fhss_lfn_sched_slot_at(&lfn->own, now + half, NULL);
+    // the next instant where the nearest slot changes
+    uint32_t next = fhss_lfn_sched_next(&lfn->own, now + half + 1, NULL) - half;
+
+    if ((int32_t)(now - lfn->disc_end) >= 0) {
+        if (lfn->disc_open && fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOW_CLOSE, 0) == 1) {
+            fhss_start_timer(fhss_structure, lfn->listen_cfg.close_retry_us, fhss_ws_lfn_bc_timer_handler);
+            return;
+        }
+        tr_info("LFN discovery window closed");
+        lfn->disc_open = false;
+        lfn->disc_set = false;
+        lfn->bc_window_open = false;
+        if (lfn->pbc_valid) {
+            fhss_ws_lfn_bc_arm_next(fhss_structure, now);
+        }
+        return;
+    }
+    if (!lfn->disc_open && lfn->window_open) {
+        // a unicast window ends first
+        fhss_start_timer(fhss_structure, lfn->listen_cfg.close_retry_us, fhss_ws_lfn_bc_timer_handler);
+        return;
+    }
+    int32_t channel = fhss_ws_lfn_own_channel(fhss_structure, slot);
+    if (!lfn->disc_open || channel != lfn->disc_channel) {
+        if (!lfn->disc_open) {
+            tr_info("LFN discovery window open for %"PRIu32" us", (uint32_t)(lfn->disc_end - now));
+        }
+        lfn->disc_open = true;
+        lfn->bc_window_open = true;     // our unicast windows wait
+        lfn->disc_channel = channel;
+        fhss_structure->rx_channel = channel;
+        fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOW_OPEN, channel);
+    }
+    if ((int32_t)(next - lfn->disc_end) > 0) {
+        next = lfn->disc_end;
+    }
+    fhss_start_timer(fhss_structure, (int32_t)(next - now) > 0 ? next - now : 1, fhss_ws_lfn_bc_timer_handler);
+}
+
+int fhss_ws_lfn_discovery_set(fhss_structure_t *fhss_structure, uint32_t start_us, uint32_t duration_us)
+{
+    struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+    uint32_t now;
+
+    if (!lfn->listen_running) {
+        return -1;
+    }
+    if (!duration_us || duration_us > FHSS_LFN_INTERVAL_MAX_US / 2) {
+        if (lfn->disc_set) {
+            lfn->disc_end = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
+            fhss_ws_lfn_disc_timer(fhss_structure);
+        }
+        return duration_us ? -2 : 0;
+    }
+    if (lfn->bc_window_open && !lfn->disc_set) {
+        return -3;      // a parent's broadcast window: not while discovering
+    }
+    now = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
+    fhss_stop_timer(fhss_structure, fhss_ws_lfn_bc_timer_handler);
+    lfn->disc_set = true;
+    lfn->disc_start = start_us;
+    lfn->disc_end = start_us + duration_us;
+    if (lfn->disc_open && (int32_t)(start_us - now) > 0) {
+        fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOW_CLOSE, 0);
+        lfn->disc_open = false;
+        lfn->bc_window_open = false;
+    }
+    fhss_start_timer(fhss_structure, (int32_t)(start_us - now) > 0 ? start_us - now : 1, fhss_ws_lfn_bc_timer_handler);
+    return 0;
+}
+
+static fhss_lfn_tx_e fhss_ws_lfn_tx_at_callback(const fhss_api_t *api, const uint8_t *destination_address, uint32_t requested_us, uint32_t *tx_time)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(api);
+    if (!fhss_structure || !fhss_structure->ws->lfn.parent_enabled || fhss_structure->fhss_state != FHSS_SYNCHRONIZED ||
+            !fhss_ws_lfn_neighbor(fhss_structure, destination_address)) {
+        return FHSS_LFN_TX_NOT_LFN;
+    }
+    struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+    const fhss_ws_lfn_parent_t *cfg = &lfn->parent_cfg;
+    uint32_t now = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
+    uint32_t tx = requested_us;
+
+    if ((int32_t)(now - requested_us) > 20000) {
+        lfn->stats.tx_expired++;
+        return FHSS_LFN_TX_EXPIRED;
+    }
+    if ((int32_t)(tx - now) < (int32_t)cfg->tx_min_prep_us) {
+        tx = now + cfg->tx_min_prep_us;
+    }
+    if ((int32_t)(tx - now) <= (int32_t)cfg->tx_lead_us) {
+        *tx_time = tx;
+        memcpy(lfn->tx_dst, destination_address, 8);
+        lfn->tx_dst_time = tx;
+        lfn->tx_dst_valid = true;
+        lfn->stats.tx_released++;
+        return FHSS_LFN_TX_NOW;
+    }
+    uint32_t poll = tx - cfg->tx_lead_us;
+    if (!lfn->poll_armed || (int32_t)(lfn->poll_time - poll) > 0 || (int32_t)(lfn->poll_time - now) < 0) {
+        lfn->poll_armed = true;
+        lfn->poll_time = poll;
+        fhss_ws_lfn_timer_arm(fhss_structure, (int32_t)(poll - now));
+    }
+    lfn->stats.tx_held++;
+    return FHSS_LFN_TX_WAIT;
 }

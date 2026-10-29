@@ -441,9 +441,10 @@ static uint8_t *ws_llc_lfn_wh_write(uint8_t *ptr, llc_data_base_t *base, wh_ie_s
         ptr = ws_wh_lus_write(ptr, &lus);
     }
     if (list.lnd_ie) {
-        // Our parents answer in the LFN's next listen window, not in an LND
-        // slot (docs/LFN_STACK.md): the response delay is 0
+        // Parents answer in a random LND slot of the discovery window; the
+        // FHSS rewrites the response delay of each frame at TX time
         ws_lnd_ie_t lnd = { 0 };
+        lnd.response_delay = ws->lfn_cfg.lnd_response_delay_ms;
         lnd.discovery_slot_time = ws->lfn_cfg.lnd_slot_time_ms;
         lnd.discovery_slots = ws->lfn_cfg.lnd_slots;
         ptr = ws_wh_lnd_write(ptr, &lnd);
@@ -2074,6 +2075,10 @@ int8_t ws_llc_asynch_request(struct protocol_interface_info_entry *interface, as
         if (request->wh_requested_ie_list.lto_ie) {
             message->lto_sent = true;
             message->lto = request->lto;
+        }
+        if (request->tx_at_set) {
+            data_req.LfnTxTimeSet = true;
+            data_req.LfnTxTime = request->tx_at;
         }
     } else if (request->lfn_broadcast) {
         // FAN 1.1 LFN parent (LTS, LPC): broadcast, held by the MAC for the

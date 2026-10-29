@@ -983,6 +983,7 @@ typedef struct ws_lfn_settings {
     uint16_t lpas_interval_s;           /**< Time between LPAS sweeps while no LPA is heard (s) */
     uint8_t lnd_slot_time_ms;           /**< LND-IE discovery slot time (ms) */
     uint8_t lnd_slots;                  /**< LND-IE number of discovery slots */
+    uint32_t lnd_response_delay_ms;     /**< LND-IE response delay: the discovery window opens this long after the LPAS sweep starts (ms; each frame carries the delay from itself) */
     uint16_t lpcs_retry_intervals;      /**< LPCS repeated after this many listen intervals without an LPC */
     uint8_t maintain_parent_time;       /**< Parent lost after 1.5 x this many sync periods without a frame from it */
     uint16_t lgtk_max_mismatch_s;       /**< Key request this long after an LGTK hash mismatch is seen (s) */
@@ -1012,6 +1013,7 @@ typedef struct ws_lfn_settings {
 #define WS_LFN_LPAS_INTERVAL_S_DEFAULT           10
 #define WS_LFN_LND_SLOT_TIME_MS_DEFAULT          60
 #define WS_LFN_LND_SLOTS_DEFAULT                 40
+#define WS_LFN_LND_RESPONSE_DELAY_MS_DEFAULT     1550
 #define WS_LFN_LPCS_RETRY_INTERVALS_DEFAULT      2
 #define WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT      5
 #define WS_LFN_LGTK_MAX_MISMATCH_S_DEFAULT       120

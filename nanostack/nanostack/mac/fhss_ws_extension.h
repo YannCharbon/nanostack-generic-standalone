@@ -358,6 +358,16 @@ extern int ns_fhss_ws_lfn_bc_sync(const fhss_api_t *fhss_api, const fhss_ws_lfn_
 /** @brief LFN role: stop following the parent's LFN broadcast schedule (parent lost). */
 extern int ns_fhss_ws_lfn_bc_stop(const fhss_api_t *fhss_api);
 
+/**
+ * @brief LFN role, GS8 stage 5: listen continuously from start_us for
+ * duration_us (the LND discovery window after an LPAS sweep), on the channel
+ * of the own unicast slot nearest to the current time; 0 cancels. The LND-IE
+ * response delay of every frame sent before the window is written at TX
+ * time (from that frame to start_us).
+ * @return 0 OK, -1 not an LFN or not running, -2 invalid duration, -3 a broadcast window is open.
+ */
+extern int ns_fhss_ws_lfn_discovery_set(const fhss_api_t *fhss_api, uint32_t start_us, uint32_t duration_us);
+
 /** @brief Read the LFN counters. @return 0 OK, -1 no FHSS. */
 extern int ns_fhss_ws_lfn_stats_get(const fhss_api_t *fhss_api, fhss_ws_lfn_stats_t *stats);
 

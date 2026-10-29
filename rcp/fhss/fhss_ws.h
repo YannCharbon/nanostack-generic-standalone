@@ -80,6 +80,12 @@ struct fhss_ws_lfn {
     uint32_t bc_slot_start;
     uint16_t bc_close_retries;
     bool resched_after_bc;          // a sync during a broadcast window: our next unicast slot is computed at its close
+    /* LFN role: LND discovery window (stage 5), on the broadcast-window timer */
+    bool disc_set;
+    bool disc_open;
+    uint32_t disc_start;
+    uint32_t disc_end;
+    uint8_t disc_channel;
     /* Parent role */
     bool parent_enabled;
     fhss_ws_lfn_parent_t parent_cfg;
@@ -138,5 +144,6 @@ int fhss_ws_lfn_bc_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_t 
 int fhss_ws_lfn_bc_next(fhss_structure_t *fhss_structure, uint16_t *slot, uint32_t *start_us);
 int fhss_ws_lfn_bc_sync(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_sync_t *sync);
 int fhss_ws_lfn_bc_stop(fhss_structure_t *fhss_structure);
+int fhss_ws_lfn_discovery_set(fhss_structure_t *fhss_structure, uint32_t start_us, uint32_t duration_us);
 
 #endif /*FHSS_WS_H_*/

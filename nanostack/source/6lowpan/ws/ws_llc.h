@@ -77,6 +77,8 @@ typedef struct asynch_request_s {
     uint8_t message_type;                                   /**< Asynch message type: WS_FT_PAN_ADVERT, WS_FT_PAN_ADVERT_SOL, WS_FT_PAN_CONF, WS_FT_PAN_CONF_SOL, or FAN 1.1 WS_FT_LPA..WS_FT_LTS */
     bool unicast;                                           /**< FAN 1.1 LFN management frame sent as an acknowledged unicast to dst_address (no channel list) */
     bool lfn_broadcast;                                     /**< FAN 1.1 LFN parent: a broadcast frame for the next LFN broadcast slot (LTS, LPC; GS8 stage 4) */
+    bool tx_at_set;                                         /**< FAN 1.1 LFN parent: with unicast, send at tx_at (an LND discovery slot; GS8 stage 5) */
+    uint32_t tx_at;                                         /**< Its TX time (µs, MAC timestamp) */
     uint8_t dst_address[8];                                 /**< Its destination */
     ws_lto_ie_t lto;                                        /**< LTO-IE values when wh_requested_ie_list.lto_ie */
     wh_ie_sub_list_t wh_requested_ie_list;                  /**< WH-IE header list to message. */

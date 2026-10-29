@@ -103,6 +103,7 @@ typedef struct mac_pre_build_frame {
     uint32_t tx_time;
     uint32_t request_start_time_us;
     uint32_t lfn_tx_time;           // TX time in the LFN's window (lfn_tx_time_set)
+    uint32_t lfn_req_time;          // requested TX time (lfn_req_set)
     bool upper_layer_request: 1;
     bool mac_allocated_payload_ptr: 1;
     bool asynch_request: 1;
@@ -114,6 +115,7 @@ typedef struct mac_pre_build_frame {
     bool lfn_tx_time_set: 1;        // released for an LFN window: send at lfn_tx_time
     bool lfn_expired: 1;            // waited past its TTL for an LFN window
     bool lfn_bc: 1;                 // FAN 1.1 parent: for the next LFN broadcast slot (LfnBroadcast)
+    bool lfn_req_set: 1;            // FAN 1.1 parent: at lfn_req_time (LfnTxTimeSet)
     unsigned security_mic_len: 5;   //Max possible lengths 0, 4, 8, 16 bytes
     unsigned stored_priority: 2;
     struct mac_pre_build_frame *next; //Pointer for queue purpose

@@ -400,7 +400,13 @@ int8_t sec_prot_lib_gtk_read(uint8_t *kde, uint16_t kde_len, sec_prot_keys_t *se
     uint8_t key_id;
     uint8_t gtk[GTK_LEN];
 
-    // An LFN reads LGTK and LGTKL KDEs (FAN 1.1), any other node GTK and GTKL
+    // An LFN reads LGTK and LGTKL KDEs (FAN 1.1), any other node GTK and GTKL;
+    // an FFN that parents LFNs reads the set the message carries
+    uint8_t probe;
+    if (sec_keys->ffn_lgtk) {
+        bool lgtk = kde_gtkl_read(kde, kde_len, &probe) < 0 && kde_lgtkl_read(kde, kde_len, &probe) >= 0;
+        sec_prot_keys_lgtk_mode_set(sec_keys, lgtk);
+    }
     bool lfn = sec_keys->lfn;
     if ((lfn ? kde_lgtk_read(kde, kde_len, &key_id, gtk) : kde_gtk_read(kde, kde_len, &key_id, gtk)) >= 0) {
         uint32_t lifetime = 0;

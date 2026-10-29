@@ -75,6 +75,7 @@
 #include "6lowpan/ws/ws_llc.h"
 #include "6lowpan/ws/ws_neighbor_class.h"
 #include "6lowpan/ws/ws_pae_controller.h"
+#include "6lowpan/ws/ws_lfn_parent.h"
 #include "6lowpan/ws/ws_stats.h"
 #ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
 #include "nwk_interface/protocol_timer.h"
@@ -461,7 +462,15 @@ static void ws_bootstrap_ffn_pan_config_lfn_analyze(struct protocol_interface_in
     if (cur->ws_info->lfngtk.active_hash_3) {
         memcpy(cur->ws_info->lfngtk.lgtkhash + 16, ws_lgtkhash.lgtk2_hash, 8);
     }
-    //TODO Analyze HASH's and set LFN group key index
+    // An LFN parent (GS8 stage 5): fetch the LGTKs it lacks, and tell its LFN
+    // children about the change with a broadcast LPC, as the border router
+    // does; the active LGTK for them is the hash's active index
+    if (cur->ws_info->lfn_parent) {
+        ws_pae_controller_ffn_lgtk_hash_update(cur, cur->ws_info->lfngtk.lgtkhash,
+                                               ws_lgtkhash.lgtk0 | ws_lgtkhash.lgtk1 << 1 | ws_lgtkhash.lgtk2 << 2);
+        cur->ws_info->lfn.lpc_pending = 1;
+        tr_info("LFN parent: LFN version %u, active LGTK index %u", lfn_version.lfn_version, ws_lgtkhash.active_lgtk_index);
+    }
 }
 #endif
 
@@ -690,6 +699,10 @@ void ws_bootstrap_ffn_asynch_ind(struct protocol_interface_info_entry *cur, cons
         return;
     }
     ws_stats_update(cur, STATS_WS_ASYNCH_RX, 1);
+    // FAN 1.1 LFN management frames: an FFN router as LFN parent (GS8 stage 5)
+    if (ws_lfn_parent_asynch_ind(cur, data, ie_ext, message_type)) {
+        return;
+    }
     //Validate network name
     switch (message_type) {
         case WS_FT_PAN_ADVERT:
@@ -994,6 +1007,10 @@ uint32_t ws_bootstrap_ffn_seconds_timer_next(protocol_interface_info_entry_t *cu
     if (cur->ws_info->aro_registration_timer) {
         next = protocol_timer_next_min(next, cur->ws_info->aro_registration_timer);
     }
+    // An LFN parent queues its sync frames from this timer
+    if (cur->ws_info->lfn_parent) {
+        next = 1;
+    }
     // The BSI block only expires: read by the stack only
     return next;
 }
@@ -1001,6 +1018,8 @@ uint32_t ws_bootstrap_ffn_seconds_timer_next(protocol_interface_info_entry_t *cu
 #endif
 void ws_bootstrap_ffn_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seconds)
 {
+    // FAN 1.1 LFN parent (GS8 stage 5)
+    ws_lfn_parent_seconds_timer(cur, seconds);
     /* Border router keep alive check
      */
     if (cur->ws_info->pan_timeout_timer) {

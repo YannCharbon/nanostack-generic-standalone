@@ -808,7 +808,7 @@ static void test_bc_parent(void)
     const uint32_t phase_ms = 900;
     lto[0] = phase_ms & 0xff; lto[1] = phase_ms >> 8; lto[2] = 0;
     lto[3] = uc_ms & 0xff; lto[4] = (uc_ms >> 8) & 0xff; lto[5] = uc_ms >> 16;
-    len = write_wh_ie(ie, 14, lto, 6);
+    len = write_wh_ie(ie, 17, lto, 6);
     api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, tx_time);
     uint32_t offset_ms = rd24(ie + 3);
     CHECK(offset_ms < uc_ms);

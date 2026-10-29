@@ -1444,6 +1444,10 @@ static kmp_type_e ws_pae_auth_next_protocol_get(pae_auth_t *pae_auth, supp_entry
     }
 
     int8_t gtk_index = -1;
+    if (sec_keys->ffn_lgtk && (next_type != KMP_TYPE_NONE || sec_keys->lfn)) {
+        // An FFN that parents LFNs: EAP-TLS and the 4WH carry its GTKs
+        sec_prot_keys_lgtk_mode_set(sec_keys, false);
+    }
     if (next_type != IEEE_802_1X_MKA && next_type != RADIUS_IEEE_802_1X_MKA) {
         // Checks if GTK needs to be inserted
         gtk_index = sec_prot_keys_gtk_insert_index_from_gtkl_get(sec_keys);
@@ -1451,6 +1455,17 @@ static kmp_type_e ws_pae_auth_next_protocol_get(pae_auth_t *pae_auth, supp_entry
         // For 4WH insert always a key, in case no other then active
         if (next_type == IEEE_802_11_4WH && gtk_index < 0) {
             gtk_index = sec_prot_keys_gtk_status_active_get(sec_keys->gtks);
+        }
+        /* Then its LGTKs, one group key handshake per LGTK it lacks (our
+           order: Wi-SUN FAN 1.1 allows both in one message) [I] */
+        if (next_type == KMP_TYPE_NONE && gtk_index < 0 && sec_keys->ffn_lgtk &&
+                sec_prot_keys_lgtk_mode_set(sec_keys, true) >= 0) {
+            gtk_index = sec_prot_keys_gtk_insert_index_from_gtkl_get(sec_keys);
+            if (gtk_index < 0) {
+                sec_prot_keys_lgtk_mode_set(sec_keys, false);
+            } else {
+                tr_info("PAE: LGTK for an LFN parent, eui-64: %s", trace_array(supp_entry->addr.eui_64, 8));
+            }
         }
     }
 
@@ -1465,7 +1480,9 @@ static kmp_type_e ws_pae_auth_next_protocol_get(pae_auth_t *pae_auth, supp_entry
             if (sec_keys->lfn) {
                 group_key_lifetime = pae_auth->interface_ptr->ws_info->lfn_cfg.lgtk_lifetime_s;
             }
-            if (group_key_lifetime > SHORT_GTK_LIFETIME &&
+            // (the PTK's installed-key hashes are the GTKs': not for an
+            // FFN's LGTKs, whose indexes overlap them)
+            if (group_key_lifetime > SHORT_GTK_LIFETIME && !(sec_keys->ffn_lgtk && sec_keys->lfn) &&
                     sec_prot_keys_ptk_installed_gtk_hash_mismatch_check(sec_keys, gtk_index)) {
                 // start 4WH towards supplicant
                 next_type = IEEE_802_11_4WH;

@@ -47,6 +47,8 @@ typedef struct mcps_data_req_s {
     bool PanIdSuppressed: 1;        /**< True suppress PAN-id is done when possible from frame. This will be only checked when 2015 extension is enabled */
     bool ExtendedFrameExchange: 1;  /**< True for Extended Frame change. This will be only checked when 2015 extension and enhanced frame is enabled */
     bool LfnBroadcast: 1;           /**< FAN 1.1 LFN parent: a broadcast frame held for the next LFN broadcast slot (fhss_ws_lfn_bc_t) */
+    bool LfnTxTimeSet: 1;           /**< FAN 1.1 LFN parent: a unicast frame to an LFN sent at LfnTxTime (an LND discovery slot) */
+    uint32_t LfnTxTime;             /**< Its TX time (µs, the MAC's timestamp) */
     mlme_security_t Key;            /**< Security key */
 } mcps_data_req_t;
 

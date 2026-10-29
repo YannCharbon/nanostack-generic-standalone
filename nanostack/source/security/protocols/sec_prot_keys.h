@@ -112,6 +112,8 @@ typedef struct {
     bool                   pmk_mismatch: 1;           /**< Remote PMK mismatch reported */
     bool                   ptk_mismatch: 1;           /**< Remote PTK mismatch reported */
     bool                   lfn: 1;                    /**< FAN 1.1 LFN (supplicant: itself; authenticator: the supplicant, from its NR KDE): gtks are LGTKs, GTK/GTKL KDEs become LGTK/LGTKL */
+    bool                   ffn_lgtk: 1;               /**< FAN 1.1 FFN that also holds LGTKs (an LFN parent): lfn selects the set of the current handshake (sec_prot_keys_lgtk_mode_set) */
+    uint8_t                lgtkl;                     /**< With ffn_lgtk: the LGTKL while the GTKs are selected (the GTKL while the LGTKs are) */
 } sec_prot_keys_t;
 
 // Frame counter data
@@ -955,6 +957,19 @@ uint8_t sec_prot_keys_gtk_count(sec_prot_gtk_keys_t *gtks);
  * \return >= 0 success
  */
 int8_t sec_prot_keys_lfn_set(sec_prot_keys_t *sec_keys, bool lfn);
+
+/**
+ * sec_prot_keys_lgtk_mode_set FAN 1.1 FFN that also holds LGTKs (ffn_lgtk):
+ * select the group key set of the next handshake. With lgtk true, gtks and
+ * gtkl are the LGTKs and the LGTKL, and the KDE helpers read and write LGTK
+ * KDEs (as for an LFN); with false, the GTKs and the GTKL.
+ *
+ * \param sec_keys security keys
+ * \param lgtk select the LGTKs
+ *
+ * eturn < 0 no LGTKs, >= 0 OK
+ */
+int8_t sec_prot_keys_lgtk_mode_set(sec_prot_keys_t *sec_keys, bool lgtk);
 
 void sec_prot_keys_ptk_installed_gtk_hash_clear_all(sec_prot_keys_t *sec_keys);
 
