@@ -181,6 +181,7 @@ extern int ns_fhss_ws_set_tx_allowance_level(const fhss_api_t *fhss_api, const f
 #define FHSS_LFN_RX_GUARD_US_DEFAULT            1000u   /**< Window opens this long before the slot start */
 #define FHSS_LFN_CLOSE_RETRY_US_DEFAULT         2000u   /**< Retry period of a close the MAC deferred (frame being received or ACK being sent) */
 #define FHSS_LFN_FIRST_SLOT_DELAY_US_DEFAULT    10000u  /**< Start of slot 0 after the schedule starts */
+#define FHSS_LFN_UPLINK_GUARD_US_DEFAULT        5000u   /**< Time kept clear of the parent's broadcast dwell after an uplink frame starts (frame, ACK) beyond the frame's airtime */
 
 /**
  * @brief LFN role: the node's own unicast listen schedule (LUS-IE). The
@@ -195,6 +196,7 @@ typedef struct fhss_ws_lfn_listen {
     uint32_t rx_guard_us;           /**< Window opening before the slot start (µs), < rx_window_us */
     uint32_t close_retry_us;        /**< Retry period of a deferred close (µs), >= 1 */
     uint32_t first_slot_delay_us;   /**< Slot 0 starts this long after the schedule starts (µs), > rx_guard_us */
+    uint32_t uplink_guard_us;       /**< Uplink: time after the frame's airtime kept clear of the parent's broadcast dwell (µs; ACK turnaround and airtime) */
 } fhss_ws_lfn_listen_t;
 
 /** Defaults of fhss_ws_lfn_parent_t (ns_fhss_ws_lfn_parent_defaults()). */
@@ -228,6 +230,7 @@ typedef struct fhss_ws_lfn_stats {
     uint32_t tx_released;           /**< Parent: frames released for an LFN window */
     uint32_t tx_held;               /**< Parent: checks that held a frame for a later window */
     uint32_t tx_expired;            /**< Parent: frames dropped after their TTL */
+    uint32_t uplink_deferred;       /**< LFN: uplink frames held until the parent's broadcast dwell ended */
 } fhss_ws_lfn_stats_t;
 
 /** Fill *cfg with the FHSS_LFN_*_DEFAULT values. */
@@ -252,6 +255,26 @@ extern int ns_fhss_ws_lfn_listen_set(const fhss_api_t *fhss_api, const fhss_ws_l
  * @return 0 OK, -1 no FHSS, -2 invalid cfg, -3 the LFN listen schedule runs.
  */
 extern int ns_fhss_ws_lfn_parent_set(const fhss_api_t *fhss_api, const fhss_ws_lfn_parent_t *cfg);
+
+/**
+ * @brief LFN role: apply an LTO-IE (LFN Timing Offset) received at
+ * rx_timestamp_us. The slot that contains rx_timestamp_us and the slots after
+ * it start offset_ms later, and the listen interval becomes interval_ms (0:
+ * unchanged). An open window stays open; the next one follows the new
+ * schedule. Also used with offset 0 to change the interval alone (for
+ * example during EAPOL). docs/LFN_MAC.md §2.1.
+ * @return 0 OK, -1 no FHSS or not an LFN, -2 invalid interval.
+ */
+extern int ns_fhss_ws_lfn_timing_set(const fhss_api_t *fhss_api, uint32_t offset_ms, uint32_t interval_ms, uint32_t rx_timestamp_us);
+
+/**
+ * @brief Parent role: the LFN's schedule after an LTO-IE that the parent sent
+ * to it at tx_timestamp_us (in one of its windows) was acknowledged. Updates
+ * the neighbour's lfn_uc_timing_info as fhss_ws_lfn_timing_set() moves the
+ * LFN's own schedule.
+ * @return 0 OK, -1 no FHSS, not a parent or no such LFN neighbour.
+ */
+extern int ns_fhss_ws_lfn_neighbor_lto(const fhss_api_t *fhss_api, const uint8_t eui64[8], uint32_t offset_ms, uint32_t interval_ms, uint32_t tx_timestamp_us);
 
 /** @brief Read the LFN counters. @return 0 OK, -1 no FHSS. */
 extern int ns_fhss_ws_lfn_stats_get(const fhss_api_t *fhss_api, fhss_ws_lfn_stats_t *stats);

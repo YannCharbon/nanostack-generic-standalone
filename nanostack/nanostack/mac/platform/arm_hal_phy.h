@@ -79,7 +79,8 @@ typedef enum {
     PHY_EXTENSION_SET_CHANNEL_CCA_THRESHOLD, /**<  Set CCA threshold which is given as dBm. This value is set in PHY_LINK_CCA_PREPARE callback and PHY driver should update the CCA threshold configuration */
     PHY_EXTENSION_SET_DATA_WHITENING, /**<  Enable or disable data whitening. Boolean true for enable, false for disable */
     PHY_EXTENSION_SET_802_15_4_MODE, /**<  Set IEEE 802.15.4 mode as defined by phy_802_15_4_mode_t*/
-    PHY_EXTENSION_READ_RX_ACTIVE /**<  Read whether a frame is being received (sync word detected, frame not yet complete): one uint8_t, 1 or 0. Optional: a driver that does not support it returns -1, and the MAC then assumes 0. Used to close a timed receive window (FAN 1.1 LFN) only after the frame in progress */
+    PHY_EXTENSION_READ_RX_ACTIVE, /**<  Read whether a frame is being received (sync word detected, frame not yet complete): one uint8_t, 1 or 0. Optional: a driver that does not support it returns -1, and the MAC then assumes 0. Used to close a timed receive window (FAN 1.1 LFN) only after the frame in progress */
+    PHY_EXTENSION_SET_BACKOFF_RX_OFF /**<  One uint8_t, set before each CSMA-CA transmission of a node that keeps its receiver off when idle (FAN 1.1 LFN outside its windows): 1 = the receiver need not listen during the coming backoff (it is on for the CCA, the TX and the ACK), 0 = it listens as usual. Optional: a driver that does not support it returns -1 and listens. Never sent by a node whose receiver is on when idle */
 } phy_extension_type_e;
 
 /** Address types */

@@ -140,6 +140,7 @@ void ns_fhss_ws_lfn_listen_defaults(fhss_ws_lfn_listen_t *cfg)
     cfg->rx_guard_us = FHSS_LFN_RX_GUARD_US_DEFAULT;
     cfg->close_retry_us = FHSS_LFN_CLOSE_RETRY_US_DEFAULT;
     cfg->first_slot_delay_us = FHSS_LFN_FIRST_SLOT_DELAY_US_DEFAULT;
+    cfg->uplink_guard_us = FHSS_LFN_UPLINK_GUARD_US_DEFAULT;
 }
 
 void ns_fhss_ws_lfn_parent_defaults(fhss_ws_lfn_parent_t *cfg)
@@ -166,6 +167,24 @@ int ns_fhss_ws_lfn_parent_set(const fhss_api_t *fhss_api, const fhss_ws_lfn_pare
         return -1;
     }
     return fhss_ws_lfn_parent_set(fhss_structure, cfg);
+}
+
+int ns_fhss_ws_lfn_timing_set(const fhss_api_t *fhss_api, uint32_t offset_ms, uint32_t interval_ms, uint32_t rx_timestamp_us)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);
+    if (!fhss_structure || !fhss_structure->ws) {
+        return -1;
+    }
+    return fhss_ws_lfn_timing_set(fhss_structure, offset_ms, interval_ms, rx_timestamp_us);
+}
+
+int ns_fhss_ws_lfn_neighbor_lto(const fhss_api_t *fhss_api, const uint8_t eui64[8], uint32_t offset_ms, uint32_t interval_ms, uint32_t tx_timestamp_us)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);
+    if (!fhss_structure || !fhss_structure->ws) {
+        return -1;
+    }
+    return fhss_ws_lfn_neighbor_lto(fhss_structure, eui64, offset_ms, interval_ms, tx_timestamp_us);
 }
 
 int ns_fhss_ws_lfn_stats_get(const fhss_api_t *fhss_api, fhss_ws_lfn_stats_t *stats)

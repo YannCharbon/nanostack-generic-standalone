@@ -51,4 +51,20 @@ uint16_t fhss_lfn_sched_slot_at(const fhss_lfn_sched_t *s, uint32_t t, uint32_t 
 /** Same schedule, anchored at the start of the slot that contains t. */
 void fhss_lfn_sched_reanchor(fhss_lfn_sched_t *s, uint32_t t);
 
+/** LTO-IE applied to a schedule (LFN timing offset, FAN 1.1; docs/LFN_MAC.md
+ *  §2.1): with n the slot that contains ref_t and s_n its start, the grid
+ *  becomes s_n + offset_us + k * interval_us (interval_us 0: unchanged), with
+ *  slot n at s_n + offset_us. A grid point still ahead of ref_t, such as
+ *  slot n itself when offset_us is larger than the time since s_n, is a slot
+ *  like any other (both ends compute the same grid). */
+void fhss_lfn_sched_lto(fhss_lfn_sched_t *s, uint32_t ref_t, uint32_t offset_us, uint32_t interval_us);
+
+/** Whether [t, t + duration_us) overlaps a broadcast dwell of a schedule whose
+ *  intervals start at interval_start_us + k * interval_us and begin with a
+ *  dwell of dwell_us. If so, *resume_us is the end of that dwell (the first
+ *  time a frame of this duration can start). A frame that cannot fit between
+ *  two dwells is never reported as overlapping. */
+bool fhss_lfn_dwell_overlap(uint32_t interval_start_us, uint32_t interval_us, uint32_t dwell_us,
+                            uint32_t t, uint32_t duration_us, uint32_t *resume_us);
+
 #endif /* FHSS_WS_LFN_H_ */

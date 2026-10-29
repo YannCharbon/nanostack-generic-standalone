@@ -294,6 +294,31 @@ static void test_sched(void)
     // Far from the anchor (30 min, interval 7 s)
     CHECK(fhss_lfn_sched_from_lutt(&s, 7000, 10, 0, 1000));
     CHECK(fhss_lfn_sched_next(&s, 1000 + 1800000000u, &slot) == 1000 + 1806000000u && slot == 10 + 258);
+    // LTO-IE: the slot that contains the reference time and those after it
+    // move by the offset; the interval changes; numbering continues
+    {
+        fhss_lfn_sched_t l;
+        CHECK(fhss_lfn_sched_from_lutt(&l, 5000, 100, 0, 1000000u));
+        fhss_lfn_sched_lto(&l, 1000000u + 7000000u, 1200000u, 6000000u);   // in slot 101
+        CHECK(l.anchor_us == 6000000u + 1200000u && l.anchor_slot == 101 && l.interval_us == 6000000u);
+        CHECK(fhss_lfn_sched_next(&l, 1000000u + 7000000u, &slot) == 13200000u && slot == 102);
+        CHECK(fhss_lfn_sched_next(&l, 6500000u, &slot) == 7200000u && slot == 101);     // slot 101 moved later
+        fhss_lfn_sched_lto(&l, l.anchor_us, 0, 0);                          // offset 0, same interval: same grid
+        CHECK(l.anchor_us == 7200000u && l.anchor_slot == 101 && l.interval_us == 6000000u);
+    }
+    // Broadcast dwell overlap: intervals of 1000 ms starting at 0 + k, dwell 250 ms
+    {
+        uint32_t r = 0;
+        const uint32_t I = 1000000u, D = 250000u, base = 0xfff00000u;     // across the 32-bit wrap
+        CHECK(fhss_lfn_dwell_overlap(base, I, D, base + 3 * I + 100000u, 10000u, &r) && r == base + 3 * I + D);   // in the dwell
+        CHECK(!fhss_lfn_dwell_overlap(base, I, D, base + 3 * I + 250000u, 10000u, &r));                           // just after it
+        CHECK(!fhss_lfn_dwell_overlap(base, I, D, base + 3 * I + 990000u, 10000u, &r));                           // ends at the next dwell
+        CHECK(fhss_lfn_dwell_overlap(base, I, D, base + 3 * I + 990001u, 10000u, &r) && r == base + 4 * I + D);   // runs into it
+        CHECK(fhss_lfn_dwell_overlap(base + 5 * I, I, D, base + 3 * I + 10u, 10000u, &r) && r == base + 3 * I + D); // reference after t
+        CHECK(!fhss_lfn_dwell_overlap(base, I, D, base + 100u, I - D + 1, &r));                                   // never fits: not blocked
+        CHECK(!fhss_lfn_dwell_overlap(base, I, 0, base + 100u, 10u, &r));                                         // no dwell
+    }
+
 }
 
 /* ----------------------------------------------------------- 2. LFN role */
@@ -444,6 +469,58 @@ static void test_lfn(void)
     CHECK(evs[2].channel == dh1cf_channel(206, lfn_mac));
     ns_fhss_ws_lfn_stats_get(api, &st);
     CHECK(st.windows_skipped == 3);
+
+    // The parent's broadcast schedule: an uplink does not start in, or run
+    // into, its broadcast dwell; the TX queue is polled at the dwell's end
+    {
+        broadcast_timing_info_t pbt = { .broadcast_channel_function = WS_DH1CF, .broadcast_dwell_interval = 200,
+                                        .broadcast_interval = 1000, .broadcast_interval_offset = 100, .bt_rx_timestamp = ts() };
+        // the parent's interval started 100 ms ago: in its dwell for 100 ms more
+        CHECK(ns_fhss_ws_set_parent(api, parent_mac, &pbt, false) == 0);
+        poll_timer_armed = false;
+        CHECK(!api->check_tx_conditions(api, false, 1, FHSS_DATA_FRAME, 100, 0, 0));
+        CHECK(poll_timer_armed);
+        CHECK(api->tx_handle(api, false, (uint8_t *)parent_mac, FHSS_DATA_FRAME, 100, 0, 0, ts()) == -3);
+        CHECK(api->check_tx_conditions(api, false, 1, FHSS_DATA_FRAME, 100, 0, 0) == false);
+        poll_timer_armed = false;
+        CHECK(api->check_tx_conditions(api, true, 1, FHSS_DATA_FRAME, 100, 0, 0));   // broadcasts are not held
+        CHECK(!poll_timer_armed);
+        ns_fhss_ws_lfn_stats_get(api, &st);
+        CHECK(st.uplink_deferred == 3);
+        pbt.bt_rx_timestamp = ts() - 300000u;                                        // 400 ms into its interval
+        CHECK(ns_fhss_ws_set_parent(api, parent_mac, &pbt, false) == 0);
+        CHECK(api->check_tx_conditions(api, false, 1, FHSS_DATA_FRAME, 100, 0, 0));
+        pbt.bt_rx_timestamp = ts() + 104000u;                                         // 4 ms before the next dwell
+        CHECK(ns_fhss_ws_set_parent(api, parent_mac, &pbt, false) == 0);
+        CHECK(!api->check_tx_conditions(api, false, 1, FHSS_DATA_FRAME, 100, 0, 0)); // airtime + guard runs into it
+        pbt.broadcast_dwell_interval = 0;                                            // no schedule: nothing held
+        CHECK(ns_fhss_ws_set_parent(api, parent_mac, &pbt, false) == 0);
+        CHECK(api->check_tx_conditions(api, false, 1, FHSS_DATA_FRAME, 100, 0, 0));
+    }
+
+    // LTO-IE / interval change (ns_fhss_ws_lfn_timing_set): outside a window
+    // the next window follows the new schedule at once; inside one, after
+    // its close
+    {
+        step(UINT64_MAX);        // close slot 206
+        nevs = 0;
+        uint64_t s207 = slot0 + 207ull * interval_ms * 1000;
+        // received at the start of slot 206 (its window): the grid moves 300 ms
+        // later, so slot 206 comes again at its start + 300 ms, then every 2 s
+        CHECK(ns_fhss_ws_lfn_timing_set(api, 300, 2000, (uint32_t)(s207 - interval_ms * 1000) + CLOCK32_OFFSET_US) == 0);
+        step(UINT64_MAX);        // open
+        CHECK(nevs == 1 && evs[0].e == FHSS_RX_WINDOW_OPEN && evs[0].t == s207 - interval_ms * 1000 + 300000 - guard);
+        CHECK(evs[0].channel == dh1cf_channel(206, lfn_mac));
+        uint64_t s = evs[0].t + guard;           // slot 206's new start
+        // inside the window: the window stays, the next follows the change
+        CHECK(ns_fhss_ws_lfn_timing_set(api, 0, 1000, (uint32_t)now_us + CLOCK32_OFFSET_US) == 0);
+        step(UINT64_MAX);        // close, on time
+        CHECK(nevs == 2 && evs[1].e == FHSS_RX_WINDOW_CLOSE && evs[1].t == s - guard + window);
+        step(UINT64_MAX);
+        CHECK(nevs == 3 && evs[2].e == FHSS_RX_WINDOW_OPEN && evs[2].t == s + 1000000 - guard);
+        CHECK(evs[2].channel == dh1cf_channel(207, lfn_mac));
+        CHECK(ns_fhss_ws_lfn_timing_set(api, 0, 2147484, 0) == -2);
+    }
 
     // Stop: the window closes, FFN unicast hopping is back
     nevs = 0;

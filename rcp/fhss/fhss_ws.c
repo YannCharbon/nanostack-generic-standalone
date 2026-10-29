@@ -94,6 +94,7 @@ static fhss_ws_neighbor_timing_info_t *fhss_ws_lfn_neighbor(fhss_structure_t *fh
 static bool fhss_ws_lfn_neighbor_sched(fhss_structure_t *fhss_structure, fhss_ws_neighbor_timing_info_t *info, fhss_lfn_sched_t *sched);
 static int32_t fhss_ws_lfn_neighbor_channel(fhss_structure_t *fhss_structure, fhss_ws_neighbor_timing_info_t *info, uint16_t slot, uint8_t *eui64);
 static fhss_lfn_tx_e fhss_ws_lfn_tx_check_callback(const fhss_api_t *api, const uint8_t *destination_address, uint32_t queued_since_us, uint32_t *tx_time);
+static bool fhss_ws_lfn_uplink_blocked(fhss_structure_t *fhss_structure, uint32_t t, uint16_t frame_length, uint8_t phy_header_length, uint8_t phy_tail_length);
 
 // This function supports rounding up
 static int64_t divide_integer(int64_t dividend, int32_t divisor)
@@ -749,6 +750,12 @@ static int fhss_ws_tx_handle_callback(const fhss_api_t *api, bool is_broadcast_a
     if (is_broadcast_addr && fhss_structure->ws->lfn.listen_running) {
         return 0;
     }
+    // LFN: a unicast (to its parent) must not meet the parent's broadcast
+    // dwell; back to the queue until the dwell ends
+    if (!is_broadcast_addr && fhss_structure->ws->lfn.listen_running &&
+            fhss_ws_lfn_uplink_blocked(fhss_structure, tx_time, frame_length, phy_header_length, phy_tail_length)) {
+        return -3;
+    }
     // Allow broadcast destination on broadcast channel
     if (is_broadcast_addr && (fhss_structure->ws->is_on_bc_channel == true)) {
         return 0;
@@ -919,6 +926,12 @@ static bool fhss_ws_check_tx_conditions_callback(const fhss_api_t *api, bool is_
     // LFN: no broadcast schedule to wait for
     if (is_broadcast_addr && fhss_structure->ws->lfn.listen_running) {
         return true;
+    }
+    // LFN: a unicast waits for the end of the parent's broadcast dwell
+    if (!is_broadcast_addr && fhss_structure->ws->lfn.listen_running &&
+            fhss_ws_lfn_uplink_blocked(fhss_structure, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api),
+                                       frame_length, phy_header_length, phy_tail_length)) {
+        return false;
     }
     // Do not allow broadcast destination on unicast channel
     if (is_broadcast_addr && (fhss_structure->ws->is_on_bc_channel == false)) {
@@ -1209,8 +1222,19 @@ int fhss_ws_set_parent(fhss_structure_t *fhss_structure, const uint8_t eui64[8],
     if (!fhss_structure->ws) {
         return -1;
     }
-    // LFN: it does not follow an FFN broadcast schedule
+    // LFN: it does not follow an FFN broadcast schedule; it keeps the
+    // parent's, so that its uplinks avoid the parent's broadcast dwell
     if (fhss_structure->ws->lfn.listen_enabled) {
+        struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+        if (!bc_timing_info->broadcast_interval || !bc_timing_info->broadcast_dwell_interval ||
+                bc_timing_info->broadcast_dwell_interval >= bc_timing_info->broadcast_interval) {
+            lfn->parent_bc_valid = false;
+            return 0;
+        }
+        lfn->parent_bc_interval_us = MS_TO_US(bc_timing_info->broadcast_interval);
+        lfn->parent_bc_dwell_us = MS_TO_US(bc_timing_info->broadcast_dwell_interval);
+        lfn->parent_bc_start_us = bc_timing_info->bt_rx_timestamp - MS_TO_US(bc_timing_info->broadcast_interval_offset);
+        lfn->parent_bc_valid = true;
         return 0;
     }
     if (!bc_timing_info->broadcast_interval || !bc_timing_info->broadcast_dwell_interval) {
@@ -1533,6 +1557,8 @@ static void fhss_ws_lfn_listen_stop(fhss_structure_t *fhss_structure)
     }
     fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOWS_STOP, 0);
     lfn->listen_running = false;
+    lfn->resched = false;
+    lfn->parent_bc_valid = false;
     // Back to the FFN unicast hopping. The FFN broadcast schedule resumes at
     // the next ns_fhss_ws_set_parent().
     if (fhss_structure->fhss_state == FHSS_SYNCHRONIZED && fhss_structure->ws->fhss_configuration.ws_uc_channel_function != WS_FIXED_CHANNEL &&
@@ -1579,6 +1605,14 @@ static void fhss_ws_lfn_listen_timer(fhss_structure_t *fhss_structure)
         return;
     }
     lfn->window_open = false;
+    if (lfn->resched) {
+        // An LTO (or an interval change) during the window: the next slot of
+        // the new schedule
+        lfn->resched = false;
+        lfn->slot_start = fhss_lfn_sched_next(&lfn->own, now + cfg->rx_guard_us + 1, &lfn->slot);
+        fhss_ws_lfn_timer_arm(fhss_structure, (int32_t)(lfn->slot_start - cfg->rx_guard_us - now));
+        return;
+    }
     lfn->slot++;
     lfn->slot_start += lfn->own.interval_us;
     // A timer that fired very late: skip the slots whose window has passed
@@ -1650,6 +1684,91 @@ static fhss_lfn_tx_e fhss_ws_lfn_tx_check_callback(const fhss_api_t *api, const 
     }
     lfn->stats.tx_held++;
     return FHSS_LFN_TX_WAIT;
+}
+
+// LFN uplink and the parent's broadcast dwell: does a frame starting at t
+// (airtime plus uplink_guard_us) meet the dwell? If so, poll the TX queue at
+// the dwell's end (the LFN has no periodic poll).
+static bool fhss_ws_lfn_uplink_blocked(fhss_structure_t *fhss_structure, uint32_t t, uint16_t frame_length, uint8_t phy_header_length, uint8_t phy_tail_length)
+{
+    struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+    uint32_t resume, now, duration;
+
+    if (!lfn->parent_bc_valid) {
+        return false;
+    }
+    // Keep the reference interval start within 2^30 µs of now (32-bit clock)
+    now = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
+    if ((int32_t)(now - lfn->parent_bc_start_us) > 0x40000000) {
+        uint32_t d = now - lfn->parent_bc_start_us;
+        lfn->parent_bc_start_us += d - d % lfn->parent_bc_interval_us;
+    }
+    duration = fhss_get_tx_time(fhss_structure, frame_length, phy_header_length, phy_tail_length) + lfn->listen_cfg.uplink_guard_us;
+    if (!fhss_lfn_dwell_overlap(lfn->parent_bc_start_us, lfn->parent_bc_interval_us, lfn->parent_bc_dwell_us, t, duration, &resume)) {
+        return false;
+    }
+    lfn->stats.uplink_deferred++;
+    int32_t delay_us = (int32_t)(resume - now);
+    // The event timer counts 50 µs slots
+    eventOS_callback_timer_start(fhss_structure->fhss_event_timer, delay_us > 0 ? (uint16_t)(delay_us / 50 + 1) : 1);
+    tr_debug("LFN uplink deferred to the end of the parent's broadcast dwell (%"PRIi32" us)", delay_us);
+    return true;
+}
+
+int fhss_ws_lfn_timing_set(fhss_structure_t *fhss_structure, uint32_t offset_ms, uint32_t interval_ms, uint32_t rx_timestamp_us)
+{
+    struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+    uint32_t now;
+
+    if (!lfn->listen_enabled) {
+        return -1;
+    }
+    if ((uint64_t)interval_ms * 1000 > FHSS_LFN_INTERVAL_MAX_US || (uint64_t)offset_ms * 1000 > FHSS_LFN_INTERVAL_MAX_US ||
+            (interval_ms && lfn->listen_cfg.rx_window_us > interval_ms * 1000u)) {
+        return -2;
+    }
+    if (interval_ms) {
+        lfn->listen_cfg.listen_interval_ms = interval_ms;
+    }
+    if (!lfn->listen_running) {
+        // Not started yet: the new interval applies from slot 0
+        return 0;
+    }
+    // The slot whose start is nearest to the reception (the frame came in
+    // its window, which may open before the slot start)
+    fhss_lfn_sched_lto(&lfn->own, rx_timestamp_us + lfn->own.interval_us / 2, offset_ms * 1000u, interval_ms * 1000u);
+    tr_info("LFN schedule: offset %"PRIu32" ms, interval %"PRIu32" ms", offset_ms, lfn->listen_cfg.listen_interval_ms);
+    if (lfn->window_open) {
+        lfn->resched = true;
+        return 0;
+    }
+    now = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
+    fhss_stop_timer(fhss_structure, fhss_ws_lfn_timer_handler);
+    lfn->slot_start = fhss_lfn_sched_next(&lfn->own, now + lfn->listen_cfg.rx_guard_us + 1, &lfn->slot);
+    fhss_ws_lfn_timer_arm(fhss_structure, (int32_t)(lfn->slot_start - lfn->listen_cfg.rx_guard_us - now));
+    return 0;
+}
+
+int fhss_ws_lfn_neighbor_lto(fhss_structure_t *fhss_structure, const uint8_t eui64[8], uint32_t offset_ms, uint32_t interval_ms, uint32_t tx_timestamp_us)
+{
+    fhss_ws_neighbor_timing_info_t *info;
+    fhss_lfn_sched_t sched;
+
+    if (!fhss_structure->ws->lfn.parent_enabled) {
+        return -1;
+    }
+    info = fhss_ws_lfn_neighbor(fhss_structure, eui64);
+    if (!info || !fhss_ws_lfn_neighbor_sched(fhss_structure, info, &sched)) {
+        return -1;
+    }
+    // The frame went at its slot start + tx_offset: the slot whose start is
+    // nearest, as the LFN takes it (fhss_ws_lfn_timing_set())
+    fhss_lfn_sched_lto(&sched, tx_timestamp_us - fhss_structure->ws->lfn.parent_cfg.tx_offset_us + sched.interval_us / 2, offset_ms * 1000u, interval_ms * 1000u);
+    info->lfn_uc_timing_info.listen_interval_ms = sched.interval_us / 1000u;
+    info->lfn_uc_timing_info.slot_number = sched.anchor_slot;
+    info->lfn_uc_timing_info.interval_offset_ms = 0;
+    info->lfn_uc_timing_info.lutt_rx_timestamp = sched.anchor_us;
+    return 0;
 }
 
 int fhss_ws_lfn_listen_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_listen_t *cfg)

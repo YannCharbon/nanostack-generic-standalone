@@ -72,3 +72,36 @@ void fhss_lfn_sched_reanchor(fhss_lfn_sched_t *s, uint32_t t)
     s->anchor_us = t - rem_us;
     s->anchor_slot = (uint16_t)(s->anchor_slot + n);
 }
+
+void fhss_lfn_sched_lto(fhss_lfn_sched_t *s, uint32_t ref_t, uint32_t offset_us, uint32_t interval_us)
+{
+    uint32_t rem_us;
+    int32_t n = fhss_lfn_sched_index(s, ref_t, &rem_us);
+
+    s->anchor_us = ref_t - rem_us + offset_us;
+    s->anchor_slot = (uint16_t)(s->anchor_slot + n);
+    if (interval_us) {
+        s->interval_us = interval_us;
+    }
+}
+
+bool fhss_lfn_dwell_overlap(uint32_t interval_start_us, uint32_t interval_us, uint32_t dwell_us,
+                            uint32_t t, uint32_t duration_us, uint32_t *resume_us)
+{
+    uint32_t phase;
+
+    if (!interval_us || !dwell_us || dwell_us >= interval_us || duration_us > interval_us - dwell_us) {
+        return false;
+    }
+    // Phase of t in the broadcast interval (interval_start_us may be after t)
+    phase = (uint32_t)(((int64_t)(int32_t)(t - interval_start_us) % (int64_t)interval_us + interval_us) % interval_us);
+    if (phase < dwell_us) {
+        *resume_us = t + (dwell_us - phase);
+        return true;
+    }
+    if (phase + duration_us > interval_us) {
+        *resume_us = t + (interval_us - phase) + dwell_us;
+        return true;
+    }
+    return false;
+}

@@ -54,6 +54,12 @@ struct fhss_ws_lfn {
     uint32_t slot_start;            // its start time
     uint8_t window_channel;
     uint16_t close_retries;
+    bool resched;                   // LTO applied while a window was open: the next slot comes from 'own'
+    /* LFN role: the parent's FFN broadcast schedule, kept clear by uplinks */
+    bool parent_bc_valid;
+    uint32_t parent_bc_start_us;    // start of one of its broadcast intervals
+    uint32_t parent_bc_interval_us;
+    uint32_t parent_bc_dwell_us;
     /* Parent role */
     bool parent_enabled;
     fhss_ws_lfn_parent_t parent_cfg;
@@ -96,5 +102,7 @@ int fhss_ws_set_tx_allowance_level(fhss_structure_t *fhss_structure, const fhss_
 void fhss_set_txrx_slot_length(fhss_structure_t *fhss_structure);
 int fhss_ws_lfn_listen_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_listen_t *cfg);
 int fhss_ws_lfn_parent_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_parent_t *cfg);
+int fhss_ws_lfn_timing_set(fhss_structure_t *fhss_structure, uint32_t offset_ms, uint32_t interval_ms, uint32_t rx_timestamp_us);
+int fhss_ws_lfn_neighbor_lto(fhss_structure_t *fhss_structure, const uint8_t eui64[8], uint32_t offset_ms, uint32_t interval_ms, uint32_t tx_timestamp_us);
 
 #endif /*FHSS_WS_H_*/

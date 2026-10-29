@@ -1954,6 +1954,12 @@ static int8_t mcps_pd_data_cca_trig(protocol_interface_rf_mac_setup_s *rf_ptr, m
 {
     platform_enter_critical();
     mac_mlme_mac_radio_enable(rf_ptr);
+    if (rf_ptr->mac_rx_windows && rf_ptr->dev_driver->phy_driver->extension) {
+        // FAN 1.1 LFN: outside its windows the receiver need not listen
+        // during the backoff (retry periods included); in a window it does
+        uint8_t rx_off = !rf_ptr->macCapRxOnIdle && !rf_ptr->mac_rx_window_open && buffer->fcf_dsn.frametype != MAC_FRAME_ACK;
+        rf_ptr->dev_driver->phy_driver->extension(PHY_EXTENSION_SET_BACKOFF_RX_OFF, &rx_off);
+    }
     rf_ptr->macTxProcessActive = true;
     if (rf_ptr->rf_csma_extension_supported) {
         //Write TX time
