@@ -19,26 +19,28 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 
 | Frame | Sent by | Header IEs | Payload IEs | Security | Source |
 | --- | --- | --- | --- | --- | --- |
-| LPAS (type 10) | LFN, asynchronous on every channel | LUTT, NR (role LFN, interval range), LUS, LND | US, NETNAME | none | [S] codecs, [M] items 1–4 |
-| LPA (9) | parent, unicast | UTT, BT, NR, PANID, LBS, LTO, LBT | US, BS, PAN, NETNAME | none | [S] `ws_mngt.c` IE list, [M] item 5 |
-| LPCS (12) | LFN, unicast | LUTT, LUS | US | active LGTK | [M] item 13 |
+| LPAS (type 10) | LFN, asynchronous on every channel | LUTT, NR (role LFN, interval range), LUS (tag 1), LND (with a random Discovery First Slot) | LCP (tag 1: the LFN's unicast schedule), NETNAME | none | [S] codecs, `wsbrd` `ws_mngt.c` (needs the LCP-IE of the LUS-IE's tag); [M] items 1–4 |
+| LPA (9) | parent, unicast | UTT, BT, NR, FLUS (dwell, tag 0), PANID, LBS (tag 0), LTO, LBT | LCP (tag 0: the parent's unicast schedule), BS, PAN, NETNAME | none | [S] `ws_mngt.c` IE list, [M] item 5 |
+| LPCS (12) | LFN, unicast | LUTT, LUS (tag 255) | NETNAME | active LGTK (ours); none (Silicon Labs' LFN) | [S] `wsbrd` needs NETNAME; [M] item 13 |
 | LPC (11) | parent, unicast (answer to an LPCS) or broadcast in an LFN broadcast slot | UTT, BT, LBS, LBT | LFNVER, LGTKHASH | active LGTK | [M] items 14, 48, §5.2 |
 | LTS (13) | parent, broadcast in an LFN broadcast slot | UTT, BT, LBT | none | active LGTK | [M] items 24, §5.2 [I: IE set] |
-| Data, EAPOL | LFN | LUTT, LUS (instead of UTT, BT) | US | data: active LGTK; EAPOL: none | [S] |
+| Data, EAPOL | LFN | LUTT, LUS (tag 255: "current", instead of UTT, BT) | — | data: active LGTK; EAPOL: none | [S], [M] |
+| Enh-ACK | LFN | LUTT (frame type 5), RSL | — | as the frame acknowledged | [M] (Silicon Labs' LFN) |
 
 - **Frame type** is 8 bits in `asynch_request_t` and 4 bits in an LLC message (types up to 13).
 - **Broadcast sync frames** go through `ws_llc_asynch_request()` with `lfn_broadcast` set: the MAC holds them for the next LFN broadcast slot (`LfnBroadcast`, `LFN_MAC.md` §2.2). An LTS has header IEs only; the MAC now accepts such frames (it dropped a frame with IEs and no payload) and the LLC passes it to the bootstrap without payload IEs.
 - **Receiving**: a frame with a LUTT-IE and no UTT-IE is accepted (FAN 1.1 only); its LUTT/LUS fill the sender's `lfn_uc_timing_info` (`ws_llc_lfn_timing_update()`), instead of the UTT update. LPA, LPC, LPAS and LPCS go to the bootstrap's asynchronous handler.
 - **Unicast management frames** go through `ws_llc_asynch_request()` with `unicast` set: acknowledged, no channel list, so the MAC holds a frame to an LFN for its window. An LTO-IE that the LFN acknowledges is applied to the parent's view of its schedule on the ACK (`ns_fhss_ws_lfn_neighbor_lto()`).
 - **LBS-IE** now has its sync-period byte (7 bytes, as Wireshark's dissector and `wisun-br-linux`; the Arm codec had 6). Nothing called the old one.
-- **Deviations [I]**: the LPA has US and BS IEs (the LFN computes its parent's unicast channel and broadcast dwell from them) instead of FLUS and an LCP; the LPAS and LPCS carry the LFN's US-IE instead of an LCP; the channel the LFN listens on during its discovery window is our inference (`LFN_MAC.md` §2.4); no Silicon Labs vendor IE. These matter for interoperability (black-box phases 2–3), not inside our network.
+- **Channel plans (black-box phases 2–3).** An LFN gives its unicast schedule once, in an LCP-IE of its LPAS (tag 1, the LUS-IE's tag), and "current" (tag 255) in its LUS-IEs afterwards; a parent gives its unicast schedule as FLUS-IE (dwell interval, tag 0) + LCP-IE (tag 0) in its LPA, no US-IE [S: `wsbrd` `ws_mngt.c`, `ws_llc.c`; M: Silicon Labs' LFN and both parents]. Readers take the LCP-IE of the tag given, or a US-IE (our nodes before this change). With a FAN 1.1 channel plan ID (`ws_management_domain_configuration_set()`, PHY mode ID + channel plan ID) the US, BS and LCP IEs use channel plan 2 (regulatory domain and channel plan ID), which `wsbrd` requires in an LCP-IE; FAN 1.0 configurations (no plan ID) are unchanged. `wisun-br-linux` reads the LCP-IE of a non-255 LUS tag in data, EAPOL and LPCS frames from the header IEs (where it never is), so an LFN must send tag 255 there.
+- **Kept deviations [I]**: no Silicon Labs vendor IE (LFN session ID, `VH 1a 02 xx`) in our LPC and LTS; our LPA, LPC and LPCS request an acknowledgement (Silicon Labs' are unacknowledged, with the sequence number suppressed); our LPCS is secured; no JM-IE in our LPA. Results with Silicon Labs' stack: root repo, `LFN_BlackBox_Phase2_3_Results.md`.
 
 ## 3. The LFN (`ws_bootstrap_lfn.c`)
 
 | State | What it does | Source |
 | --- | --- | --- |
 | Discovery (`ER_ACTIVE_SCAN`) | FHSS: own unicast channel function, no broadcast schedule; listen schedule at the proposed interval (started without a PAN: `ns_fhss_ws_lfn_listen_start()`); receiver off outside windows. An LPAS sweep every `lpas_interval_s` until an LPA comes | [M] items 1, 8 |
-| LPA | Network name checked; PAN ID from PANID-IE; the parent becomes a neighbour (UTT, US, BS, BT); its broadcast schedule is given to the FHSS (uplinks avoid its dwell); LTO-IE applied (offset, adjusted interval within the NR range); LBS gives the sync period | [M] items 5–6 |
+| LPA | Network name checked; PAN ID from PANID-IE; the parent becomes a neighbour (UTT, FLUS + LCP or US, BS, BT); its broadcast schedule is given to the FHSS (uplinks avoid its dwell); LTO-IE applied (offset, adjusted interval within the NR range); LBS gives the sync period | [M] items 5–6 |
 | Authentication (`ER_PANA_AUTH`) | Listen interval `eapol_listen_interval_ms` (1 250 ms), EAPOL with the parent as target (the existing supplicant); skipped on a rejoin with valid keys | [M] items 10, 36, 47 |
 | Configuration (`ER_SCAN`) | Agreed interval back; LPCS, repeated every `lpcs_retry_intervals` listen intervals until an LPC | [M] items 13–15 |
 | Operation | Default route through the parent; DHCPv6 Solicit to the parent's link-local address (no prefix hint); on the reply, NS with ARO (lifetime `registration_lifetime_min`) to the parent; re-registration at 92 % of the lifetime | [M] items 16–18, 52; RFC 8505 |
@@ -50,14 +52,16 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 
 ## 4. The border router as parent (`ws_lfn_parent.c`)
 
-- **LPAS**: needs NETNAME, NR (role LFN), LUS, US and LUTT. The LFN becomes a neighbour (an "LFN child": `lfn_uc_timing_info` set, `ffd_device` false, lifetime 2 × the registration lifetime, refreshed by its frames; no NUD or ETX probing). One LPA per sweep: a second LPAS within 2 proposed intervals is ignored, and no new LPA is queued while an earlier one to the same LFN still waits for a window (`ws_llc_lfn_lpa_pending()`). Otherwise a second LTO-IE would move the LFN's schedule in our view only: the LFN ignores an LPA once it has a parent, but the border router applies the LTO-IE of each acknowledged LPA. (Found during the LGTK work: an LPA from the first sweep, still queued, was sent after the one the LFN took, and the border router then missed the LFN's windows until its next uplink, about 340 s.)
+- **LPAS**: needs NETNAME, NR (role LFN), LUS, LUTT and the LCP-IE of the LUS-IE's tag (or a US-IE). The LFN becomes a neighbour (an "LFN child": `lfn_uc_timing_info` set, `ffd_device` false, lifetime 2 × the registration lifetime, refreshed by its frames; no NUD or ETX probing). One LPA per sweep: a second LPAS within 2 proposed intervals is ignored, and no new LPA is queued while an earlier one to the same LFN still waits for a window (`ws_llc_lfn_lpa_pending()`). Otherwise a second LTO-IE would move the LFN's schedule in our view only: the LFN ignores an LPA once it has a parent, but the border router applies the LTO-IE of each acknowledged LPA. (Found during the LGTK work: an LPA from the first sweep, still queued, was sent after the one the LFN took, and the border router then missed the LFN's windows until its next uplink, about 340 s.)
 - **LTO-IE** (`lfn_lto`, default on) [S: the rule described in `wisun-br-linux` `ws_neigh.c`, our arithmetic]: the proposed interval snapped to a multiple (above) or a divisor (below) of the LFN broadcast interval within the LFN's NR range (6 000 ms → 5 000 ms with 10 s, as observed [M item 6]); the offset a random multiple of 300 ms in [300, min(interval, broadcast interval) − 300] ms.
-- **LPCS**: from a known LFN, secured → LPC.
+- **LPCS**: from a known LFN → LPC. Secured (ours) or unsecured with the network name (Silicon Labs' LFN); an unsecured one does not make the LFN a trusted neighbour (its secured frames do).
+- **LPA in an LND slot** (`LFN_MAC.md` §2.4): a random slot *k* of the LFN's discovery window, a quarter into it, on the LFN's channel of slot number `discovery_first_slot + k` [M: black-box phase 2 analysis].
 - **LFN broadcast schedule** (stage 4): the FHSS runs it from the FHSS activation (`ns_fhss_ws_lfn_bc_set()`: `bc_interval_ms`, the BSI of the border router's hopping schedule, as in its LBS-IE); every LPA and LPC carries an LBT-IE.
 - **Sync frames** [M items 24, 32, 48, §5.2; S `wsbrd` `ws_mngt.c`]: only while the border router has an LFN child. In the slot of every sync period (slot number a multiple of `bc_sync_period`) an LTS, or a broadcast LPC during the first `maintain_parent_time` sync periods after the first child appears and after each LGTK event; an LGTK event's LPC goes in the next slot, whatever its number. The seconds timer queues the frame when its slot is less than 2 s away; the MAC holds it until the slot.
 - **LTO-IE**: the offset the upper layer gives is the phase of the LFN's slots against the LFN broadcast slots; the FHSS converts it at TX time (`LFN_MAC.md` §2.2), so the LFN's unicast slots stay at least 300 ms from the broadcast slots.
 - **Security**: frames to an LFN child (data through `ws_llc_lowpan_mpx_data_request()`, LPC) and the broadcast sync frames use the active LGTK (key index 5–7); everything else uses the GTKs as before (§8).
 - **Registration**: the LFN's NS(ARO) is handled by the existing 6LoWPAN-ND code: a registered neighbour-cache entry, through which the border router routes to the LFN; a non-FFD child is published to RPL (`rpl_control_publish_host_address`), which for the root is local.
+- **EARO (RFC 8505)** [S: RFC 8505, `wisun-br-linux` `nd_router_object.c`; M: item 19]: Silicon Labs' LFN registers with an NS from its link-local address, the address to register as Target, and an EARO with T and R set and a TID; then each RFC 9685 multicast group with P = 1. On a FAN 1.1 interface, such an NS registers the Target (the same checks as an ARO) and is always answered by an NA with an EARO echoing the flags and TID (the Wi-SUN omission of a successful NA does not apply); a multicast registration is accepted (status 0) but only `ff02::1` is copied to LFN children. Our LFN keeps the RFC 6775 ARO (source = registered address), which both `wsbrd` and our parents accept.
 - **Multicast** [M items 41–42]: a multicast to `ff02::1` leaving the border router is also sent as a MAC-unicast copy to every LFN child (IPv6 destination unchanged), in its window (`lowpan_down()` → `ws_lfn_parent_multicast_copy()`). Other groups need the LFN's RFC 9685 subscription (EARO P flag), not implemented.
 
 ## 5. Settings
@@ -94,7 +98,7 @@ Limits: one LFN parent per LFN. The split (Spinel) programs refuse the LFN roles
 
 ## 6. Not done here
 
-- RFC 9685 multicast subscriptions; LCP/FLUS (interoperability).
+- RFC 9685 multicast subscriptions: accepted (EARO with P = 1) but not used to copy groups other than `ff02::1`; our LFN does not subscribe.
 - LGTK leftovers (§8): LGTKs and the node role are not stored in NVM; no LGTK revocation; no frame-counter-based LGTK lifetime check; the role-based PMK/PTK lifetimes of FAN 1.1.
 
 ## 7. Tests and results
@@ -184,7 +188,7 @@ FAN 1.1 gives LFNs their own group keys, LGTKs, distinct from the GTKs of the FF
 
 **Fixed with stage 5.** The FHSS read the LTO-IE at sub-ID 14 (FLUS) instead of 17, so the stage 4 conversion of the LTO offset never ran: both sides applied the phase as an offset, which kept them consistent but did not place the LFN's slots against the broadcast slots. The unit test used the same wrong number; both are fixed.
 
-**Not done.** Router-to-router LFN handover (an LFN keeps its parent while the parent keeps it; it changes parent only after a loss); LGTKs and node roles in NVM; RFC 9685 subscriptions; the parents' LFN children on D-Bus; LCP/FLUS for interoperability.
+**Not done.** Router-to-router LFN handover (an LFN keeps its parent while the parent keeps it; it changes parent only after a loss); LGTKs and node roles in NVM; RFC 9685 subscriptions beyond accepting them; the parents' LFN children on D-Bus.
 
 ## 10. On the FG25 kits (stage 6)
 

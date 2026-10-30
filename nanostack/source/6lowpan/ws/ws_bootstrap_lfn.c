@@ -214,7 +214,12 @@ static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur)
         delay_ms = sweep_ms;
     }
     ws_lfn_candidates_clear(cur);
-    if (window_ms && ns_fhss_ws_lfn_discovery_set(cur->ws_info->fhss_api, now + delay_ms * 1000u, window_ms * 1000u) == 0) {
+    /* A new first slot per sweep (LND-IE): discovery slot i is on our unicast
+       channel of slot number disc_first_slot + i [M: Silicon Labs' LFN draws
+       one per sweep and its parents send the LPA on that channel] */
+    cur->ws_info->lfn.disc_first_slot = rand_get_16bit();
+    if (window_ms && ns_fhss_ws_lfn_discovery_set(cur->ws_info->fhss_api, now + delay_ms * 1000u, window_ms * 1000u,
+                                                  cur->ws_info->lfn.disc_first_slot, (uint32_t)c->lnd_slot_time_ms * 1000u) == 0) {
         cur->ws_info->lfn.disc_decide_s = cur->ws_info->uptime + (delay_ms + window_ms + 999) / 1000 + 1;
     }
 
@@ -224,7 +229,9 @@ static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur)
     req.wh_requested_ie_list.nr_ie = true;
     req.wh_requested_ie_list.lus_ie = true;
     req.wh_requested_ie_list.lnd_ie = true;
-    req.wp_requested_nested_ie_list.us_ie = true;
+    // Our unicast schedule in an LCP-IE (tag of the LUS-IE) [S: wsbrd needs
+    // it; M: Silicon Labs' LPAS]
+    req.wp_requested_nested_ie_list.lcp_ie = true;
     req.wp_requested_nested_ie_list.net_name_ie = true;
     req.security.SecurityLevel = 0;
     // The channels of the plan, as an FFN's PAN advertisement solicits
@@ -262,7 +269,9 @@ static void ws_lfn_lpcs_send(protocol_interface_info_entry_t *cur)
     memcpy(req.dst_address, cur->ws_info->lfn.parent_eui64, 8);
     req.wh_requested_ie_list.lutt_ie = true;
     req.wh_requested_ie_list.lus_ie = true;
-    req.wp_requested_nested_ie_list.us_ie = true;
+    // The network name, which wsbrd requires in an LPCS [S: ws_mngt.c; M:
+    // Silicon Labs' LPCS]; our schedule is known from the LPAS (LUS tag 255)
+    req.wp_requested_nested_ie_list.net_name_ie = true;
     req.security.SecurityLevel = mac_helper_default_security_level_get(cur);
     req.security.KeyIdMode = mac_helper_default_security_key_id_mode_get(cur);
     req.security.KeyIndex = mac_helper_default_key_index_get(cur);
@@ -425,6 +434,7 @@ static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struc
     ws_bs_ie_t bs;
     ws_panid_ie_t panid;
     ws_lto_ie_t lto;
+    ws_flus_ie_t flus;
     llc_neighbour_req_t ni;
 
     if (lfn->parent_known || data->SrcAddrMode != MAC_ADDR_MODE_64_BIT) {
@@ -434,12 +444,19 @@ static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struc
         tr_debug("LFN: LPA from another network");
         return;
     }
+    /* The parent's unicast schedule: FLUS-IE (dwell interval) and the LCP-IE
+       of its tag [S: wisun-br-linux ws_mngt.c; M: Silicon Labs' LPA], or a
+       US-IE (our parents before the black-box phase 2 work) */
+    bool has_us = ws_wh_flus_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &flus) &&
+                  ws_wp_nested_lcp_us_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, flus.channel_plan_tag, flus.dwell_interval, &us);
+    if (!has_us) {
+        has_us = ws_wp_nested_us_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &us);
+    }
     if (!ws_wh_utt_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &utt) ||
             !ws_wh_bt_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &bt) ||
-            !ws_wh_panid_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &panid) ||
-            !ws_wp_nested_us_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &us) ||
+            !ws_wh_panid_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &panid) || !has_us ||
             !ws_wp_nested_bs_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &bs)) {
-        tr_warn("LFN: LPA without UTT, BT, PANID, US or BS: ignored");
+        tr_warn("LFN: LPA without UTT, BT, PANID, FLUS+LCP (or US) or BS: ignored");
         return;
     }
     if (!ws_bootstrap_validate_channel_plan(&us, cur) || !ws_bootstrap_validate_channel_function(&us, &bs)) {

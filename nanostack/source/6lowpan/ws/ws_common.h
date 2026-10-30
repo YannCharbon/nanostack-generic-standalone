@@ -128,6 +128,7 @@ typedef struct ws_lfn_state_s {
     uint16_t lbs_bsi;               /**< Its schedule identifier */
     uint8_t lbs_sync_period;        /**< Its sync period, in broadcast intervals */
     uint32_t disc_decide_s;         /**< Uptime at which the LPAs of the discovery window are compared; 0: none pending */
+    uint16_t disc_first_slot;       /**< LND-IE Discovery First Slot: discovery slot i is on our unicast channel of slot number disc_first_slot + i */
     struct ws_lfn_lpa_candidate *lpa[4]; /**< LPAs heard in the discovery window (GS8 stage 5) */
 
     /* Parent (border router) */

@@ -201,9 +201,12 @@ typedef fhss_lfn_tx_e fhss_lfn_tx_check(const fhss_api_t *api, const uint8_t *de
  * slot, GS8 stage 5): NOW when the time is less than the parent's lead away
  * (*tx_time: the requested time, or the earliest possible), WAIT before
  * (the FHSS polls the queue), EXPIRED once it has passed by more than
- * 20 ms; NOT_LFN if the destination has no LFN schedule. Optional.
+ * 20 ms; NOT_LFN if the destination has no LFN schedule. With slot >= 0 the
+ * frame goes on the LFN's unicast channel of that slot number (an LND
+ * discovery slot), else on its channel of the slot nearest to the TX time.
+ * Optional.
  */
-typedef fhss_lfn_tx_e fhss_lfn_tx_at(const fhss_api_t *api, const uint8_t *destination_address, uint32_t requested_us, uint32_t *tx_time);
+typedef fhss_lfn_tx_e fhss_lfn_tx_at(const fhss_api_t *api, const uint8_t *destination_address, uint32_t requested_us, int32_t slot, uint32_t *tx_time);
 
 /**
  * \brief Struct fhss_api defines interface between software MAC and FHSS.

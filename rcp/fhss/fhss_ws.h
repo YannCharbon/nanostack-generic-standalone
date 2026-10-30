@@ -86,6 +86,10 @@ struct fhss_ws_lfn {
     uint32_t disc_start;
     uint32_t disc_end;
     uint8_t disc_channel;
+    uint16_t disc_first_slot;       // LND-IE Discovery First Slot
+    uint32_t disc_slot_us;          // LND slot length; 0: own nearest slot's channel
+    bool tx_slot_valid;             // parent: the frame released at tx_dst_time goes on the LFN's channel of tx_slot
+    uint16_t tx_slot;
     /* Parent role */
     bool parent_enabled;
     fhss_ws_lfn_parent_t parent_cfg;
@@ -144,6 +148,6 @@ int fhss_ws_lfn_bc_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_t 
 int fhss_ws_lfn_bc_next(fhss_structure_t *fhss_structure, uint16_t *slot, uint32_t *start_us);
 int fhss_ws_lfn_bc_sync(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_sync_t *sync);
 int fhss_ws_lfn_bc_stop(fhss_structure_t *fhss_structure);
-int fhss_ws_lfn_discovery_set(fhss_structure_t *fhss_structure, uint32_t start_us, uint32_t duration_us);
+int fhss_ws_lfn_discovery_set(fhss_structure_t *fhss_structure, uint32_t start_us, uint32_t duration_us, uint16_t first_slot, uint32_t slot_us);
 
 #endif /*FHSS_WS_H_*/

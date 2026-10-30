@@ -147,14 +147,18 @@ static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t 
     req.message_type = WS_FT_LPA;
     req.unicast = true;
     memcpy(req.dst_address, dst, 8);
-    if (lnd && lnd->discovery_slots && lnd->discovery_slot_time && lnd->discovery_first_slot < lnd->discovery_slots) {
-        /* In a random slot of the LFN's discovery window [S: wsbrd
-           ws_mngt_lpa_schedule; M items 4-5], a quarter into it */
-        uint16_t k = rand_get_random_in_range(lnd->discovery_first_slot, lnd->discovery_slots - 1);
+    if (lnd && lnd->discovery_slots && lnd->discovery_slot_time) {
+        /* In a random slot k of the LFN's discovery window [S: wsbrd
+           ws_mngt_lpa_schedule; M items 4-5], a quarter into it, on the LFN's
+           unicast channel of slot number discovery_first_slot + k [M:
+           black-box phase 2 analysis, every LPA of the phase 1 captures] */
+        uint16_t k = rand_get_random_in_range(0, lnd->discovery_slots - 1);
         req.tx_at_set = true;
         req.tx_at = rx_timestamp + lnd->response_delay * 1000u + k * lnd->discovery_slot_time * 1000u +
                     lnd->discovery_slot_time * 250u;
-        tr_debug("LPA to %s in LND slot %u", trace_array(dst, 8), k);
+        req.tx_slot_set = true;
+        req.tx_slot = (uint16_t)(lnd->discovery_first_slot + k);
+        tr_debug("LPA to %s in LND slot %u (channel slot %u)", trace_array(dst, 8), k, req.tx_slot);
     }
     req.wh_requested_ie_list.utt_ie = true;
     req.wh_requested_ie_list.bt_ie = true;
@@ -162,6 +166,7 @@ static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t 
     req.wh_requested_ie_list.panid_ie = true;
     req.wh_requested_ie_list.lbs_ie = true;
     req.wh_requested_ie_list.lbt_ie = true;
+    req.wh_requested_ie_list.flus_ie = true;
     if (c->lto) {
         uint32_t ivl = ws_lfn_adjusted_interval(c->bc_interval_ms, proposed_ms, nr->listen_interval_min, nr->listen_interval_max);
         req.wh_requested_ie_list.lto_ie = true;
@@ -172,7 +177,9 @@ static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t 
         tr_info("LPA to %s: LTO phase %"PRIu32" ms, interval %"PRIu32" ms (proposed %"PRIu32")",
                 trace_array(dst, 8), (uint32_t)req.lto.offset, ivl, proposed_ms);
     }
-    req.wp_requested_nested_ie_list.us_ie = true;
+    // Our unicast schedule as FLUS-IE + LCP-IE (tag 0), no US-IE [S:
+    // wisun-br-linux ws_mngt.c; M: Silicon Labs' LPA]
+    req.wp_requested_nested_ie_list.lcp_ie = true;
     req.wp_requested_nested_ie_list.bs_ie = true;
     req.wp_requested_nested_ie_list.pan_ie = true;
     req.wp_requested_nested_ie_list.net_name_ie = true;
@@ -348,7 +355,9 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
         return true;
     }
     if (message_type == WS_FT_LPAS) {
-        // Ours if the network name matches; LUTT, LUS, NR and US needed
+        // Ours if the network name matches; LUTT, LUS, NR and the LCP-IE of
+        // the LUS-IE's tag (or a US-IE, our LFNs before the black-box phase 2
+        // work) needed [S: wisun-br-linux ws_mngt.c]
         const char *why = NULL;
         if (!ws_bootstrap_network_name_matches(ie_ext, cur->ws_info->cfg->gen.network_name)) {
             why = "network name";
@@ -356,8 +365,10 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
             why = "NR-IE";
         } else if (!ws_wh_lus_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lus)) {
             why = "LUS-IE";
-        } else if (!ws_wp_nested_us_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &us)) {
-            why = "US-IE";
+        } else if (!(lus.channel_plan_tag != WS_LCP_TAG_CURRENT &&
+                     ws_wp_nested_lcp_us_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, lus.channel_plan_tag, 0, &us)) &&
+                   !ws_wp_nested_us_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &us)) {
+            why = "LCP-IE";
         } else if (!ws_bootstrap_validate_channel_plan(&us, cur) || !ws_bootstrap_validate_channel_function(&us, NULL)) {
             why = "channel plan";
         }
@@ -393,16 +404,23 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
         ws_lfn_lpa_send(cur, data->SrcAddr, &nr, lus.listen_interval, has_lnd ? &lnd : NULL, data->timestamp);
         return true;
     }
-    // LPCS: from a known LFN, secured
-    if (!data->Key.SecurityLevel || !ws_bootstrap_neighbor_info_request(cur, data->SrcAddr, &ni, false)) {
+    /* LPCS: from a known LFN. Silicon Labs' LFN sends it unsecured (with its
+       network name) and our LFN secured [M: black-box phase 1] */
+    if (!ws_bootstrap_neighbor_info_request(cur, data->SrcAddr, &ni, false) ||
+            (!data->Key.SecurityLevel && !ws_bootstrap_network_name_matches(ie_ext, cur->ws_info->cfg->gen.network_name))) {
         return true;
     }
-    if (ws_wp_nested_us_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &us)) {
+    if ((ws_wh_lus_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lus) && lus.channel_plan_tag != WS_LCP_TAG_CURRENT &&
+            ws_wp_nested_lcp_us_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, lus.channel_plan_tag, 0, &us)) ||
+            ws_wp_nested_us_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &us)) {
         ws_neighbor_class_neighbor_unicast_schedule_set(cur, ni.ws_neighbor, &us, &cur->ws_info->hopping_schedule, data->SrcAddr);
     }
     ws_llc_lfn_timing_update(cur, ni.ws_neighbor, ie_ext, data->timestamp);
     ws_lfn_child_refresh(cur, ni.neighbor, true);
-    mac_neighbor_table_trusted_neighbor(mac_neighbor_info(cur), ni.neighbor, true);
+    if (data->Key.SecurityLevel) {
+        // An unsecured LPCS does not make it trusted: its secured frames do
+        mac_neighbor_table_trusted_neighbor(mac_neighbor_info(cur), ni.neighbor, true);
+    }
     tr_info("LPCS from LFN %s: LPC", trace_array(data->SrcAddr, 8));
     ws_lfn_lpc_send(cur, data->SrcAddr);
     return true;

@@ -156,7 +156,7 @@ uint16_t mac_ie_nested_tagged_discover(uint8_t *payload_ptr, uint16_t length, ma
         }
 
         sub_tag_ptr = ie_element.content_ptr;
-        if (ie_element.length > 1 && nested_ie->id == ie_element.id && *sub_tag_ptr == sub_tag_id) {
+        if (ie_element.length > 1 && nested_ie->id == ie_element.id && nested_ie->type_long == ie_element.type_long && *sub_tag_ptr == sub_tag_id) {
             sub_tag_ptr++;
             ie_element.length--;
             nested_ie->content_ptr = sub_tag_ptr;

@@ -31,6 +31,7 @@
 #include "6lowpan/ws/ws_neighbor_class.h"
 #include "6lowpan/ws/ws_common.h"
 #include "6lowpan/ws/ws_ie_lib.h"
+#include "6lowpan/ws/ws_phy.h"
 
 #define TRACE_GROUP "wsne"
 
@@ -266,7 +267,10 @@ void ws_neighbor_class_neighbor_unicast_schedule_set(const struct protocol_inter
             ws_neighbor->fhss_data.uc_timing_info.unicast_number_of_channels = ws_us->plan.one.number_of_channel;
 
         } else if (ws_us->channel_plan == 2) {
-            //TODO add Channel plan 2 channel count function call here
+            // FAN 1.1 channel plan ID (an LFN's LCP-IE, Silicon Labs' US/BS):
+            // the plan's channels; the regulatory exclusions of our own plan
+            // apply below (validated equal to ours) [S: wisun-br-linux ws_regdb.c]
+            ws_neighbor->fhss_data.uc_timing_info.unicast_number_of_channels = ws_phy_get_number_of_channels_using_channel_plan_id(ws_us->plan.two.channel_plan_id);
         }
 
         //Handle excluded channel and generate activate channel list

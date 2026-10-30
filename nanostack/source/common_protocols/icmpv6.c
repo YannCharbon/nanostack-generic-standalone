@@ -469,6 +469,21 @@ static buffer_t *icmpv6_ns_handler(buffer_t *buf)
         goto drop;
     }
 
+    /* FAN 1.1: an RFC 8505 EARO (T flag, with R or P = multicast) registers
+     * the Target Address from a link-local source, and is answered with an
+     * NA(EARO) echoing the flags and TID, never omitted. Silicon Labs' LFN
+     * registers its address and its RFC 9685 multicast groups this way [M:
+     * black-box phase 1 item 19; S: wisun-br-linux nd_router_object.c]. Our
+     * LFNs use RFC 6775 AROs (source = registered address): unchanged. */
+    bool earo = false;
+    uint8_t earo_flags = 0, earo_tid = 0;
+    if (aro && ws_info(cur) && ws_version_1_1(cur) && (aro[4] & ICMPV6_EARO_T) &&
+            ((aro[4] & ICMPV6_EARO_R) || ((aro[4] & ICMPV6_EARO_P_MASK) >> 4) == ICMPV6_EARO_P_MULTICAST)) {
+        earo = true;
+        earo_flags = aro[4];
+        earo_tid = aro[5];
+    }
+
     /* If there was no SLLAO on ARO, use mac address to create dummy one... */
     if (aro && !sllao && cur->ipv6_neighbour_cache.use_eui64_as_slla_in_aro) {
         dummy_sllao[0] = ICMPV6_OPT_SRC_LL_ADDR;    // Type
@@ -484,6 +499,26 @@ static buffer_t *icmpv6_ns_handler(buffer_t *buf)
     // Copy the target IPv6 address
     memcpy(target, dptr, 16);
     dptr += 16;
+
+    if (earo) {
+        if (!addr_is_ipv6_link_local(buf->src_sa.address) || !sllao) {
+            goto drop;
+        }
+        aro_out.lifetime = common_read_16_bit(aro + 6);
+        memcpy(aro_out.eui64, aro + 8, 8);
+        if (((earo_flags & ICMPV6_EARO_P_MASK) >> 4) == ICMPV6_EARO_P_MULTICAST) {
+            /* A multicast group subscription (RFC 9685): accepted. Only
+             * ff02::1 is copied to LFN children today (docs/LFN_STACK.md) */
+            aro_out.present = true;
+            aro_out.status = addr_is_ipv6_multicast(target) ? ARO_SUCCESS : ARO_TOPOLOGICALLY_INCORRECT;
+            tr_info("EARO multicast %s from %s", trace_ipv6(target), trace_array(aro_out.eui64, 8));
+        } else if (addr_is_ipv6_multicast(target) || !nd_ns_aro_handler(cur, aro, sllao, target, &aro_out)) {
+            goto drop;
+        }
+        buffer_t *na_earo = icmpv6_build_na_earo(cur, true, true, false, target, aro_out.present ? &aro_out : NULL, buf->src_sa.address, earo_flags, earo_tid);
+        buffer_free(buf);
+        return na_earo;
+    }
 
     if (addr_is_ipv6_multicast(target)) {
         goto drop;
@@ -1641,11 +1676,18 @@ buffer_t *icmpv6_build_dad(protocol_interface_info_entry_t *cur, buffer_t *buf, 
 
 buffer_t *icmpv6_build_na(protocol_interface_info_entry_t *cur, bool solicited, bool override, bool tllao_required, const uint8_t target[static 16], const aro_t *aro, const uint8_t src_addr[static 16])
 {
+    return icmpv6_build_na_earo(cur, solicited, override, tllao_required, target, aro, src_addr, -1, 0);
+}
+
+/* As icmpv6_build_na(); with earo_flags >= 0 the ARO is an RFC 8505 EARO
+ * with these flags and TID, and is sent even when successful */
+buffer_t *icmpv6_build_na_earo(protocol_interface_info_entry_t *cur, bool solicited, bool override, bool tllao_required, const uint8_t target[static 16], const aro_t *aro, const uint8_t src_addr[static 16], int16_t earo_flags, uint8_t earo_tid)
+{
     uint8_t *ptr;
     uint8_t flags;
 
     /* Check if ARO response and status == success, then sending can be omitted with flag */
-    if (aro && cur->ipv6_neighbour_cache.omit_na_aro_success && aro->status == ARO_SUCCESS) {
+    if (aro && earo_flags < 0 && cur->ipv6_neighbour_cache.omit_na_aro_success && aro->status == ARO_SUCCESS) {
         tr_debug("Omit NA ARO success");
         return NULL;
     }
@@ -1730,7 +1772,8 @@ buffer_t *icmpv6_build_na(protocol_interface_info_entry_t *cur, bool solicited, 
         *ptr++ = 2;
         *ptr++ = aro->status;
         *ptr++ = 0;
-        ptr = common_write_16_bit(0, ptr);
+        *ptr++ = earo_flags >= 0 ? (uint8_t)earo_flags : 0;
+        *ptr++ = earo_flags >= 0 ? earo_tid : 0;
         ptr = common_write_16_bit(aro->lifetime, ptr);
         memcpy(ptr, aro->eui64, 8);
         ptr += 8;

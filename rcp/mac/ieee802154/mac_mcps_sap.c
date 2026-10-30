@@ -295,6 +295,7 @@ void mcps_sap_data_req_handler_ext(protocol_interface_rf_mac_setup_s *rf_mac_set
     buffer->lfn_bc = data_req->LfnBroadcast;
     buffer->lfn_req_set = data_req->LfnTxTimeSet;
     buffer->lfn_req_time = data_req->LfnTxTime;
+    buffer->lfn_req_slot = (data_req->LfnTxTimeSet && data_req->LfnTxSlotSet) ? data_req->LfnTxSlot : -1;
     buffer->WaitResponse = data_req->TxAckReq;
     buffer->phy_mode_id = phy_mode_id;
     if (data_req->ExtendedFrameExchange) {
@@ -875,7 +876,7 @@ static fhss_lfn_tx_e mcps_lfn_tx_check(protocol_interface_rf_mac_setup_s *rf_mac
         return FHSS_LFN_TX_NOT_LFN;
     } else if (buffer->lfn_req_set && rf_mac_setup->fhss_api->lfn_tx_at) {
         // At a requested time (an LPA in an LND discovery slot, GS8 stage 5)
-        ret = rf_mac_setup->fhss_api->lfn_tx_at(rf_mac_setup->fhss_api, buffer->DstAddr, buffer->lfn_req_time, &tx_time);
+        ret = rf_mac_setup->fhss_api->lfn_tx_at(rf_mac_setup->fhss_api, buffer->DstAddr, buffer->lfn_req_time, buffer->lfn_req_slot, &tx_time);
     } else {
         ret = rf_mac_setup->fhss_api->lfn_tx_check(rf_mac_setup->fhss_api, buffer->DstAddr, buffer->request_start_time_us, &tx_time);
     }

@@ -360,13 +360,17 @@ extern int ns_fhss_ws_lfn_bc_stop(const fhss_api_t *fhss_api);
 
 /**
  * @brief LFN role, GS8 stage 5: listen continuously from start_us for
- * duration_us (the LND discovery window after an LPAS sweep), on the channel
- * of the own unicast slot nearest to the current time; 0 cancels. The LND-IE
- * response delay of every frame sent before the window is written at TX
- * time (from that frame to start_us).
+ * duration_us (the LND discovery window after an LPAS sweep); 0 cancels.
+ * With slot_us, discovery slot i (from start_us, slot_us long) is on the
+ * channel of the own unicast channel function for slot number
+ * first_slot + i (the LND-IE's Discovery First Slot), as Silicon Labs' LFN
+ * listens [M: black-box phase 2]; with slot_us 0, on the channel of the own
+ * unicast slot nearest to the current time. The LND-IE response delay of
+ * every frame sent before the window is written at TX time (from that frame
+ * to start_us).
  * @return 0 OK, -1 not an LFN or not running, -2 invalid duration, -3 a broadcast window is open.
  */
-extern int ns_fhss_ws_lfn_discovery_set(const fhss_api_t *fhss_api, uint32_t start_us, uint32_t duration_us);
+extern int ns_fhss_ws_lfn_discovery_set(const fhss_api_t *fhss_api, uint32_t start_us, uint32_t duration_us, uint16_t first_slot, uint32_t slot_us);
 
 /** @brief Read the LFN counters. @return 0 OK, -1 no FHSS. */
 extern int ns_fhss_ws_lfn_stats_get(const fhss_api_t *fhss_api, fhss_ws_lfn_stats_t *stats);

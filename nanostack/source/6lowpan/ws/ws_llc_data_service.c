@@ -412,6 +412,9 @@ static uint16_t ws_wh_headers_length(wh_ie_sub_list_t requested_list, llc_ie_par
     if (requested_list.lbt_ie) {
         length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_lbt_length();
     }
+    if (requested_list.flus_ie) {
+        length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_flus_length();
+    }
 
     return length;
 }
@@ -436,17 +439,31 @@ static uint8_t *ws_llc_lfn_wh_write(uint8_t *ptr, llc_data_base_t *base, wh_ie_s
         nr.listen_interval_max = ws->lfn_cfg.listen_interval_max_ms;
         ptr = ws_wh_nr_write(ptr, &nr);
     }
+    if (list.flus_ie) {
+        // Parent: our unicast dwell; the channel plan is the LCP-IE of tag 0
+        // [S: wisun-br-linux ws_llc.c; M: Silicon Labs' LPA, phase 1]
+        ws_flus_ie_t flus = { .dwell_interval = ws->hopping_schedule.fhss_uc_dwell_interval, .channel_plan_tag = WS_LCP_TAG_PARENT };
+        ptr = ws_wh_flus_write(ptr, &flus);
+    }
     if (list.lus_ie) {
-        ws_lus_ie_t lus = { .channel_plan_tag = 0, .listen_interval = ws->lfn.listen_interval_ms };
+        // The LPAS gives the channel plan in an LCP-IE of the same tag; later
+        // frames keep it (tag 255, "current") [M: Silicon Labs' LFN, phase 1;
+        // S: wisun-br-linux reads an LCP-IE for any other tag]
+        ws_lus_ie_t lus = { .channel_plan_tag = message_type == WS_FT_LPAS ? WS_LCP_TAG_LFN : WS_LCP_TAG_CURRENT,
+                            .listen_interval = ws->lfn.listen_interval_ms
+                          };
         ptr = ws_wh_lus_write(ptr, &lus);
     }
     if (list.lnd_ie) {
         // Parents answer in a random LND slot of the discovery window; the
-        // FHSS rewrites the response delay of each frame at TX time
+        // FHSS rewrites the response delay of each frame at TX time. Slot i
+        // of the window is on our unicast channel for slot number
+        // discovery_first_slot + i [M: black-box phase 2 analysis]
         ws_lnd_ie_t lnd = { 0 };
         lnd.response_delay = ws->lfn_cfg.lnd_response_delay_ms;
         lnd.discovery_slot_time = ws->lfn_cfg.lnd_slot_time_ms;
         lnd.discovery_slots = ws->lfn_cfg.lnd_slots;
+        lnd.discovery_first_slot = ws->lfn.disc_first_slot;
         ptr = ws_wh_lnd_write(ptr, &lnd);
     }
     if (list.lto_ie && lto) {
@@ -555,6 +572,9 @@ static uint16_t ws_wp_nested_message_length(wp_nested_ie_sub_list_t requested_li
 
         if (requested_list.phy_cap_ie) {
             length += WS_WP_SUB_IE_ELEMENT_HEADER_LENGTH + ws_wp_nested_pcap_length(llc_base->interface_ptr->ws_info->phy_cap_info.length_of_list);
+        }
+        if (requested_list.lcp_ie) {
+            length += ws_wp_nested_lcp_length(params->hopping_schedule);
         }
     }
 #endif
@@ -764,7 +784,13 @@ static void ws_llc_ack_data_req_ext(const mac_api_t *api, mcps_ack_data_payload_
 
     //Write Data to block
     uint8_t *ptr = base->ws_enhanced_response_elements;
-    ptr = ws_wh_utt_write(ptr, WS_FT_ACK);
+    if (base->ie_params.lfn_role) {
+        // FAN 1.1 LFN: LUTT (the FHSS writes its slot and offset) and RSL
+        // [M: Silicon Labs' LFN, black-box phase 1]
+        ptr = ws_wh_lutt_write(ptr, WS_FT_ACK);
+    } else {
+        ptr = ws_wh_utt_write(ptr, WS_FT_ACK);
+    }
     ptr = ws_wh_rsl_write(ptr, ws_neighbor_class_rsl_from_dbm_calculate(rssi));
     base->ws_header_vector.iovLen = ptr - base->ws_enhanced_response_elements;
 }
@@ -1439,7 +1465,9 @@ static void ws_llc_mpx_eapol_request(llc_data_base_t *base, mpx_user_t *user_cb,
     }
 
 
-    nested_wp_id.us_ie = true;
+    // An LFN's schedule is known from its LPAS (LCP-IE); its LUS-IE says
+    // "current" [M: Silicon Labs' LFN sends no schedule in EAPOL]
+    nested_wp_id.us_ie = !base->ie_params.lfn_role;
 
     uint16_t ie_header_length = ws_wh_headers_length(ie_header_mask, &base->ie_params);
     uint16_t nested_ie_length = ws_wp_nested_message_length(nested_wp_id, base);
@@ -2079,6 +2107,8 @@ int8_t ws_llc_asynch_request(struct protocol_interface_info_entry *interface, as
         if (request->tx_at_set) {
             data_req.LfnTxTimeSet = true;
             data_req.LfnTxTime = request->tx_at;
+            data_req.LfnTxSlotSet = request->tx_slot_set;
+            data_req.LfnTxSlot = request->tx_slot;
         }
     } else if (request->lfn_broadcast) {
         // FAN 1.1 LFN parent (LTS, LPC): broadcast, held by the MAC for the
@@ -2175,6 +2205,9 @@ int8_t ws_llc_asynch_request(struct protocol_interface_info_entry *interface, as
                 ws_phy_cap_info_t phy_cap;
                 ws_llc_phy_cab_list_generate(base->interface_ptr, &phy_cap);
                 ptr = ws_wp_nested_pcap_write(ptr, &phy_cap);
+            }
+            if (request->wp_requested_nested_ie_list.lcp_ie) {
+                ptr = ws_wp_nested_lcp_write(ptr, base->ie_params.hopping_schedule, base->ie_params.lfn_role ? WS_LCP_TAG_LFN : WS_LCP_TAG_PARENT);
             }
         }
 #endif

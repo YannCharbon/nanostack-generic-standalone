@@ -938,6 +938,83 @@ static void test_bc_lfn(bool sync_only)
     CHECK(ns_fhss_delete(api) == 0);
 }
 
+/* LND discovery (black-box phase 2): discovery slot i is on the LFN's
+ * unicast channel of slot number first_slot + i; the parent's LPA at a
+ * requested time goes on the LFN's channel of the slot number given */
+static void test_discovery(void)
+{
+    fhss_ws_lfn_listen_t cfg;
+    fhss_api_t *api;
+    const uint16_t first = 65530;       // wraps past 65535
+    const uint32_t slot_us = 60000, nslots = 40;
+
+    reset_fakes();
+    api = create_fhss(lfn_mac, 255, 0, 0);
+    ns_fhss_ws_lfn_listen_defaults(&cfg);
+    cfg.listen_interval_ms = 6000;
+    CHECK(ns_fhss_ws_lfn_listen_set(api, &cfg) == 0);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    uint64_t start = now_us + 1550000;
+    CHECK(ns_fhss_ws_lfn_discovery_set(api, (uint32_t)(start + CLOCK32_OFFSET_US), nslots * slot_us, first, slot_us) == 0);
+    nevs = 0;
+    while (step(start + nslots * slot_us + 1000)) {
+    }
+    int opens = 0;
+    bool closed = false;
+    for (int i = 0; i < nevs; i++) {
+        if (evs[i].e == FHSS_RX_WINDOW_OPEN && evs[i].t >= start && evs[i].t < start + nslots * slot_us) {
+            uint32_t k = (uint32_t)((evs[i].t - start) / slot_us);
+            CHECK(evs[i].t == start + k * slot_us);
+            CHECK(evs[i].channel == dh1cf_channel((uint16_t)(first + k), lfn_mac));
+            opens++;
+        } else if (evs[i].e == FHSS_RX_WINDOW_CLOSE && evs[i].t == start + nslots * slot_us) {
+            closed = true;
+        }
+    }
+    // one open per slot whose channel differs from the previous slot's
+    int expect = 1;
+    for (uint32_t k = 1; k < nslots; k++) {
+        expect += dh1cf_channel((uint16_t)(first + k), lfn_mac) != dh1cf_channel((uint16_t)(first + k - 1), lfn_mac);
+    }
+    CHECK(opens == expect);
+    CHECK(closed);
+    CHECK(ns_fhss_delete(api) == 0);
+
+    // The parent: an LPA at a requested time, channel slot 1234
+    fhss_ws_lfn_parent_t pcfg;
+    uint32_t tx_time = 0;
+    reset_fakes();
+    api = create_fhss(parent_mac, 255, 1020, 255);
+    ns_fhss_set_neighbor_info_fp(api, get_neighbor);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    lfn_neighbor_known = true;
+    memset(&lfn_neighbor, 0, sizeof(lfn_neighbor));
+    lfn_neighbor.uc_timing_info.unicast_channel_function = WS_DH1CF;
+    lfn_neighbor.uc_timing_info.unicast_number_of_channels = 35;
+    lfn_neighbor.uc_channel_list.channel_count = 35;
+    for (int i = 0; i < 35; i++) {
+        lfn_neighbor.uc_channel_list.channel_mask[i / 32] |= 1u << (i % 32);
+    }
+    lfn_neighbor.lfn_uc_timing_info.listen_interval_ms = 6000;
+    lfn_neighbor.lfn_uc_timing_info.lutt_rx_timestamp = ts();
+    ns_fhss_ws_lfn_parent_defaults(&pcfg);
+    CHECK(ns_fhss_ws_lfn_parent_set(api, &pcfg) == 0);
+    uint32_t req = ts() + 10000;
+    CHECK(api->lfn_tx_at(api, lfn_mac, req, 1234, &tx_time) == FHSS_LFN_TX_NOW && tx_time == req);
+    // the CCA just before the TX time and the TX itself: the slot's channel
+    CHECK(api->tx_handle(api, false, (uint8_t *)lfn_mac, FHSS_DATA_FRAME, 100, 0, 0, tx_time - 1000) == 0);
+    CHECK(mac_channel == dh1cf_channel(1234, lfn_mac));
+    mac_channel = -1;
+    CHECK(api->tx_handle(api, false, (uint8_t *)lfn_mac, FHSS_DATA_FRAME, 100, 0, 0, tx_time) == 0);
+    CHECK(mac_channel == dh1cf_channel(1234, lfn_mac));
+    // without a slot: the LFN's slot nearest to the TX time (slot 0 here)
+    CHECK(api->lfn_tx_at(api, lfn_mac, req, -1, &tx_time) == FHSS_LFN_TX_NOW);
+    CHECK(api->tx_handle(api, false, (uint8_t *)lfn_mac, FHSS_DATA_FRAME, 100, 0, 0, tx_time) == 0);
+    CHECK(mac_channel == dh1cf_channel(0, lfn_mac));
+    lfn_neighbor_known = false;
+    CHECK(ns_fhss_delete(api) == 0);
+}
+
 int main(void)
 {
     test_sched();
@@ -947,6 +1024,7 @@ int main(void)
     test_bc_parent();
     test_bc_lfn(false);
     test_bc_lfn(true);
+    test_discovery();
     printf("fhss_lfn: %u checks, %u failed\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -136,6 +136,12 @@ struct protocol_interface_info_entry;
 extern struct buffer *icmpv6_build_rs(struct protocol_interface_info_entry *cur, const uint8_t *dest_addr);
 extern struct buffer *icmpv6_build_ns(struct protocol_interface_info_entry *cur, const uint8_t target_addr[static 16], const uint8_t *prompting_src_addr, bool unicast, bool unspecified_source, const struct aro *aro);
 extern struct buffer *icmpv6_build_na(struct protocol_interface_info_entry *cur, bool solicited, bool override, bool tllao_required, const uint8_t target[static 16], const aro_t *aro, const uint8_t src_addr[static 16]);
+extern struct buffer *icmpv6_build_na_earo(struct protocol_interface_info_entry *cur, bool solicited, bool override, bool tllao_required, const uint8_t target[static 16], const aro_t *aro, const uint8_t src_addr[static 16], int16_t earo_flags, uint8_t earo_tid);
+/* RFC 8505 EARO flags (FAN 1.1 LFNs) */
+#define ICMPV6_EARO_T 0x01
+#define ICMPV6_EARO_R 0x02
+#define ICMPV6_EARO_P_MASK 0x30
+#define ICMPV6_EARO_P_MULTICAST 1
 extern struct buffer *icmpv6_build_dad(struct protocol_interface_info_entry *cur, struct buffer *buf, uint8_t type, const uint8_t dest_addr[16], const uint8_t eui64[8], const uint8_t reg_addr[16], uint8_t status, uint16_t lifetime);
 extern void icmpv6_build_echo_req(struct protocol_interface_info_entry *cur, const uint8_t target_addr[16]);
 

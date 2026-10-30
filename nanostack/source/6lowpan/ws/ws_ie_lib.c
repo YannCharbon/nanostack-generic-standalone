@@ -87,6 +87,13 @@ static uint16_t ws_excluded_channel_length(ws_generic_channel_info_t *generic_ch
 static void ws_generic_channel_info_init(struct ws_hopping_schedule_s *hopping_schedule, ws_generic_channel_info_t *generic_channel_info, bool unicast_schedule)
 {
     generic_channel_info->channel_plan = hopping_schedule->channel_plan;
+    /* A FAN 1.1 channel plan ID (configured with a PHY mode ID): channel plan
+       2, regulatory domain and channel plan ID, as Silicon Labs' nodes write
+       it (wisun-br-linux ws_ie.c; black-box phase 2) [S, M]. A FAN 1.0
+       configuration has no channel plan ID (255): unchanged. */
+    if (generic_channel_info->channel_plan == 0 && hopping_schedule->channel_plan_id != 255) {
+        generic_channel_info->channel_plan = 2;
+    }
     if (unicast_schedule) {
         generic_channel_info->channel_function = hopping_schedule->uc_channel_function;
         generic_channel_info->excluded_channel_ctrl = hopping_schedule->excluded_channels.excuded_channel_ctrl;
@@ -725,6 +732,31 @@ uint16_t ws_wp_nested_lfn_channel_plan_length(ws_generic_channel_info_t *ws_lcp)
     return length;
 }
 
+/* LCP-IE with the node's own unicast schedule (FAN 1.1 LFN, black-box
+ * phases 2-3): the channel plan, function and excluded channels of its US-IE */
+static void ws_lcp_from_schedule(struct ws_hopping_schedule_s *hopping_schedule, ws_generic_channel_info_t *lcp)
+{
+    ws_generic_channel_info_init(hopping_schedule, lcp, true);
+    ws_wp_channel_plan_set(lcp, hopping_schedule);
+    ws_wp_channel_function_set(lcp, hopping_schedule, true);
+}
+
+uint16_t ws_wp_nested_lcp_length(struct ws_hopping_schedule_s *hopping_schedule)
+{
+    ws_generic_channel_info_t lcp;
+
+    ws_lcp_from_schedule(hopping_schedule, &lcp);
+    return 2 + ws_wp_nested_lfn_channel_plan_length(&lcp);
+}
+
+uint8_t *ws_wp_nested_lcp_write(uint8_t *ptr, struct ws_hopping_schedule_s *hopping_schedule, uint8_t plan_tag_id)
+{
+    ws_generic_channel_info_t lcp;
+
+    ws_lcp_from_schedule(hopping_schedule, &lcp);
+    return ws_wp_nested_lfn_channel_plan_write(ptr, &lcp, plan_tag_id);
+}
+
 uint8_t *ws_wp_nested_lfn_channel_plan_write(uint8_t *ptr, ws_generic_channel_info_t *ws_lcp, uint8_t plan_tag_id)
 {
     uint16_t length = ws_wp_nested_lfn_channel_plan_length(ws_lcp);
@@ -1349,7 +1381,8 @@ bool ws_wp_nested_lfn_channel_plan_read(uint8_t *data, uint16_t length, ws_gener
     nested_payload_ie.id = WP_PAYLOAD_IE_LFN_CHANNEL_PLAN_TYPE;
     nested_payload_ie.type_long = true;
 
-    if (1 <  mac_ie_nested_tagged_discover(data, length, &nested_payload_ie, plan_tag_id)) {
+    // At least the channel control byte (the tag is not counted)
+    if (mac_ie_nested_tagged_discover(data, length, &nested_payload_ie, plan_tag_id) < 1) {
         return false;
     }
     //Parse Channel Plan, function and excluded channel
@@ -1449,3 +1482,29 @@ bool ws_wp_nested_lfn_channel_plan_read(uint8_t *data, uint16_t length, ws_gener
 
 }
 
+/* FAN 1.1: a node's unicast schedule from an LCP-IE of the given tag, as a
+ * US-IE with the given dwell interval (FLUS-IE of a parent; 0 for an LFN),
+ * for ws_neighbor_class_neighbor_unicast_schedule_set() (black-box phases
+ * 2-3: Silicon Labs' LPAS and LPA carry LCP-IEs, no US-IE) */
+bool ws_wp_nested_lcp_us_read(uint8_t *data, uint16_t length, uint8_t plan_tag_id, uint8_t dwell_interval, struct ws_us_ie *us_ie)
+{
+    ws_generic_channel_info_t lcp;
+
+    memset(&lcp, 0, sizeof(lcp));
+    if (!ws_wp_nested_lfn_channel_plan_read(data, length, &lcp, plan_tag_id)) {
+        return false;
+    }
+    memset(us_ie, 0, sizeof(*us_ie));
+    us_ie->dwell_interval = dwell_interval;
+    us_ie->channel_plan = lcp.channel_plan;
+    us_ie->channel_function = lcp.channel_function;
+    us_ie->excluded_channel_ctrl = lcp.excluded_channel_ctrl;
+    memcpy(&us_ie->plan, &lcp.plan, sizeof(us_ie->plan));
+    memcpy(&us_ie->function, &lcp.function, sizeof(us_ie->function));
+    if (lcp.excluded_channel_ctrl == WS_EXC_CHAN_CTRL_RANGE) {
+        us_ie->excluded_channels.range = lcp.excluded_channels.range_in;
+    } else if (lcp.excluded_channel_ctrl == WS_EXC_CHAN_CTRL_BITMASK) {
+        us_ie->excluded_channels.mask = lcp.excluded_channels.mask_in;
+    }
+    return true;
+}

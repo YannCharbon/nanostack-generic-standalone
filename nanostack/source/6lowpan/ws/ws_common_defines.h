@@ -80,6 +80,13 @@
 #define WS_FT_LPCS              12          /**< LFN PAN Config Solicit */
 #define WS_FT_LTS               13          /**< LFN Time Sync */
 
+/* FAN 1.1 channel plan tags (LUS, FLUS, LBS, LCP-IE): an LFN gives its plan in
+ * its LPAS under tag 1 and "current" (255) afterwards; a parent gives its plan
+ * under tag 0 [M: Silicon Labs' LFN and wsbrd, black-box phase 1] */
+#define WS_LCP_TAG_PARENT       0
+#define WS_LCP_TAG_LFN          1
+#define WS_LCP_TAG_CURRENT      255
+
 
 /* WS excluded channel Control */
 #define WS_EXC_CHAN_CTRL_NONE 0             /**< No excluded channels */

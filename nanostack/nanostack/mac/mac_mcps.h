@@ -49,6 +49,8 @@ typedef struct mcps_data_req_s {
     bool LfnBroadcast: 1;           /**< FAN 1.1 LFN parent: a broadcast frame held for the next LFN broadcast slot (fhss_ws_lfn_bc_t) */
     bool LfnTxTimeSet: 1;           /**< FAN 1.1 LFN parent: a unicast frame to an LFN sent at LfnTxTime (an LND discovery slot) */
     uint32_t LfnTxTime;             /**< Its TX time (µs, the MAC's timestamp) */
+    bool LfnTxSlotSet: 1;           /**< With LfnTxTimeSet: on the LFN's unicast channel of slot number LfnTxSlot (LND discovery slot) */
+    uint16_t LfnTxSlot;
     mlme_security_t Key;            /**< Security key */
 } mcps_data_req_t;
 

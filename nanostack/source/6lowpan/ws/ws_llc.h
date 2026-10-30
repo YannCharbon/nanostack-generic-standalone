@@ -53,6 +53,7 @@ typedef struct wh_ie_sub_list_s {
     bool panid_ie: 1; /**< PAN ID */
     bool lbs_ie: 1;  /**< LFN Broadcast Schedule */
     bool lbt_ie: 1;  /**< LFN Broadcast Timing (written by the FHSS at TX time) */
+    bool flus_ie: 1; /**< FFN for LFN Unicast Schedule (parent's LPA; black-box phase 3) */
 } wh_ie_sub_list_t;
 
 /**
@@ -68,6 +69,7 @@ typedef struct wp_nested_ie_sub_list_s {
     bool gtkhash_ie: 1;             /**< GTK Hash information */
     bool lfn_gtk_version_ie: 1;     /**<  LFN Version & GTK Hash */
     bool phy_cap_ie: 1;             /** < Phy Cap information for MDR */
+    bool lcp_ie: 1;                 /**< FAN 1.1 LFN Channel Plan: the own unicast schedule (LFN: LPAS, tag 1; parent: LPA, tag 0) */
 } wp_nested_ie_sub_list_t;
 
 /**
@@ -79,6 +81,8 @@ typedef struct asynch_request_s {
     bool lfn_broadcast;                                     /**< FAN 1.1 LFN parent: a broadcast frame for the next LFN broadcast slot (LTS, LPC; GS8 stage 4) */
     bool tx_at_set;                                         /**< FAN 1.1 LFN parent: with unicast, send at tx_at (an LND discovery slot; GS8 stage 5) */
     uint32_t tx_at;                                         /**< Its TX time (µs, MAC timestamp) */
+    bool tx_slot_set;                                       /**< FAN 1.1 LFN parent: with tx_at_set, on the LFN's unicast channel of slot number tx_slot (LND discovery slot) */
+    uint16_t tx_slot;
     uint8_t dst_address[8];                                 /**< Its destination */
     ws_lto_ie_t lto;                                        /**< LTO-IE values when wh_requested_ie_list.lto_ie */
     wh_ie_sub_list_t wh_requested_ie_list;                  /**< WH-IE header list to message. */

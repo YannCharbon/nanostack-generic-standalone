@@ -104,6 +104,7 @@ typedef struct mac_pre_build_frame {
     uint32_t request_start_time_us;
     uint32_t lfn_tx_time;           // TX time in the LFN's window (lfn_tx_time_set)
     uint32_t lfn_req_time;          // requested TX time (lfn_req_set)
+    int32_t lfn_req_slot;           // its LFN channel slot (LfnTxSlot), -1: the LFN's schedule
     bool upper_layer_request: 1;
     bool mac_allocated_payload_ptr: 1;
     bool asynch_request: 1;
