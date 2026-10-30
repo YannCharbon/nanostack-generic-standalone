@@ -790,6 +790,12 @@ static void ws_llc_ack_data_req_ext(const mac_api_t *api, mcps_ack_data_payload_
         ptr = ws_wh_lutt_write(ptr, WS_FT_ACK);
     } else {
         ptr = ws_wh_utt_write(ptr, WS_FT_ACK);
+#ifdef HAVE_WS_VERSION_1_1
+        // An LFN parent: LBT-IE too, as Silicon Labs' parents [M]
+        if (base->interface_ptr->ws_info && base->interface_ptr->ws_info->lfn_parent) {
+            ptr = ws_wh_lbt_write(ptr);
+        }
+#endif
     }
     ptr = ws_wh_rsl_write(ptr, ws_neighbor_class_rsl_from_dbm_calculate(rssi));
     base->ws_header_vector.iovLen = ptr - base->ws_enhanced_response_elements;
@@ -1259,6 +1265,8 @@ static void ws_llc_lowpan_mpx_data_request(llc_data_base_t *base, mpx_user_t *us
         ie_header_mask.bt_ie = false;
         ie_header_mask.lutt_ie = true;
         ie_header_mask.lus_ie = true;
+    } else if (data->DstAddrMode == MAC_ADDR_MODE_64_BIT && ws_lfn_parent_dst_is_lfn(base->interface_ptr, data->DstAddr)) {
+        ie_header_mask.lbt_ie = true;
     }
     if (base->ie_params.vendor_header_length) {
         ie_header_mask.vh_ie = true;
@@ -1462,6 +1470,8 @@ static void ws_llc_mpx_eapol_request(llc_data_base_t *base, mpx_user_t *user_cb,
         nested_wp_id.bs_ie = false;
         ie_header_mask.lutt_ie = true;
         ie_header_mask.lus_ie = true;
+    } else if (data->DstAddrMode == MAC_ADDR_MODE_64_BIT && ws_lfn_parent_dst_is_lfn(base->interface_ptr, data->DstAddr)) {
+        ie_header_mask.lbt_ie = true;
     }
 
 

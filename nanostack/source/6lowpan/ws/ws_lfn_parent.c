@@ -550,6 +550,18 @@ void ws_lfn_lgtk_security_set(protocol_interface_info_entry_t *cur, asynch_reque
     }
 }
 
+/* Silicon Labs' parents put an LBT-IE in every frame to an LFN (data,
+ * EAPOL, ACK), and their LFN drops back to PAN selection when the parent's
+ * frames lack it [M: black-box phases 1 and 3] */
+bool ws_lfn_parent_dst_is_lfn(protocol_interface_info_entry_t *cur, const uint8_t *dst64)
+{
+    if (!cur->ws_info->lfn_parent || !dst64) {
+        return false;
+    }
+    mac_neighbor_table_entry_t *n = mac_neighbor_table_address_discover(mac_neighbor_info(cur), dst64, MAC_ADDR_MODE_64_BIT);
+    return n && ws_lfn_is_child(cur, n, NULL);
+}
+
 uint8_t ws_lfn_parent_tx_key_index(protocol_interface_info_entry_t *cur, const uint8_t *dst64)
 {
     if (!cur->ws_info->lfn_parent) {
