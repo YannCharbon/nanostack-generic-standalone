@@ -91,6 +91,10 @@
 
 #define TRACE_GROUP "wslf"
 
+/* LPCS sent without an LPC before the LFN drops its keys and starts again
+ * (a parent that cannot read them: a restarted network) [I] */
+#define WS_LFN_LPCS_MAX 4
+
 /*
  * Wi-SUN FAN 1.1 Limited Function Node (GS8 stage 3; docs/LFN_STACK.md).
  *
@@ -277,6 +281,7 @@ static void ws_lfn_lpcs_send(protocol_interface_info_entry_t *cur)
     req.security.KeyIndex = mac_helper_default_key_index_get(cur);
     tr_info("LFN: LPCS to %s (key %u, level %u)", trace_array(req.dst_address, 8), req.security.KeyIndex, req.security.SecurityLevel);
     ws_llc_asynch_request(cur, &req);
+    cur->ws_info->lfn.lpcs_count++;
     cur->ws_info->lfn.lpcs_timer_s = (cur->ws_info->lfn.listen_interval_ms * cur->ws_info->lfn_cfg.lpcs_retry_intervals + 999) / 1000 + 1;
 }
 
@@ -460,6 +465,14 @@ static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struc
         return;
     }
     if (!ws_bootstrap_validate_channel_plan(&us, cur) || !ws_bootstrap_validate_channel_function(&us, &bs)) {
+        return;
+    }
+    // Keys belong to a PAN, as for an FFN (ws_pae_supp_nw_keys_valid_check()):
+    // an LPA from another PAN (a restarted border router) needs EAPOL again
+    if (lfn->keys_valid && cur->ws_info->network_pan_id != 0xffff && panid.panid != cur->ws_info->network_pan_id) {
+        tr_info("LFN: LPA from PAN %04x, keys from PAN %04x: authentication again", panid.panid, cur->ws_info->network_pan_id);
+        lfn->keys_valid = false;
+        ws_bootstrap_event_discovery_start(cur);
         return;
     }
     // The parent's PAN and a neighbour entry for it
@@ -689,6 +702,7 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             }
             cur->nwk_bootstrap_state = ER_SCAN;
             lfn->lpc_received = false;
+            lfn->lpcs_count = 0;
             ws_lfn_tx_key_select(cur);
             ws_lfn_lpcs_send(cur);
             break;
@@ -815,6 +829,13 @@ void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
     if (cur->nwk_bootstrap_state == ER_SCAN && !lfn->lpc_received && lfn->lpcs_timer_s) {
         if (lfn->lpcs_timer_s > seconds) {
             lfn->lpcs_timer_s -= seconds;
+        } else if (lfn->lpcs_count >= WS_LFN_LPCS_MAX) {
+            // The parent does not answer: our keys may be stale (a restarted
+            // network with the same PAN ID). Discovery again, with EAPOL [I]
+            tr_warn("LFN: no LPC after %u LPCS: discovery and authentication again", lfn->lpcs_count);
+            lfn->lpcs_timer_s = 0;
+            lfn->keys_valid = false;
+            ws_bootstrap_event_discovery_start(cur);
         } else {
             ws_lfn_lpcs_send(cur);
         }

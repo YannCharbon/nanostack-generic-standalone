@@ -120,6 +120,7 @@ typedef struct ws_lfn_state_s {
     uint32_t sync_period_s;         /**< Parent's LFN sync period (LBS-IE); 0: unknown */
     uint16_t lpas_timer_s;          /**< Next LPAS sweep */
     uint16_t lpcs_timer_s;          /**< LPCS retry */
+    uint8_t lpcs_count;             /**< LPCS sent since the configuration started */
     uint16_t lgtk_mismatch_timer_s; /**< Key request after an LGTK hash mismatch */
     bool lgtk_request_sent: 1;      /**< Key request made for the current mismatch */
     uint16_t lfn_version;           /**< Last LFN version heard (LPC) */

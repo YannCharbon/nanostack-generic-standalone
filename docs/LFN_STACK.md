@@ -199,3 +199,11 @@ The firmware (`nanostack-efr32fg25-freertos`) builds the router program as an LF
 - `dhcp_service_api.c` (inherited from Nanostack): the DHCPv6 relay's I/O vector was declared inside a block and used by `socket_sendmsg()` after it. FFN routers relay DHCPv6 too; with `-Os` on a target the stack slot can be reused.
 
 With both fixed, the LFN tests (one LFN with an LGTK rotation through a router, the six-LFN mesh, one LFN under the border router) and FAN 1.0 `dag_simple` (600 s) run clean under AddressSanitizer, and FAN 1.0 `dag_simple` logs are byte-identical to `b1b9cc5`.
+
+**An LFN under a router on the kits** (the firmware README, "An LFN under a router on the kits"). Border router – router (`FW_RN_LFN_PARENT`) – LFN, with a test-only MAC filter in the LFN so that it hears only the router: the router gets its LGTK, the LFN joins through it (EAPOL and DHCPv6 relayed, address registered, routed by the border router) and answers the border router's pings, as in the emulator's `MESH=1`. Its idle current is 23.8–24.8 µA (24.9–26.9 µA under the border router).
+
+**Rejoin after the network restarted.** An LFN that loses its parent rejoins without EAPOL while its keys are valid (black-box item 47). After a restart of the border router (new PAN ID, new GTKs and LGTKs) it kept rejoining with its old keys: its LPCS, secured with the old LGTK, got no LPC, and it lost the parent again after 375 s, without end. Two rules now end this [I]:
+- keys belong to a PAN, as for an FFN (`ws_pae_supp_nw_keys_valid_check()`): an LPA from another PAN ID drops them, and the LFN starts its discovery again, with EAPOL;
+- after `WS_LFN_LPCS_MAX` (4) LPCS without an LPC, the LFN drops its keys and starts its discovery again (a restarted network with the same PAN ID, or a parent that lost them).
+The parent-loss test (`SILENT_AT=300`, no traffic, 3 seeds) still rejoins without EAPOL; FAN 1.0 `dag_simple` logs are unchanged.
+
