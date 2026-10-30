@@ -528,6 +528,7 @@ static void ws_lfn_lpc_analyse(protocol_interface_info_entry_t *cur, const struc
     if (!lfn->parent_known || memcmp(data->SrcAddr, lfn->parent_eui64, 8) || !data->Key.SecurityLevel) {
         return;
     }
+    tr_debug("LFN: LPC from the parent (%s, key index %u)", data->DstAddrMode ? "unicast" : "broadcast", data->Key.KeyIndex);
     if (ws_wh_lto_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lto)) {
         uint32_t ivl = lto.adjusted_listening_interval;
         if (ns_fhss_ws_lfn_timing_set(cur->ws_info->fhss_api, lto.offset, ivl, data->timestamp) == 0 && ivl) {

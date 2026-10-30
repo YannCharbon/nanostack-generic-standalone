@@ -2210,6 +2210,8 @@ static void fhss_ws_lfn_own_follow(fhss_structure_t *fhss_structure, int32_t del
     }
 }
 
+#define FHSS_LFN_SYNC_OFFSET_MAX_MS 2
+
 int fhss_ws_lfn_bc_sync(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_sync_t *sync)
 {
     struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
@@ -2229,9 +2231,12 @@ int fhss_ws_lfn_bc_sync(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_s
     same = lfn->pbc_valid && lfn->pbc_nominal_us == nominal_us && lfn->pbc_bsi == sync->bsi;
     // The LBT-IE offset is in ms: a frame sent within a slot (LPA, unicast
     // LPC) gives its start to ±0.5 ms only, a frame sent at the slot start
-    // (offset 0: LTS, broadcast LPC) to the TX timing. Once synced, only the
-    // latter correct the phase and measure the rate.
-    if (same && sync->offset_ms) {
+    // (LTS, broadcast LPC) to the TX timing. Once synced, only the latter
+    // correct the phase and measure the rate. Silicon Labs' parents write 1 ms
+    // in their LTS and broadcast LPCs [M: black-box phases 1-2], ours 0: up
+    // to FHSS_LFN_SYNC_OFFSET_MAX_MS counts as the slot start.
+    bool at_start = sync->offset_ms <= FHSS_LFN_SYNC_OFFSET_MAX_MS;
+    if (same && !at_start) {
         return 0;
     }
     if (same) {
@@ -2262,7 +2267,7 @@ int fhss_ws_lfn_bc_sync(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_s
             }
         }
     }
-    if (!lfn->rate_ref_valid && !sync->offset_ms) {
+    if (!lfn->rate_ref_valid && at_start) {
         lfn->rate_ref_valid = true;
         lfn->rate_ref_us = start;
         lfn->rate_ref_slot = sync->slot;

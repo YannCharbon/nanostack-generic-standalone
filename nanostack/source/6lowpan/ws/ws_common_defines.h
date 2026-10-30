@@ -61,8 +61,8 @@
 #define WP_PAYLOAD_IE_GTKHASH_TYPE  7   /**< GTK Hash information */
 /* Wi-SUN FAN definition 1.1 */
 #define WP_PAYLOAD_IE_PCAP_TYPE     8   /**< PHY Capability information */
-#define WP_PAYLOAD_IE_LFNVER_TYPE   9   /**< LFN Version information */
-#define WP_PAYLOAD_IE_LGTKHASH_TYPE 10  /**< LFN GTK Hash Information */
+#define WP_PAYLOAD_IE_LFNVER_TYPE   0x40 /**< LFN Version information (0x40, as wisun-br-linux and Wireshark; the Arm codec had 9) */
+#define WP_PAYLOAD_IE_LGTKHASH_TYPE 0x41 /**< LFN GTK Hash information (0x41; the Arm codec had 10) */
 
 
 /* WS frame types to WH_IE_UTT_TYPE */
