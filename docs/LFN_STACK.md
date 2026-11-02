@@ -129,6 +129,8 @@ Test hook: `ws_test_lfn_parent_silence()` (`net_ws_test.h`) makes the border rou
 
 Non-regression (FAN 1.0, no LFN): `dag_simple` in virtual time, 10 seeds, logs byte-identical to the previous stack commit (`compare_logs.py --mask-pointers --mask-source-lines`; the second option masks the programs' own `function():line` trace prefixes, which move when their source is edited).
 
+**Known limitation (PHY mode 1).** In `test_lfn_join.sh` with PHY mode 1 / plan 32 and seed 2, 1 echo of 45 is lost: it falls in the border router's PAN configuration sweep (62 channels, about 1 s at 50 kbit/s), and all the LFN's MAC retries go out while the parent transmits. The same on the stack before the interoperability changes. Follow-up: the LFN's MAC retry backoff should outlast a full PAN configuration sweep at slow PHYs.
+
 ## 8. LGTK
 
 FAN 1.1 gives LFNs their own group keys, LGTKs, distinct from the GTKs of the FFNs. Our code is written from the public sources listed below, not copied: **[S]** `wisun-br-linux` v2.10.3 `common/specs/ws.h` (KDE types), `common/kde.c` (KDE layouts), `common/authenticator/authenticator_key.c` (which KDEs go to which role, quoting Wi-SUN FAN 1.1 6.5.2.2), and the Apache-2.0 stack files of `wisun-br-linux` v1.9.1 (`key_sec_prot.c`, `auth_fwh_sec_prot.c`, `auth_gkh_sec_prot.c`: the node role read from the key request); `examples/wsbrd.conf` (LGTK timer names and defaults); **[M]** the black-box results, items 48–51.
