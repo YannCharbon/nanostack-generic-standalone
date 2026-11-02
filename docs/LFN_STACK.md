@@ -63,7 +63,7 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 - **Security**: frames to an LFN child (data through `ws_llc_lowpan_mpx_data_request()`, LPC) and the broadcast sync frames use the active LGTK (key index 5–7); everything else uses the GTKs as before (§8).
 - **Registration**: the LFN's NS(ARO) is handled by the existing 6LoWPAN-ND code: a registered neighbour-cache entry, through which the border router routes to the LFN; a non-FFD child is published to RPL (`rpl_control_publish_host_address`), which for the root is local.
 - **EARO (RFC 8505)** [S: RFC 8505, `wisun-br-linux` `nd_router_object.c`; M: item 19]: Silicon Labs' LFN registers with an NS from its link-local address, the address to register as Target, and an EARO with T and R set and a TID; then each RFC 9685 multicast group with P = 1. On a FAN 1.1 interface, such an NS registers the Target (the same checks as an ARO) and is always answered by an NA with an EARO echoing the flags and TID (the Wi-SUN omission of a successful NA does not apply); a multicast registration is accepted (status 0) but only `ff02::1` is copied to LFN children. Our LFN keeps the RFC 6775 ARO (source = registered address), which both `wsbrd` and our parents accept.
-- **Multicast** [M items 41–42]: a multicast to `ff02::1` leaving the border router is also sent as a MAC-unicast copy to every LFN child (IPv6 destination unchanged), in its window (`lowpan_down()` → `ws_lfn_parent_multicast_copy()`). Other groups need the LFN's RFC 9685 subscription (EARO P flag), not implemented.
+- **Multicast** [M items 41–42]: a multicast leaving the parent is also sent as a MAC-unicast copy (IPv6 destination unchanged) in its window to every LFN child for `ff02::1`, and to the LFN children that registered the group (RFC 9685: EARO with P = 1, kept with its lifetime, 16 registrations) for other groups (`lowpan_down()` → `ws_lfn_parent_multicast_copy()`). A hop-by-hop header holding only the MPL option is removed from the copy (an LFN is no MPL forwarder; the option type tells it to discard the packet), as `wsbrd` does [M item 41].
 
 ## 5. Settings
 
@@ -85,6 +85,7 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | `widening_max_us` | 100000 | LFN | Upper bound of the widening, per side |
 | `bc_rx_window_us` | 5000 | LFN | Window in the parent's LFN broadcast slots |
 | `bc_sync_only` | false | LFN | Listen only in the broadcast slots of the sync frames (Silicon Labs' LFN listens in every slot [M items 21, 55]) |
+| `restart_min_ms`, `restart_max_ms` | 250, 2000 | LFN | Restart of a failed uplink after its MAC retries: min × 2^n to 2 × min × 2^n ms, capped at max; long enough to outlast a parent's PAN configuration sweep at 50 kbit/s |
 | `bc_interval_ms`, `bc_sync_period` | 10000, 5 | parent | LBS-IE; sync period = their product [M §3.1] |
 | `lto` | true | parent | Send an LTO-IE in the LPA |
 | `tx_offset_us`, `tx_lead_us`, `tx_min_prep_us`, `tx_ttl_intervals` | 0, 20000, 2000, 20 | parent | `LFN_MAC.md` §5 |
@@ -129,7 +130,7 @@ Test hook: `ws_test_lfn_parent_silence()` (`net_ws_test.h`) makes the border rou
 
 Non-regression (FAN 1.0, no LFN): `dag_simple` in virtual time, 10 seeds, logs byte-identical to the previous stack commit (`compare_logs.py --mask-pointers --mask-source-lines`; the second option masks the programs' own `function():line` trace prefixes, which move when their source is edited).
 
-**Known limitation (PHY mode 1).** In `test_lfn_join.sh` with PHY mode 1 / plan 32 and seed 2, 1 echo of 45 is lost: it falls in the border router's PAN configuration sweep (62 channels, about 1 s at 50 kbit/s), and all the LFN's MAC retries go out while the parent transmits. The same on the stack before the interoperability changes. Follow-up: the LFN's MAC retry backoff should outlast a full PAN configuration sweep at slow PHYs.
+**Uplink restarts and the parent's sweeps.** With PHY mode 1 / plan 32 and seed 2, `test_lfn_join.sh` lost 1 echo of 45: it fell in the border router's PAN configuration sweep (62 channels, about 1.7 s at 50 kbit/s), and all the LFN's MAC retries and restarts (FFN values, 20–300 ms) went out while the parent transmitted. The same on the stack before the interoperability changes. An LFN now restarts a failed uplink after 250–500, 500–1 000, 1 000–2 000 and 1 000–2 000 ms (`restart_min_ms` 250, `restart_max_ms` 2 000; at least 2.75 s in all): the LFN suite then passes 34 of 34.
 
 ## 8. LGTK
 

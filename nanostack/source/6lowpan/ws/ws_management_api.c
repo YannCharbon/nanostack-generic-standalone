@@ -1080,6 +1080,8 @@ void ws_management_lfn_settings_defaults(ws_lfn_settings_t *s)
     s->lnd_slot_time_ms = WS_LFN_LND_SLOT_TIME_MS_DEFAULT;
     s->lnd_slots = WS_LFN_LND_SLOTS_DEFAULT;
     s->lnd_response_delay_ms = WS_LFN_LND_RESPONSE_DELAY_MS_DEFAULT;
+    s->restart_min_ms = WS_LFN_RESTART_MIN_MS_DEFAULT;
+    s->restart_max_ms = WS_LFN_RESTART_MAX_MS_DEFAULT;
     s->lpcs_retry_intervals = WS_LFN_LPCS_RETRY_INTERVALS_DEFAULT;
     s->maintain_parent_time = WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT;
     s->lgtk_max_mismatch_s = WS_LFN_LGTK_MAX_MISMATCH_S_DEFAULT;
@@ -1113,6 +1115,7 @@ int ws_management_lfn_settings_set(int8_t interface_id, const ws_lfn_settings_t 
             !s->rx_window_us || s->rx_guard_us >= s->rx_window_us || !s->close_retry_us ||
             s->rx_guard_us >= s->bc_rx_window_us ||
             !s->lpas_interval_s || !s->lnd_slot_time_ms || !s->lnd_slots || !s->lpcs_retry_intervals ||
+            !s->restart_min_ms || s->restart_max_ms < s->restart_min_ms ||
             !s->maintain_parent_time || !s->registration_lifetime_min || !s->bc_interval_ms || !s->bc_sync_period ||
             !s->tx_ttl_intervals || s->tx_min_prep_us > s->tx_lead_us || s->tx_lead_us > 60000 ||
             s->lgtk_lifetime_s < 60 || !s->lgtk_new_install_required || s->lgtk_new_install_required > 99 ||

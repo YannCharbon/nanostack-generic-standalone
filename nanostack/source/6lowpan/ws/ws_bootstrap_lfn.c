@@ -687,7 +687,7 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             // listen schedule starts now
             ns_fhss_ws_lfn_listen_start(cur->ws_info->fhss_api);
             ws_bootstrap_configure_max_retries(cur, WS_MAX_FRAME_RETRIES_BOOTSTRAP);
-            ws_bootstrap_configure_data_request_restart(cur, WS_CCA_REQUEST_RESTART_MAX, WS_TX_REQUEST_RESTART_MAX_BOOTSTRAP, WS_REQUEST_RESTART_BLACKLIST_MIN, WS_REQUEST_RESTART_BLACKLIST_MAX);
+            ws_bootstrap_configure_data_request_restart(cur, WS_CCA_REQUEST_RESTART_MAX, WS_TX_REQUEST_RESTART_MAX_BOOTSTRAP, cur->ws_info->lfn_cfg.restart_min_ms, cur->ws_info->lfn_cfg.restart_max_ms);
             ws_bootstrap_configure_csma_ca_backoffs(cur, WS_MAX_CSMA_BACKOFFS, WS_MAC_MIN_BE, WS_MAC_MAX_BE);
             cur->nwk_bootstrap_state = ER_ACTIVE_SCAN;
             lfn->lpas_timer_s = 1;
@@ -711,7 +711,8 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             tr_info("LFN operation start");
             ws_bootstrap_ip_stack_activate(cur);
             ws_bootstrap_configure_max_retries(cur, WS_MAX_FRAME_RETRIES);
-            ws_bootstrap_configure_data_request_restart(cur, WS_CCA_REQUEST_RESTART_MAX, WS_TX_REQUEST_RESTART_MAX, WS_REQUEST_RESTART_BLACKLIST_MIN, WS_REQUEST_RESTART_BLACKLIST_MAX);
+            // The LFN's restarts outlast a parent's asynchronous sweep
+            ws_bootstrap_configure_data_request_restart(cur, WS_CCA_REQUEST_RESTART_MAX, WS_TX_REQUEST_RESTART_MAX, cur->ws_info->lfn_cfg.restart_min_ms, cur->ws_info->lfn_cfg.restart_max_ms);
             cur->nwk_bootstrap_state = ER_RPL_SCAN;
             {
                 uint8_t ll_parent[16];

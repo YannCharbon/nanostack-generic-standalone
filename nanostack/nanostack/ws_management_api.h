@@ -992,6 +992,8 @@ typedef struct ws_lfn_settings {
     uint32_t widening_max_us;           /**< Upper bound of that widening, each side (µs) */
     uint32_t bc_rx_window_us;           /**< Receive window in the parent's LFN broadcast slots (µs) */
     bool bc_sync_only;                  /**< Listen only in the LFN broadcast slots that carry sync frames (every sync period) */
+    uint16_t restart_min_ms;            /**< A failed uplink (no ACK after the MAC retries) restarts after min x 2^n .. 2 x min x 2^n ms, n = 0, 1, ... */
+    uint16_t restart_max_ms;            /**< ... capped at this (ms): together long enough to outlast the parent's asynchronous sweeps */
     /* Parent (border router) */
     uint32_t bc_interval_ms;            /**< LFN broadcast interval (LBS-IE); the sync period is a multiple of it (ms) */
     uint8_t bc_sync_period;             /**< LFN broadcast sync period, in LFN broadcast intervals */
@@ -1015,6 +1017,13 @@ typedef struct ws_lfn_settings {
 #define WS_LFN_LND_SLOTS_DEFAULT                 40
 #define WS_LFN_LND_RESPONSE_DELAY_MS_DEFAULT     1550
 #define WS_LFN_LPCS_RETRY_INTERVALS_DEFAULT      2
+/* Restart of a failed uplink: 250-500, 500-1000, 1000-2000, 1000-2000 ms
+ * for the 4 restarts, 2.75 s at least in all, longer than a parent's PAN
+ * configuration sweep at 50 kbit/s (62 channels, about 1.7 s); the FFN
+ * values (20, 300) gave 0.3-0.6 s, so an uplink sent at the start of a sweep
+ * was lost (emulator test_lfn_join.sh, PHY mode 1, seed 2) */
+#define WS_LFN_RESTART_MIN_MS_DEFAULT            250
+#define WS_LFN_RESTART_MAX_MS_DEFAULT            2000
 #define WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT      5
 #define WS_LFN_LGTK_MAX_MISMATCH_S_DEFAULT       120
 #define WS_LFN_REGISTRATION_LIFETIME_MIN_DEFAULT 2160

@@ -36,6 +36,7 @@
 #include "6lowpan/bootstraps/protocol_6lowpan.h"
 #include "6lowpan/ws/ws_common_defines.h"
 #include "6lowpan/ws/ws_common.h"
+#include "6lowpan/ws/ws_lfn_parent.h"
 #include "net_lib/net_dns_internal.h"
 
 #include "common_protocols/icmpv6.h"
@@ -512,6 +513,9 @@ static buffer_t *icmpv6_ns_handler(buffer_t *buf)
             aro_out.present = true;
             aro_out.status = addr_is_ipv6_multicast(target) ? ARO_SUCCESS : ARO_TOPOLOGICALLY_INCORRECT;
             tr_info("EARO multicast %s from %s", trace_ipv6(target), trace_array(aro_out.eui64, 8));
+            if (aro_out.status == ARO_SUCCESS) {
+                ws_lfn_parent_mc_register(cur, aro_out.eui64, target, aro_out.lifetime);
+            }
         } else if (addr_is_ipv6_multicast(target) || !nd_ns_aro_handler(cur, aro, sllao, target, &aro_out)) {
             goto drop;
         }

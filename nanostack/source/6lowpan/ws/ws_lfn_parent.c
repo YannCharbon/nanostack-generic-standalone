@@ -60,6 +60,7 @@
 #include "6lowpan/ws/ws_neighbor_class.h"
 #include "6lowpan/ws/ws_lfn_parent.h"
 #include "core/ns_buffer.h"
+#include "common_protocols/ipv6_constants.h"
 #include "core/ns_address_internal.h"
 #include "6lowpan/iphc_decode/iphc_compress.h"
 #include "security/protocols/sec_prot_keys.h"
@@ -486,25 +487,105 @@ void ws_lfn_parent_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t 
     st->bc_slot_queued_valid = true;
 }
 
-/* A link-local all-nodes multicast (ff02::1) from the border router: one
- * MAC-unicast copy to each LFN child, sent in its listen window, IPv6
- * destination unchanged (black-box items 41-42). Other groups need the
- * LFN's RFC 9685 subscription, which is not implemented. */
+/* RFC 9685 multicast registrations of LFN children (EARO with P = 1,
+ * icmpv6.c): the group, the LFN, and the end of the registration */
+#define WS_LFN_MC_REG_MAX 16
+static struct {
+    uint8_t eui64[8];
+    uint8_t group[16];
+    uint32_t until_s;
+} ws_lfn_mc_reg[WS_LFN_MC_REG_MAX];
+
+void ws_lfn_parent_mc_register(protocol_interface_info_entry_t *cur, const uint8_t eui64[8], const uint8_t group[16], uint16_t lifetime_min)
+{
+    uint32_t now = cur->ws_info->uptime;
+    int slot = -1;
+
+    for (int i = 0; i < WS_LFN_MC_REG_MAX; i++) {
+        bool live = (int32_t)(ws_lfn_mc_reg[i].until_s - now) > 0;
+        if (live && !memcmp(ws_lfn_mc_reg[i].eui64, eui64, 8) && !memcmp(ws_lfn_mc_reg[i].group, group, 16)) {
+            slot = i;
+            break;
+        }
+        if (!live && slot < 0) {
+            slot = i;
+        }
+    }
+    if (slot < 0) {
+        tr_warn("LFN multicast registrations full: %s not kept", trace_ipv6(group));
+        return;
+    }
+    memcpy(ws_lfn_mc_reg[slot].eui64, eui64, 8);
+    memcpy(ws_lfn_mc_reg[slot].group, group, 16);
+    ws_lfn_mc_reg[slot].until_s = lifetime_min ? now + (uint32_t)lifetime_min * 60 : now;
+}
+
+static bool ws_lfn_mc_registered(protocol_interface_info_entry_t *cur, const uint8_t eui64[8], const uint8_t *group)
+{
+    for (int i = 0; i < WS_LFN_MC_REG_MAX; i++) {
+        if ((int32_t)(ws_lfn_mc_reg[i].until_s - cur->ws_info->uptime) > 0 &&
+                !memcmp(ws_lfn_mc_reg[i].eui64, eui64, 8) && !memcmp(ws_lfn_mc_reg[i].group, group, 16)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Remove a hop-by-hop header that holds only the MPL option and padding: an
+ * LFN is not an MPL forwarder, and the option type (0x6d) tells a node that
+ * does not know it to discard the packet [S: RFC 7731; wsbrd sends its
+ * copies without it, black-box item 41] */
+static void ws_lfn_mc_strip_mpl(buffer_t *buf)
+{
+    uint8_t *ip = buffer_data_pointer(buf);
+    uint16_t len = buffer_data_length(buf);
+
+    if (len < 48 || ip[6] != IPV6_NH_HOP_BY_HOP) {
+        return;
+    }
+    uint8_t *hbh = ip + 40;
+    uint16_t hbh_len = (hbh[1] + 1) * 8;
+    if (40 + hbh_len > len) {
+        return;
+    }
+    for (uint16_t i = 2; i < hbh_len;) {
+        if (hbh[i] == 0) {                      // Pad1
+            i++;
+        } else if (hbh[i] == 1 || hbh[i] == 0x6d) {   // PadN, MPL
+            i += 2 + hbh[i + 1];
+        } else {
+            return;                             // another option: keep it all
+        }
+    }
+    ip[6] = hbh[0];
+    common_write_16_bit(common_read_16_bit(ip + 4) - hbh_len, ip + 4);
+    memmove(ip + hbh_len, ip, 40);
+    buffer_data_strip_header(buf, hbh_len);
+}
+
+/* A multicast from this parent: one MAC-unicast copy to each LFN child that
+ * listens to the group, sent in its listen window, IPv6 destination
+ * unchanged (black-box items 41-42): ff02::1 to every child, other groups to
+ * the children that registered them (RFC 9685) */
 void ws_lfn_parent_multicast_copy(protocol_interface_info_entry_t *cur, buffer_t *buf, bool stable_only, uint_fast16_t max_iphc_size)
 {
     const uint8_t *ip_dst = buffer_data_pointer(buf) + 24;
+    bool all_nodes;
 
-    if (!cur->ws_info->lfn_parent || memcmp(ip_dst, ADDR_LINK_LOCAL_ALL_NODES, 16)) {
+    if (!cur->ws_info->lfn_parent) {
         return;
     }
+    all_nodes = !memcmp(ip_dst, ADDR_LINK_LOCAL_ALL_NODES, 16);
     ns_list_foreach(mac_neighbor_table_entry_t, n, &mac_neighbor_info(cur)->neighbour_list) {
-        if (!n->trusted_device || !ws_lfn_is_child(cur, n, NULL)) {
+        if (!n->trusted_device || !ws_lfn_is_child(cur, n, NULL) ||
+                (!all_nodes && !ws_lfn_mc_registered(cur, n->mac64, ip_dst))) {
             continue;
         }
         buffer_t *copy = buffer_clone(buf);
         if (!copy) {
             return;
         }
+        ws_lfn_mc_strip_mpl(copy);
         copy->dst_sa.addr_type = ADDR_802_15_4_LONG;
         common_write_16_bit(cur->mac_parameters.pan_id, copy->dst_sa.address);
         memcpy(copy->dst_sa.address + 2, n->mac64, 8);
