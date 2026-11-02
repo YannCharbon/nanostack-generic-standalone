@@ -298,6 +298,23 @@ void ws_bootstrap_lfn_parent_heard(protocol_interface_info_entry_t *cur, const u
     }
 }
 
+/* An acknowledged uplink: consecutive failures to the parent start a
+ * parent search (ws_bootstrap_lfn_seconds_timer) */
+void ws_bootstrap_lfn_uplink_result(protocol_interface_info_entry_t *cur, const uint8_t *dst64, bool success)
+{
+    ws_lfn_state_t *lfn;
+
+    if (!wisun_mode_host(cur) || !cur->ws_info->lfn.parent_known || memcmp(dst64, cur->ws_info->lfn.parent_eui64, 8)) {
+        return;
+    }
+    lfn = &cur->ws_info->lfn;
+    if (success) {
+        lfn->uplink_fails = 0;
+    } else if (lfn->uplink_fails < 255) {
+        lfn->uplink_fails++;
+    }
+}
+
 /* A frame from the parent with an LBT-IE: sync to its LFN broadcast
  * schedule (LBS-IE values from this frame or an earlier one), and keep the
  * parent (black-box item 34: maintenance counts sync frames) */
@@ -344,7 +361,7 @@ static bool ws_lfn_lpa_keep(protocol_interface_info_entry_t *cur, const struct m
     ws_pan_information_t pan;
     int slot = -1;
 
-    if (!lfn->disc_decide_s || lfn->parent_known || data->SrcAddrMode != MAC_ADDR_MODE_64_BIT) {
+    if (!lfn->disc_decide_s || (lfn->parent_known && !lfn->searching) || data->SrcAddrMode != MAC_ADDR_MODE_64_BIT) {
         return false;
     }
     memset(&pan, 0, sizeof(pan));
@@ -419,6 +436,24 @@ static void ws_lfn_lpa_choose(protocol_interface_info_entry_t *cur)
         }
     }
     lfn->disc_decide_s = 0;
+    if (lfn->searching) {
+        // A search while keeping the parent: change only for another parent
+        lfn->searching = false;
+        if (!best || !memcmp(best->ind.SrcAddr, lfn->parent_eui64, 8)) {
+            tr_info("LFN: parent search: %s", best ? "the parent answered, kept" : "no other parent heard");
+            if (best) {
+                lfn->uplink_fails = 0;
+            }
+            ws_lfn_candidates_clear(cur);
+            return;
+        }
+        tr_info("LFN: parent changed: %s -> %s (routing cost %u, %d dBm)", trace_array(lfn->parent_eui64, 8),
+                trace_array(best->ind.SrcAddr, 8), best->routing_cost, best->ind.signal_dbm);
+        ns_fhss_ws_lfn_bc_stop(cur->ws_info->fhss_api);
+        lfn->parent_known = false;
+        lfn->lpc_received = false;
+        lfn->uplink_fails = 0;
+    }
     if (best) {
         mcps_data_ie_list_t ie = {
             .headerIeList = best->ie, .headerIeListLength = best->hdr_len,
@@ -677,6 +712,9 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             lfn->reregister_s = 0;
             lfn->lgtk_mismatch_timer_s = 0;
             lfn->lgtk_request_sent = false;
+            lfn->uplink_fails = 0;
+            lfn->searching = false;
+            lfn->search_next_s = 0;
             ws_lfn_network_configure(cur);
             // The receiver is off outside the listen windows
             cur->ws_info->rx_off_when_idle = true;
@@ -795,6 +833,25 @@ uint32_t ws_bootstrap_lfn_seconds_timer_next(protocol_interface_info_entry_t *cu
     if (lfn->lgtk_mismatch_timer_s) {
         next = protocol_timer_next_min(next, lfn->lgtk_mismatch_timer_s);
     }
+    if (lfn->parent_known && cur->nwk_bootstrap_state == ER_BOOTSTRAP_DONE && !lfn->searching) {
+        // The parent search (see ws_bootstrap_lfn_seconds_timer)
+        const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
+        uint32_t up = cur->ws_info->uptime;
+        uint32_t since = up - lfn->parent_rx_s;
+        uint32_t at = 0;
+        if (c->search_uplink_fails && lfn->uplink_fails >= c->search_uplink_fails) {
+            at = 1;
+        } else if (c->search_sync_periods) {
+            uint32_t lim = ws_lfn_sync_period_s(cur) * c->search_sync_periods;
+            at = since < lim ? lim - since + 1 : 1;
+        }
+        if (at) {
+            if (lfn->search_next_s > up && lfn->search_next_s - up > at) {
+                at = lfn->search_next_s - up;
+            }
+            next = protocol_timer_next_min(next, at);
+        }
+    }
     if (lfn->parent_known && cur->nwk_bootstrap_state != ER_PANA_AUTH) {
         // Lost on the first call that sees more than the limit since the
         // last frame (the uptime is incremented before this timer runs)
@@ -852,6 +909,29 @@ void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
         }
     }
     ws_lfn_parent_lgtk_timer(cur, seconds);
+    // Parent change without loss: a discovery while the parent is kept, when
+    // it has been silent for search_sync_periods sync periods or has missed
+    // search_uplink_fails uplinks in a row [I]
+    if (lfn->parent_known && cur->nwk_bootstrap_state == ER_BOOTSTRAP_DONE && !lfn->searching && !lfn->disc_decide_s &&
+            cur->ws_info->uptime >= lfn->search_next_s) {
+        const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
+        uint32_t since = cur->ws_info->uptime - lfn->parent_rx_s;
+        bool silent = c->search_sync_periods && since > ws_lfn_sync_period_s(cur) * c->search_sync_periods;
+        bool failing = c->search_uplink_fails && lfn->uplink_fails >= c->search_uplink_fails;
+        if (silent || failing) {
+            tr_info("LFN: parent search (%s), parent kept meanwhile", silent ? "no sync frame" : "uplinks failed");
+            lfn->searching = true;
+            // the next search one sync period later, if this one finds nobody
+            lfn->search_next_s = cur->ws_info->uptime + ws_lfn_sync_period_s(cur);
+            ws_lfn_lpas_send(cur);
+            if (!lfn->disc_decide_s) {
+                // No discovery window (a broadcast window was open): again
+                // in a second
+                lfn->searching = false;
+                lfn->search_next_s = cur->ws_info->uptime + 1;
+            }
+        }
+    }
     // Parent maintenance: lost after 1.5 x maintain_parent_time sync periods
     // without a frame from it (black-box item 46)
     if (lfn->parent_known && cur->nwk_bootstrap_state != ER_PANA_AUTH) {

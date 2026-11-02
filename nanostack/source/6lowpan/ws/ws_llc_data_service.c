@@ -667,6 +667,11 @@ static void ws_llc_mac_confirm_cb(const mac_api_t *api, const mcps_data_conf_t *
             }
         }
     }
+    // FAN 1.1 LFN: uplink results to its parent (parent search)
+    if (base->ie_params.lfn_role && message->ack_requested && message->dst_address_type == MAC_ADDR_MODE_64_BIT &&
+            (messsage_type == WS_FT_DATA || messsage_type == WS_FT_EAPOL)) {
+        ws_bootstrap_lfn_uplink_result(interface, message->dst_address, data->status == MLME_SUCCESS || data->status == MLME_NO_DATA);
+    }
     //ETX update
     llc_neighbour_req_t neighbor_info;
     neighbor_info.ws_neighbor = NULL;

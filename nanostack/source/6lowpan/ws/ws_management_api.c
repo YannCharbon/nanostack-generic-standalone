@@ -1082,6 +1082,8 @@ void ws_management_lfn_settings_defaults(ws_lfn_settings_t *s)
     s->lnd_response_delay_ms = WS_LFN_LND_RESPONSE_DELAY_MS_DEFAULT;
     s->restart_min_ms = WS_LFN_RESTART_MIN_MS_DEFAULT;
     s->restart_max_ms = WS_LFN_RESTART_MAX_MS_DEFAULT;
+    s->search_sync_periods = WS_LFN_SEARCH_SYNC_PERIODS_DEFAULT;
+    s->search_uplink_fails = WS_LFN_SEARCH_UPLINK_FAILS_DEFAULT;
     s->lpcs_retry_intervals = WS_LFN_LPCS_RETRY_INTERVALS_DEFAULT;
     s->maintain_parent_time = WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT;
     s->lgtk_max_mismatch_s = WS_LFN_LGTK_MAX_MISMATCH_S_DEFAULT;

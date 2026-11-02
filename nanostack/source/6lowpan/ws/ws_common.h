@@ -129,6 +129,9 @@ typedef struct ws_lfn_state_s {
     uint16_t lbs_bsi;               /**< Its schedule identifier */
     uint8_t lbs_sync_period;        /**< Its sync period, in broadcast intervals */
     uint32_t disc_decide_s;         /**< Uptime at which the LPAs of the discovery window are compared; 0: none pending */
+    uint8_t uplink_fails;           /**< Consecutive uplinks to the parent that failed (no ACK after the MAC's retries) */
+    bool searching;                 /**< A discovery while the parent is kept (parent change without loss) */
+    uint32_t search_next_s;         /**< Uptime before which no new search starts */
     uint16_t disc_first_slot;       /**< LND-IE Discovery First Slot: discovery slot i is on our unicast channel of slot number disc_first_slot + i */
     struct ws_lfn_lpa_candidate *lpa[4]; /**< LPAs heard in the discovery window (GS8 stage 5) */
 

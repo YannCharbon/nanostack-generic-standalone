@@ -34,6 +34,8 @@
 #define PAE_NVM_FRAME_COUNTER_TAG        3
 #define PAE_NVM_KEY_STORAGE_INDEX_TAG    4
 #define PAE_NVM_KEY_STORAGE_TAG          5
+#define PAE_NVM_LGTKS_TAG                6
+#define LGTKS_FILE_NAME                  "pae_lgtks"
 
 // pan_id (2) + network name (33) + GTK EUI-64 (own EUI-64) (8) + stored time (8) + time changed (1) + (GTK set (1) + GTK expiry timestamp (8) + status (1) + install order (1) + GTK (16)) * 4
 #define PAE_NVM_NW_INFO_LEN              2 + 33 + 8 + 8 + 1 + (1 + 8 + 1 + 1 + GTK_LEN) * GTK_NUM

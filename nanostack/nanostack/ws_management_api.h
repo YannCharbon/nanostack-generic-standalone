@@ -994,6 +994,8 @@ typedef struct ws_lfn_settings {
     bool bc_sync_only;                  /**< Listen only in the LFN broadcast slots that carry sync frames (every sync period) */
     uint16_t restart_min_ms;            /**< A failed uplink (no ACK after the MAC retries) restarts after min x 2^n .. 2 x min x 2^n ms, n = 0, 1, ... */
     uint16_t restart_max_ms;            /**< ... capped at this (ms): together long enough to outlast the parent's asynchronous sweeps */
+    uint8_t search_sync_periods;        /**< Discovery while keeping the parent after this many sync periods without a sync frame from it (0: never) */
+    uint8_t search_uplink_fails;        /**< ... or after this many consecutive failed uplinks to it (0: never) */
     /* Parent (border router) */
     uint32_t bc_interval_ms;            /**< LFN broadcast interval (LBS-IE); the sync period is a multiple of it (ms) */
     uint8_t bc_sync_period;             /**< LFN broadcast sync period, in LFN broadcast intervals */
@@ -1024,6 +1026,12 @@ typedef struct ws_lfn_settings {
  * was lost (emulator test_lfn_join.sh, PHY mode 1, seed 2) */
 #define WS_LFN_RESTART_MIN_MS_DEFAULT            250
 #define WS_LFN_RESTART_MAX_MS_DEFAULT            2000
+/* Parent change without loss: a discovery (LPAS sweep and window) while the
+ * parent is kept, after 2 sync periods (100 s with the defaults) without a
+ * sync frame or 2 consecutive failed uplinks; the parent is lost only after
+ * 1.5 x maintain_parent_time sync periods (375 s) */
+#define WS_LFN_SEARCH_SYNC_PERIODS_DEFAULT       2
+#define WS_LFN_SEARCH_UPLINK_FAILS_DEFAULT       2
 #define WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT      5
 #define WS_LFN_LGTK_MAX_MISMATCH_S_DEFAULT       120
 #define WS_LFN_REGISTRATION_LIFETIME_MIN_DEFAULT 2160

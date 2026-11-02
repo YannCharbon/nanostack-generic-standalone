@@ -86,6 +86,7 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | `bc_rx_window_us` | 5000 | LFN | Window in the parent's LFN broadcast slots |
 | `bc_sync_only` | false | LFN | Listen only in the broadcast slots of the sync frames (Silicon Labs' LFN listens in every slot [M items 21, 55]) |
 | `restart_min_ms`, `restart_max_ms` | 250, 2000 | LFN | Restart of a failed uplink after its MAC retries: min × 2^n to 2 × min × 2^n ms, capped at max; long enough to outlast a parent's PAN configuration sweep at 50 kbit/s |
+| `search_sync_periods`, `search_uplink_fails` | 2, 2 | LFN | Parent change without loss: a discovery while the parent is kept after this many sync periods without a sync frame from it, or this many consecutive failed uplinks to it (0: never) |
 | `bc_interval_ms`, `bc_sync_period` | 10000, 5 | parent | LBS-IE; sync period = their product [M §3.1] |
 | `lto` | true | parent | Send an LTO-IE in the LPA |
 | `tx_offset_us`, `tx_lead_us`, `tx_min_prep_us`, `tx_ttl_intervals` | 0, 20000, 2000, 20 | parent | `LFN_MAC.md` §5 |
@@ -192,7 +193,9 @@ FAN 1.1 gives LFNs their own group keys, LGTKs, distinct from the GTKs of the FF
 
 **Fixed with stage 5.** The FHSS read the LTO-IE at sub-ID 14 (FLUS) instead of 17, so the stage 4 conversion of the LTO offset never ran: both sides applied the phase as an offset, which kept them consistent but did not place the LFN's slots against the broadcast slots. The unit test used the same wrong number; both are fixed.
 
-**Not done.** Router-to-router LFN handover (an LFN keeps its parent while the parent keeps it; it changes parent only after a loss); LGTKs and node roles in NVM; RFC 9685 subscriptions beyond accepting them; the parents' LFN children on D-Bus.
+**Parent change without loss.** An LFN whose parent has sent no sync frame for `search_sync_periods` sync periods (100 s with the defaults), or has missed `search_uplink_fails` uplinks in a row, runs a discovery (LPAS sweep, LND window) while it keeps its parent [I]. If another parent answers, the LFN takes it at the end of the window (best routing cost, as at a join) and goes on without EAPOL: LPCS → LPC → ARO to the new parent, whose DAO moves the route. If only its parent answers, or nobody, it keeps the parent and searches again one sync period later; the loss rule (375 s) still applies. Emulator `test_lfn_join.sh` with `MESH=3` and `SILENT_AT` (the border router, the LFN's parent, stops answering it; a router is in range): 10 of 10 seeds changed to the router 66–166 s after the parent went silent, without a parent loss or EAPOL (instead of a loss at 375 s and a rejoin). Before, the LFN changed parent only after a loss.
+
+**Not done.** LGTKs and node roles in NVM; RFC 9685 subscriptions beyond accepting them; the parents' LFN children on D-Bus.
 
 ## 10. On the FG25 kits (stage 6)
 

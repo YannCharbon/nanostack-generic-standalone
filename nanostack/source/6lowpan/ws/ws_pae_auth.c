@@ -50,6 +50,8 @@
 #include "6lowpan/ws/ws_pae_controller.h"
 #include "6lowpan/ws/ws_pae_timers.h"
 #include "6lowpan/ws/ws_pae_auth.h"
+#include "6lowpan/ws/ws_pae_nvm_store.h"
+#include "6lowpan/ws/ws_pae_nvm_data.h"
 #include "6lowpan/ws/ws_pae_lib.h"
 #include "6lowpan/ws/ws_pae_time.h"
 #include "6lowpan/ws/ws_pae_key_storage.h"
@@ -1603,10 +1605,53 @@ static const ws_lfn_settings_t *ws_pae_auth_lgtk_cfg(pae_auth_t *pae_auth)
     return &cur->ws_info->lfn_cfg;
 }
 
+/* The border router's LGTKs and LFN version in non-volatile storage (when
+ * the application gives the stack a file system), so that LFNs keep their
+ * group keys across a border router restart. Lifetimes resume where they
+ * were stored. */
+typedef struct {
+    nvm_tlv_t tlv;
+    uint16_t lfn_version;
+    gtk_key_t lgtk[GTK_NUM];
+} lgtks_nvm_tlv_t;
+
+static void ws_pae_auth_lgtks_store(pae_auth_t *pae_auth)
+{
+    lgtks_nvm_tlv_t t;
+
+    memset(&t, 0, sizeof(t));
+    ws_pae_nvm_store_generic_tlv_create(&t.tlv, PAE_NVM_LGTKS_TAG, sizeof(t) - sizeof(nvm_tlv_t));
+    t.lfn_version = pae_auth->interface_ptr->ws_info->lfngtk.lfn_version;
+    memcpy(t.lgtk, pae_auth->sec_keys_nw_info->lgtks->gtk, sizeof(t.lgtk));
+    ws_pae_nvm_store_tlv_file_write(LGTKS_FILE_NAME, &t.tlv);
+}
+
+static bool ws_pae_auth_lgtks_restore(pae_auth_t *pae_auth)
+{
+    lgtks_nvm_tlv_t t;
+
+    memset(&t, 0, sizeof(t));
+    ws_pae_nvm_store_generic_tlv_create(&t.tlv, PAE_NVM_LGTKS_TAG, sizeof(t) - sizeof(nvm_tlv_t));
+    if (ws_pae_nvm_store_tlv_file_read(LGTKS_FILE_NAME, &t.tlv) < 0 || t.tlv.tag != PAE_NVM_LGTKS_TAG ||
+            t.tlv.len != sizeof(t) - sizeof(nvm_tlv_t)) {
+        return false;
+    }
+    sec_prot_gtk_keys_t *lgtks = pae_auth->sec_keys_nw_info->lgtks;
+    memcpy(lgtks->gtk, t.lgtk, sizeof(t.lgtk));
+    if (sec_prot_keys_gtk_status_active_get(lgtks) < 0) {
+        sec_prot_keys_gtks_init(lgtks);
+        return false;
+    }
+    // The next event increments it: LFNs see a newer version than before
+    pae_auth->interface_ptr->ws_info->lfngtk.lfn_version = t.lfn_version;
+    return true;
+}
+
 static void ws_pae_auth_lgtk_changed(pae_auth_t *pae_auth, const char *event)
 {
     sec_prot_gtk_keys_t *lgtks = pae_auth->sec_keys_nw_info->lgtks;
     pae_auth->lgtk_update(pae_auth->interface_ptr, lgtks, sec_prot_keys_gtk_status_active_get(lgtks), event);
+    ws_pae_auth_lgtks_store(pae_auth);
 }
 
 static int8_t ws_pae_auth_lgtk_insert(pae_auth_t *pae_auth, uint32_t lifetime)
@@ -1649,6 +1694,11 @@ static void ws_pae_auth_lgtk_timer(pae_auth_t *pae_auth, uint16_t seconds)
     sec_prot_gtk_keys_t *lgtks = pae_auth->sec_keys_nw_info->lgtks;
 
     if (!c) {
+        return;
+    }
+    if (!pae_auth->lgtk_started && ws_pae_auth_lgtks_restore(pae_auth)) {
+        pae_auth->lgtk_started = true;
+        ws_pae_auth_lgtk_changed(pae_auth, "restored from storage");
         return;
     }
     if (!pae_auth->lgtk_started) {
