@@ -351,6 +351,7 @@ int8_t ws_pae_controller_nw_info_set(protocol_interface_info_entry_t *interface_
  *
  */
 int8_t ws_pae_controller_nw_key_valid(protocol_interface_info_entry_t *interface_ptr, uint8_t *br_iid);
+void ws_pae_controller_frame_counter_store_now(protocol_interface_info_entry_t *interface_ptr);
 
 /**
  * ws_pae_controller_border_router_addr_write write border router address

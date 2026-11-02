@@ -51,6 +51,7 @@
 #include "6lowpan/ws/ws_pae_timers.h"
 #include "6lowpan/ws/ws_pae_auth.h"
 #include "6lowpan/ws/ws_pae_nvm_store.h"
+#include "6lowpan/mac/mac_helper.h"
 #include "6lowpan/ws/ws_pae_nvm_data.h"
 #include "6lowpan/ws/ws_pae_lib.h"
 #include "6lowpan/ws/ws_pae_time.h"
@@ -1613,7 +1614,10 @@ typedef struct {
     nvm_tlv_t tlv;
     uint16_t lfn_version;
     gtk_key_t lgtk[GTK_NUM];
+    uint32_t frame_counter[LGTK_NUM];   /**< MAC frame counters of the LGTKs when stored */
 } lgtks_nvm_tlv_t;
+
+static uint32_t ws_pae_auth_lgtk_fc_stored[LGTK_NUM];
 
 static void ws_pae_auth_lgtks_store(pae_auth_t *pae_auth)
 {
@@ -1623,7 +1627,28 @@ static void ws_pae_auth_lgtks_store(pae_auth_t *pae_auth)
     ws_pae_nvm_store_generic_tlv_create(&t.tlv, PAE_NVM_LGTKS_TAG, sizeof(t) - sizeof(nvm_tlv_t));
     t.lfn_version = pae_auth->interface_ptr->ws_info->lfngtk.lfn_version;
     memcpy(t.lgtk, pae_auth->sec_keys_nw_info->lgtks->gtk, sizeof(t.lgtk));
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        uint32_t fc = 0;
+        mac_helper_key_link_frame_counter_read(pae_auth->interface_ptr->id, &fc, WS_LGTK_MAC_SLOT_FIRST + i);
+        t.frame_counter[i] = fc;
+        ws_pae_auth_lgtk_fc_stored[i] = fc;
+    }
     ws_pae_nvm_store_tlv_file_write(LGTKS_FILE_NAME, &t.tlv);
+}
+
+/* As for the GTKs: stored again when a counter has advanced by the store
+ * threshold; restored with FRAME_COUNTER_INCREMENT added, so that LFNs
+ * accept the restarted border router's frames */
+static void ws_pae_auth_lgtk_fc_check(pae_auth_t *pae_auth)
+{
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        uint32_t fc = 0;
+        mac_helper_key_link_frame_counter_read(pae_auth->interface_ptr->id, &fc, WS_LGTK_MAC_SLOT_FIRST + i);
+        if (fc > ws_pae_auth_lgtk_fc_stored[i] + FRAME_COUNTER_STORE_THRESHOLD) {
+            ws_pae_auth_lgtks_store(pae_auth);
+            return;
+        }
+    }
 }
 
 static bool ws_pae_auth_lgtks_restore(pae_auth_t *pae_auth)
@@ -1644,6 +1669,7 @@ static bool ws_pae_auth_lgtks_restore(pae_auth_t *pae_auth)
     }
     // The next event increments it: LFNs see a newer version than before
     pae_auth->interface_ptr->ws_info->lfngtk.lfn_version = t.lfn_version;
+    memcpy(ws_pae_auth_lgtk_fc_stored, t.frame_counter, sizeof(ws_pae_auth_lgtk_fc_stored));
     return true;
 }
 
@@ -1698,7 +1724,15 @@ static void ws_pae_auth_lgtk_timer(pae_auth_t *pae_auth, uint16_t seconds)
     }
     if (!pae_auth->lgtk_started && ws_pae_auth_lgtks_restore(pae_auth)) {
         pae_auth->lgtk_started = true;
-        ws_pae_auth_lgtk_changed(pae_auth, "restored from storage");
+        // Installs the LGTKs on the MAC; then their frame counters
+        uint32_t fc[LGTK_NUM];
+        memcpy(fc, ws_pae_auth_lgtk_fc_stored, sizeof(fc));
+        pae_auth->lgtk_update(pae_auth->interface_ptr, lgtks, sec_prot_keys_gtk_status_active_get(lgtks), "restored from storage");
+        for (uint8_t i = 0; i < LGTK_NUM; i++) {
+            uint32_t v = fc[i] < UINT32_MAX - FRAME_COUNTER_INCREMENT ? fc[i] + FRAME_COUNTER_INCREMENT : UINT32_MAX;
+            mac_helper_key_link_frame_counter_set(pae_auth->interface_ptr->id, v, WS_LGTK_MAC_SLOT_FIRST + i);
+        }
+        ws_pae_auth_lgtks_store(pae_auth);
         return;
     }
     if (!pae_auth->lgtk_started) {
@@ -1713,6 +1747,9 @@ static void ws_pae_auth_lgtk_timer(pae_auth_t *pae_auth, uint16_t seconds)
         return;
     }
     pae_auth->lgtk_since_install_s += seconds;
+    if (pae_auth->lgtk_since_install_s % 60 < seconds) {
+        ws_pae_auth_lgtk_fc_check(pae_auth);
+    }
 
     uint64_t current_time = ws_pae_current_time_get();
     int8_t active = sec_prot_keys_gtk_status_active_get(lgtks);

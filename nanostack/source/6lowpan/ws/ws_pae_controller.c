@@ -436,6 +436,18 @@ static int8_t ws_pae_controller_auth_nw_frame_counter_read(protocol_interface_in
 }
 #endif
 
+/* Store the frame counters now (an LFN, whose keys are valid: after a
+ * reset it restarts above them, so that its parent accepts its frames) */
+void ws_pae_controller_frame_counter_store_now(protocol_interface_info_entry_t *interface_ptr)
+{
+    pae_controller_t *controller = interface_ptr ? ws_pae_controller_get(interface_ptr) : NULL;
+    if (controller) {
+        // The first call takes a new key's counter, the second stores it
+        ws_pae_controller_frame_counter_store(controller, false);
+        ws_pae_controller_frame_counter_store(controller, false);
+    }
+}
+
 int8_t ws_pae_controller_nw_key_valid(protocol_interface_info_entry_t *interface_ptr, uint8_t *br_iid)
 {
     if (!interface_ptr) {

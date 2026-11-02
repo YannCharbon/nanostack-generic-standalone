@@ -437,18 +437,22 @@ static void ws_lfn_lpa_choose(protocol_interface_info_entry_t *cur)
     }
     lfn->disc_decide_s = 0;
     if (lfn->searching) {
-        // A search while keeping the parent: change only for another parent
+        // A search while keeping the parent: attach to the best parent that
+        // answered, the same one included (a restarted parent has a new LFN
+        // broadcast schedule and applies the LTO-IE of its LPA), without
+        // EAPOL; nobody: keep the parent
         lfn->searching = false;
-        if (!best || !memcmp(best->ind.SrcAddr, lfn->parent_eui64, 8)) {
-            tr_info("LFN: parent search: %s", best ? "the parent answered, kept" : "no other parent heard");
-            if (best) {
-                lfn->uplink_fails = 0;
-            }
+        if (!best) {
+            tr_info("LFN: parent search: no parent heard, parent kept");
             ws_lfn_candidates_clear(cur);
             return;
         }
-        tr_info("LFN: parent changed: %s -> %s (routing cost %u, %d dBm)", trace_array(lfn->parent_eui64, 8),
-                trace_array(best->ind.SrcAddr, 8), best->routing_cost, best->ind.signal_dbm);
+        if (!memcmp(best->ind.SrcAddr, lfn->parent_eui64, 8)) {
+            tr_info("LFN: parent search: the parent answered, attaching again");
+        } else {
+            tr_info("LFN: parent changed: %s -> %s (routing cost %u, %d dBm)", trace_array(lfn->parent_eui64, 8),
+                    trace_array(best->ind.SrcAddr, 8), best->routing_cost, best->ind.signal_dbm);
+        }
         ns_fhss_ws_lfn_bc_stop(cur->ws_info->fhss_api);
         lfn->parent_known = false;
         lfn->lpc_received = false;
@@ -590,6 +594,10 @@ static void ws_lfn_lpc_analyse(protocol_interface_info_entry_t *cur, const struc
         if (data->Key.KeyIndex != mac_helper_default_key_index_get(cur)) {
             mac_helper_security_auto_request_key_index_set(cur, index, data->Key.KeyIndex);
         }
+    }
+    if (lfn->lpc_received && cur->nwk_bootstrap_state == ER_BOOTSTRAP_DONE) {
+        // New LGTKs from a group-key handshake: stored once they work
+        ws_pae_controller_nw_key_valid(cur, NULL);
     }
     if (!lfn->lpc_received) {
         lfn->lpc_received = true;
@@ -771,6 +779,10 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
         case WS_ROUTING_READY:
             tr_info("LFN operational");
             ws_pae_controller_bootstrap_done(cur);
+            // The keys work: stored (non-volatile storage, when the
+            // application gives one), as an FFN does once in a DODAG
+            ws_pae_controller_nw_key_valid(cur, NULL);
+            ws_pae_controller_frame_counter_store_now(cur);
             cur->ws_info->connected_time = cur->ws_info->uptime;
             ws_bootstrap_state_change(cur, ER_BOOTSTRAP_DONE);
             break;
