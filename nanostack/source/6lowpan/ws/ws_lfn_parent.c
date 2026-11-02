@@ -567,14 +567,34 @@ static void ws_lfn_mc_strip_mpl(buffer_t *buf)
  * listens to the group, sent in its listen window, IPv6 destination
  * unchanged (black-box items 41-42): ff02::1 to every child, other groups to
  * the children that registered them (RFC 9685) */
+/* An MPL tunnel (outer destination ff03::fc, hop-by-hop MPL option, then
+ * the IPv6 packet to the group, RFC 7731): the length of the outer part, 0
+ * for another packet */
+static uint16_t ws_lfn_mc_tunnel_len(buffer_t *buf)
+{
+    const uint8_t *ip = buffer_data_pointer(buf);
+    uint16_t len = buffer_data_length(buf);
+
+    if (len < 48 || memcmp(ip + 24, ADDR_ALL_MPL_FORWARDERS, 16) || ip[6] != IPV6_NH_HOP_BY_HOP) {
+        return 0;
+    }
+    uint16_t hbh_len = (ip[41] + 1) * 8;
+    if (ip[40] != IPV6_NH_IPV6 || 40 + hbh_len + 40 > len) {
+        return 0;
+    }
+    return 40 + hbh_len;
+}
+
 void ws_lfn_parent_multicast_copy(protocol_interface_info_entry_t *cur, buffer_t *buf, bool stable_only, uint_fast16_t max_iphc_size)
 {
-    const uint8_t *ip_dst = buffer_data_pointer(buf) + 24;
     bool all_nodes;
 
     if (!cur->ws_info->lfn_parent) {
         return;
     }
+    // A group's packet tunnelled in MPL: the inner packet is the one copied
+    uint16_t outer = ws_lfn_mc_tunnel_len(buf);
+    const uint8_t *ip_dst = buffer_data_pointer(buf) + outer + 24;
     all_nodes = !memcmp(ip_dst, ADDR_LINK_LOCAL_ALL_NODES, 16);
     ns_list_foreach(mac_neighbor_table_entry_t, n, &mac_neighbor_info(cur)->neighbour_list) {
         if (!n->trusted_device || !ws_lfn_is_child(cur, n, NULL) ||
@@ -584,6 +604,9 @@ void ws_lfn_parent_multicast_copy(protocol_interface_info_entry_t *cur, buffer_t
         buffer_t *copy = buffer_clone(buf);
         if (!copy) {
             return;
+        }
+        if (outer) {
+            buffer_data_strip_header(copy, outer);
         }
         ws_lfn_mc_strip_mpl(copy);
         copy->dst_sa.addr_type = ADDR_802_15_4_LONG;
