@@ -343,6 +343,16 @@ With Eco the 5 ppm floor reaches the 100 ms cap after 5.5 h of the 10 h sync per
 
 Result (`test_lfn_profiles.sh`, Eco, 4 h interval, `BR_PERIOD=18500 LFN_PERIOD=27000 DUR=259200`, 3 seeds × 72 h): every check passes in each seed: operational at 213–614 s under the router and 329–484 s under the border router; 14 of 14 downlinks and 10 of 10 uplinks per LFN, all echoed; `ff02::1` 14 of 14; 8 sync frames, no sync period without one; phase error at most 32 µs from the third sync. LFN current from 24 h: 6.0–6.3 µA (the 300 s Eco interval: 10.8–11.4 µA).
 
+**Cost of the automatic widening bound, and the measured EM2 floor** (`test_lfn_profiles.sh`, 3 seeds each, the emulator's `efr32fg25-soc.ini` with the EM2 floor measured on our LFN, 7.0 µA instead of the datasheet's 4.6, and the LFN-only profile `efr32fg25-lfn.ini` with the RX plateau, TX, EM2 wake and teardown measured on our LFN):
+
+| | Test (12 h, from 3 h) | Balanced (24 h, from 3 h) | Eco (48 h, from 24 h) |
+| --- | --- | --- | --- |
+| `efr32fg25-soc.ini`, bound 100 ms (the former fixed value, `widening_max_us=100000`) | | | 12.8–13.5 µA |
+| `efr32fg25-soc.ini`, automatic bound (default) | 22.0–22.8 µA | 11.4–11.8 µA | 13.8–14.4 µA |
+| LFNs on `efr32fg25-lfn.ini`, automatic bound | 18.5–19.3 µA | 10.6–10.9 µA | 12.4–13.0 µA |
+
+The 7.0 µA floor adds 2.4 µA everywhere (Balanced was 9.1–10.0 µA, Eco 10.8–11.4 µA, §11 above). With Eco the automatic bound costs about 1 µA once the rate is measured (`drift_floor_ppb` 5 ppm × 10 h = 180 ms each side, which the 100 ms bound cut), and much more before: the rate needs two sync frames, 10 h apart, and until then the windows widen at `drift_ppm` (50 ppm) up to 1.8 s each side (the first 20 h average 23 µA). A lower `drift_ppm` for a better crystal, or a lower `drift_floor_ppb`, reduces both; a fixed `widening_max_us` keeps the former figures but misses the windows of long intervals.
+
 **A parent's asynchronous sweeps and its LFN children** (`mcast_eco` seed 1, `mcast_balanced` seed 1, the 4 h runs). A parent's PAN advertisement or PAN configuration sweep holds its radio for 0.3–0.6 s (one frame per channel); a frame waiting for an LFN window or an LFN broadcast slot in that time went one interval later (Eco: 300 s; the sync slot of a 10 h sync period: 20 h). `mcast_balanced` seed 1 missed Q 78 that way: the border router's PAN configuration sweep started at 7 097.70 s, LFN 2's window opened at 7 097.90 s with the radio busy ("rf rx lost: radio off" on the LFN for the sweep's frames), and Q 78 came one 60 s interval later, after the end of the counted traffic (reproduced on stack 7dfc4fe with the scripts of that time). In the MAC an asynchronous sweep now waits while a frame queued for an LFN (its window, an LFN broadcast slot, an LPA at its time) would be due before the sweep could end (channels × airtime + 3 ms each + 20 ms), at most 10 s; the LFN frame goes first and the queue is read again at its confirmation (`mcps_async_lfn_conflict()`, FHSS `lfn_tx_delay`). `wisun-br-linux` leaves frame timing to its RCP and has no such rule we could take [S: v2.10.3 `ws_mngt.c`, `ws_llc.c`]. With it, Q 78 comes in the next window (7 105 s), and the `mcast` tests pass under Balanced and Eco (full suite).
 
 **Lost NAs** (tests agent's `test_lfn_lost.sh`). Three stack faults:
