@@ -1047,6 +1047,8 @@ typedef struct ws_lfn_settings {
  * RFC 6719); the old parent is released 15 s plus two listen intervals
  * after the new registration, once the new route has reached the border
  * router (RPL DAO delay 1-7 s) and the old parent has delivered what it held */
+/* DHCPv6 address lifetime of a border router that parents LFNs: infinite */
+#define WS_LFN_DHCP_ADDRESS_LIFETIME             0xffffffffUL
 #define WS_LFN_PARENT_CHECK_S_DEFAULT            21600
 #define WS_LFN_PARENT_CHECK_WEAK_S_DEFAULT       3600
 #define WS_LFN_PARENT_CHECK_LND_SLOTS_DEFAULT    10

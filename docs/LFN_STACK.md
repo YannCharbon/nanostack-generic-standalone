@@ -106,6 +106,8 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 
 | `lnd_response_delay_ms` | 1550 | LFN | The discovery window opens this long after the sweep starts, and never before 20 ms per channel plus 300 ms [M item 4] |
 
+**DHCPv6 lease** [S: `wisun-br-linux` `examples/wsbrd.conf`, infinite by default]: `ws_management_lfn_parent_set(id, true)` on a border router sets the DHCPv6 address lifetime to infinite (`WS_LFN_DHCP_ADDRESS_LIFETIME`); an application sets a finite one with `ws_cfg_bbr_set()` after that call (emulator: `dhcp_lifetime_s`). With the network-size lifetime (2 h in a small network) every node renewed every 30 min, and an LFN registered its address again after each renewal (emulator, border router – router – LFN, 3 h: 5 renewals each for the router and the LFN, 6 AROs from the LFN); with the infinite lease none, 1 ARO, traffic both ways through the router intact (3 seeds). FAN 1.0 border routers keep the network-size lifetime.
+
 Limits: one LFN parent per LFN. The split (Spinel) programs refuse the LFN roles (LFN study M12).
 
 ## 6. Not done here
@@ -284,7 +286,7 @@ Silicon Labs' LFN profiles [S: Simplicity SDK `sisdk-2025.12`, `wisun/stack/inc/
 
 Not used by our LFN: the NA wait duration (5 min, 1 h, 2 h; our LFN does not wait for the NA of its ARO), the EAPOL initial-key timers and the DHCPv6 solicit timers per profile (ours are the FFN's), and `allow_skip`. The LGTK, GTK, PMK and PTK lifetimes are border-router settings, the same in every profile (`wsbrd.conf`: LGTK 90 days, installed at 90 %, activated 12 h before expiry). Ours: `bc_widening_max_us` 1 800 000 for Eco (`drift_ppm` 50 × 10 h), so that the LFN catches the sync frames of a 10 h sync period before it has measured its rate; 0 (= `widening_max_us`) otherwise.
 
-**Runs** (emulator `sim_utils/vtime/test_lfn_profiles.sh`): border router, an FFN router, an LFN under each; the profile on both LFNs and both parents; each node's clock drawn within ±20 ppm; UDP request border router → each LFN and `ff02::1` every 30 min, LFN → border router every 45 min, each echoed; DHCPv6 lease infinite (`wsbrd` 2.x; ours otherwise gives 2 h in a small network and the LFN renews every 30 min, each time with an ARO); FG25 power profile, EU mode 3, +10 dBm, −50 dBm links. Balanced: 6 seeds × 72 h; Eco: 10 seeds × 96 h; LGTK renewal with lifetimes scaled to 48 h (installed at 24 h, activated 12 h later): 3 seeds × 72 h each.
+**Runs** (emulator `sim_utils/vtime/test_lfn_profiles.sh`): border router, an FFN router, an LFN under each; the profile on both LFNs and both parents; each node's clock drawn within ±20 ppm; UDP request border router → each LFN and `ff02::1` every 30 min, LFN → border router every 45 min, each echoed; DHCPv6 lease infinite (`wsbrd` 2.x, and now our default for a border router that parents LFNs, §5); FG25 power profile, EU mode 3, +10 dBm, −50 dBm links. Balanced: 6 seeds × 72 h; Eco: 10 seeds × 96 h; LGTK renewal with lifetimes scaled to 48 h (installed at 24 h, activated 12 h later): 3 seeds × 72 h each.
 
 | Check | Balanced | Eco |
 | --- | --- | --- |

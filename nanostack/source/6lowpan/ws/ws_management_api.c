@@ -1151,6 +1151,22 @@ int ws_management_lfn_parent_set(int8_t interface_id, bool enable)
         return -2;
     }
     cur->ws_info->lfn_parent = enable;
+#ifdef HAVE_WS_BORDER_ROUTER
+    /* A border router that parents LFNs gives DHCPv6 addresses that never
+       expire, as wsbrd 2.x does by default [S: wisun-br-linux
+       examples/wsbrd.conf]: with the network-size lifetimes (2 to 24 h) an
+       LFN renews every 30 min to 6 h, each renewal followed by an address
+       registration. An application that wants a finite lease sets
+       bbr.dhcp_address_lifetime (ws_cfg_bbr_set()) after this call. FFN
+       routers handle the infinite lifetime as well (no renewal). */
+    if (enable && cur->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_BORDER_ROUTER) {
+        ws_bbr_cfg_t bbr;
+        if (ws_cfg_bbr_get(&bbr) >= 0 && bbr.dhcp_address_lifetime != WS_LFN_DHCP_ADDRESS_LIFETIME) {
+            bbr.dhcp_address_lifetime = WS_LFN_DHCP_ADDRESS_LIFETIME;
+            ws_cfg_bbr_set(NULL, &bbr, 0);
+        }
+    }
+#endif
     return 0;
 #else
     return enable ? -2 : 0;
