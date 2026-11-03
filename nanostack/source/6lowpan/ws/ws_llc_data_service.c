@@ -722,6 +722,9 @@ static void ws_llc_mac_confirm_cb(const mac_api_t *api, const mcps_data_conf_t *
     if (messsage_type >= WS_FT_LPA && messsage_type <= WS_FT_LTS) {
         tr_debug("LFN frame %u to %s: status %u", messsage_type, trace_array(message->dst_address, 8), data->status);
     }
+    if (messsage_type == WS_FT_LPA) {
+        ws_lfn_parent_lpa_confirm(interface, message->dst_address, data->status == MLME_SUCCESS);
+    }
     // FAN 1.1: an LTO-IE the LFN acknowledged moves its schedule
     if (message->lto_sent && data->status == MLME_SUCCESS) {
         ns_fhss_ws_lfn_neighbor_lto(interface->ws_info->fhss_api, message->dst_address, message->lto.offset,

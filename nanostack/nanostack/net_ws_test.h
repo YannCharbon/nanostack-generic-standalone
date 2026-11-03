@@ -236,5 +236,12 @@ int ws_test_neighbour_temporary_lifetime_set(int8_t interface_id, uint32_t tempo
  */
 int ws_test_lfn_parent_silence(int8_t interface_id, bool silent);
 
+/**
+ * Test hook: an LFN parent drops its next count LPAs as if they were lost on
+ * the air (never sent, so never acknowledged). \return 0 OK, -1 not an LFN
+ * parent.
+ */
+int ws_test_lfn_lpa_drop(int8_t interface_id, uint8_t count);
+
 #endif /* DOXYGEN */
 #endif /* NET_THREAD_TEST_H_ */

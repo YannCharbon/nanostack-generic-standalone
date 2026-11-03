@@ -47,12 +47,14 @@ void ws_lfn_parent_mc_register(struct protocol_interface_info_entry *cur, const 
 void ws_lfn_parent_mpl_copy(struct protocol_interface_info_entry *cur, struct buffer *buf);
 /* Parent: an LFN child deregistered (ARO lifetime 0) */
 void ws_lfn_parent_child_release(struct protocol_interface_info_entry *cur, const uint8_t eui64[8]);
+void ws_lfn_parent_lpa_confirm(struct protocol_interface_info_entry *cur, const uint8_t eui64[8], bool acked);
 /* Parent: the destination is an LFN child (frames to it carry an LBT-IE) */
 bool ws_lfn_parent_dst_is_lfn(struct protocol_interface_info_entry *cur, const uint8_t *dst64);
 #else
 #define ws_lfn_parent_dst_is_lfn(cur, dst64) (false)
 #define ws_lfn_parent_mpl_copy(cur, buf) ((void)0)
 #define ws_lfn_parent_child_release(cur, eui64) ((void)0)
+#define ws_lfn_parent_lpa_confirm(cur, eui64, acked) ((void)0)
 #define ws_lfn_parent_mc_register(cur, eui64, group, lifetime) ((void)0)
 #define ws_lfn_parent_lgtk_update(cur, lgtks, active_index, event) ((void)0)
 #define ws_lfn_parent_tx_key_index(cur, dst64) (0)

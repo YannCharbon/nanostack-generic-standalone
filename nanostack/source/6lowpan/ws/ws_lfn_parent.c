@@ -140,6 +140,8 @@ static void ws_lfn_security_set(protocol_interface_info_entry_t *cur, asynch_req
     req->security.KeyIndex = mac_helper_default_key_index_get(cur);
 }
 
+static void ws_lfn_lpa_record(protocol_interface_info_entry_t *cur, const uint8_t *eui64, uint32_t window_ms);
+
 static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t *dst, const ws_nr_ie_t *nr, uint32_t proposed_ms, const ws_lnd_ie_t *lnd, uint32_t rx_timestamp, bool lto)
 {
     const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
@@ -188,6 +190,13 @@ static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t 
     // A router's routing cost is updated when it sends a PAN advertisement,
     // which can be rare: the PAN-IE of an LPA gives the current one
     ws_bootstrap_routing_cost_update(cur);
+    ws_lfn_lpa_record(cur, dst, lnd ? (uint32_t)lnd->discovery_slots * lnd->discovery_slot_time : 0);
+    if (cur->ws_info->lfn.test_lpa_drop) {
+        // Test hook (ws_test_lfn_lpa_drop()): as if lost on the air, unacknowledged
+        cur->ws_info->lfn.test_lpa_drop--;
+        tr_info("LPA to %s dropped (test)", trace_array(dst, 8));
+        return;
+    }
     // Unsecured, as a PAN advertisement
     ws_llc_asynch_request(cur, &req);
 }
@@ -230,38 +239,72 @@ static void ws_lfn_bc_send(protocol_interface_info_entry_t *cur, uint8_t message
     ws_llc_asynch_request(cur, &req);
 }
 
-/* One LPA per sweep: an LPAS sweep reaches us on several channels, and a
- * second LPA (with a second LTO-IE) would move the LFN's schedule twice in
- * our view and once in its own. LPAS from an LFN answered less than
- * WS_LFN_LPA_HOLDOFF_INTERVALS of its proposed intervals ago are ignored. */
-#define WS_LFN_LPA_HOLDOFF_INTERVALS 2
+/* One LPA per discovery: an LPAS sweep reaches us on several channels (and
+ * a check sends two), and a second LPA (with a second LTO-IE) would move the
+ * LFN's schedule twice in our view and once in its own (docs/LFN_STACK.md
+ * §4). Two rules:
+ * - no new LPA while one to the same LFN is still queued
+ *   (ws_llc_lfn_lpa_pending(); wisun-br-linux v2.10.3 ws_mngt_lpas_analyze()
+ *   has only this rule [S]);
+ * - after an LPA the LFN acknowledged, its LPAS are ignored until the end of
+ *   the discovery window that LPA answered (the LND-IE's slots x slot time,
+ *   plus 1 s): the other LPAS of the same sweeps. A lost or unacknowledged
+ *   LPA starts no hold-off, so the LFN's next sweep is answered. Before, a
+ *   hold-off of 2 proposed intervals started before the LPA went out, and
+ *   even when it was then dropped: under the Eco profile (300 s) a lost LPA
+ *   delayed the join by about 10 min [I]. */
 #define WS_LFN_LPA_RECENT 8
 static struct {
     uint8_t eui64[8];
-    uint32_t until_s;
+    uint32_t window_s;      /**< Hold-off length, armed when the LPA is acknowledged */
+    uint32_t until_s;       /**< End of the hold-off (0: not armed) */
 } ws_lfn_lpa_recent[WS_LFN_LPA_RECENT];
 
-static bool ws_lfn_lpa_recently_sent(protocol_interface_info_entry_t *cur, const uint8_t *eui64, uint32_t proposed_ms)
+static bool ws_lfn_lpa_held_off(protocol_interface_info_entry_t *cur, const uint8_t *eui64)
 {
-    uint32_t now = cur->ws_info->uptime;
-    int free_i = -1, oldest = 0;
-
     for (int i = 0; i < WS_LFN_LPA_RECENT; i++) {
-        if (!memcmp(ws_lfn_lpa_recent[i].eui64, eui64, 8) && (int32_t)(ws_lfn_lpa_recent[i].until_s - now) > 0) {
+        if (!memcmp(ws_lfn_lpa_recent[i].eui64, eui64, 8) && ws_lfn_lpa_recent[i].until_s &&
+                (int32_t)(ws_lfn_lpa_recent[i].until_s - cur->ws_info->uptime) > 0) {
             return true;
         }
-        if ((int32_t)(ws_lfn_lpa_recent[i].until_s - now) <= 0) {
-            free_i = i;
-        } else if (ws_lfn_lpa_recent[i].until_s < ws_lfn_lpa_recent[oldest].until_s) {
+    }
+    return false;
+}
+
+/* An LPA queued: its hold-off length, armed by its acknowledgement */
+static void ws_lfn_lpa_record(protocol_interface_info_entry_t *cur, const uint8_t *eui64, uint32_t window_ms)
+{
+    uint32_t now = cur->ws_info->uptime;
+    int slot = -1, oldest = 0;
+
+    for (int i = 0; i < WS_LFN_LPA_RECENT; i++) {
+        if (!memcmp(ws_lfn_lpa_recent[i].eui64, eui64, 8)) {
+            slot = i;
+            break;
+        }
+        if (slot < 0 && (!ws_lfn_lpa_recent[i].until_s || (int32_t)(ws_lfn_lpa_recent[i].until_s - now) <= 0)) {
+            slot = i;
+        }
+        if (ws_lfn_lpa_recent[i].until_s < ws_lfn_lpa_recent[oldest].until_s) {
             oldest = i;
         }
     }
-    if (free_i < 0) {
-        free_i = oldest;
+    if (slot < 0) {
+        slot = oldest;
     }
-    memcpy(ws_lfn_lpa_recent[free_i].eui64, eui64, 8);
-    ws_lfn_lpa_recent[free_i].until_s = now + (proposed_ms * WS_LFN_LPA_HOLDOFF_INTERVALS + 999) / 1000 + 1;
-    return false;
+    memcpy(ws_lfn_lpa_recent[slot].eui64, eui64, 8);
+    ws_lfn_lpa_recent[slot].window_s = (window_ms + 999) / 1000 + 1;
+    ws_lfn_lpa_recent[slot].until_s = 0;
+}
+
+void ws_lfn_parent_lpa_confirm(protocol_interface_info_entry_t *cur, const uint8_t eui64[8], bool acked)
+{
+    for (int i = 0; i < WS_LFN_LPA_RECENT; i++) {
+        if (!memcmp(ws_lfn_lpa_recent[i].eui64, eui64, 8)) {
+            ws_lfn_lpa_recent[i].until_s = acked ? cur->ws_info->uptime + ws_lfn_lpa_recent[i].window_s : 0;
+            return;
+        }
+    }
 }
 
 static bool ws_lfn_is_child(protocol_interface_info_entry_t *cur, mac_neighbor_table_entry_t *n, ws_neighbor_class_entry_t **wsn)
@@ -385,7 +428,7 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
             tr_debug("LPAS from %s ignored (%s)", trace_array(data->SrcAddr, 8), why);
             return true;
         }
-        if (ws_lfn_lpa_recently_sent(cur, data->SrcAddr, lus.listen_interval)) {
+        if (ws_lfn_lpa_held_off(cur, data->SrcAddr)) {
             tr_debug("LPAS from %s: LPA already sent", trace_array(data->SrcAddr, 8));
             return true;
         }
