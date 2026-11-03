@@ -292,6 +292,16 @@ uint8_t *ws_wh_lbs_write(uint8_t *ptr, struct ws_lbs_ie *lbs_ptr)
     return ptr;
 }
 
+/* LBC-IE: interval (3, ms, little endian), sync period (1) [S: Wireshark's
+ * dissector, wisun-br-linux ws_ie.c layout] */
+uint8_t *ws_wh_lbc_write(uint8_t *ptr, uint32_t interval_ms, uint8_t sync_period)
+{
+    ptr = ws_wh_header_base_write(ptr, ws_wh_lbc_length(), WH_IE_LBC_TYPE);
+    ptr = common_write_24_bit_inverse(interval_ms, ptr);
+    *ptr++ = sync_period;
+    return ptr;
+}
+
 uint16_t ws_wh_nr_length(struct ws_nr_ie *nr_ptr)
 {
     uint16_t length;
@@ -912,6 +922,18 @@ bool ws_wh_lbs_read(uint8_t *data, uint16_t length, struct ws_lbs_ie *lbs_ptr)
     lbs_ptr->channel_plan_tag = *data++;
     lbs_ptr->broadcast_sync_period = *data;
 
+    return true;
+}
+
+bool ws_wh_lbc_read(uint8_t *data, uint16_t length, struct ws_lbc_ie *lbc_ptr)
+{
+    mac_header_IE_t ie;
+    ie.id = MAC_HEADER_ASSIGNED_EXTERNAL_ORG_IE_ID;
+    if (ws_wh_lbc_length() > mac_ie_header_sub_id_discover(data, length, &ie, WH_IE_LBC_TYPE)) {
+        return false;
+    }
+    lbc_ptr->lfn_broadcast_interval = common_read_24_bit_inverse(ie.content_ptr);
+    lbc_ptr->broadcast_sync_period = ie.content_ptr[3];
     return true;
 }
 

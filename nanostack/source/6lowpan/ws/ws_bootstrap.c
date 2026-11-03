@@ -3146,6 +3146,11 @@ static void ws_bootstrap_pan_config(protocol_interface_info_entry_t *cur)
     async_req.wp_requested_nested_ie_list.vp_ie = true;
     if (ws_version_1_1(cur)) {
         async_req.wp_requested_nested_ie_list.lfn_gtk_version_ie = ws_lfn_version_learned(cur);
+        /* The PAN-wide LFN broadcast configuration: the border router's,
+           repeated by the routers that learned it [S: wsbrd ws_mngt.c sends
+           it in its PAN configurations while LFNs are enabled] */
+        async_req.wh_requested_ie_list.lbc_ie =
+            (cur->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_BORDER_ROUTER && cur->ws_info->lfn_parent) || cur->ws_info->lfn.lbc_learned;
     }
 
     ws_bootstrap_set_asynch_channel_list(cur, &async_req);

@@ -54,6 +54,7 @@ typedef struct wh_ie_sub_list_s {
     bool lbs_ie: 1;  /**< LFN Broadcast Schedule */
     bool lbt_ie: 1;  /**< LFN Broadcast Timing (written by the FHSS at TX time) */
     bool flus_ie: 1; /**< FFN for LFN Unicast Schedule (parent's LPA; black-box phase 3) */
+    bool lbc_ie: 1;  /**< LFN Broadcast Configuration (PAN configuration, FAN 1.1) */
 } wh_ie_sub_list_t;
 
 /**

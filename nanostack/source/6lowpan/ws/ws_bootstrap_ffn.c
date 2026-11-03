@@ -413,6 +413,33 @@ static void ws_bootstrap_ffn_pan_config_lfn_analyze(struct protocol_interface_in
         return;
     }
 
+    /* LBC-IE: the border router's LFN broadcast interval and sync period,
+       which a router that parents LFNs takes for its own LFN broadcast
+       schedule (PAN-wide, so that an LFN that changes parent keeps them) [S:
+       Wireshark's dissector, "the BR advertises the PAN-wide LFN broadcast
+       configuration"; wisun-br-linux sends it, its router does not read it
+       yet] */
+    ws_lbc_ie_t lbc;
+    if (ws_wh_lbc_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lbc) && lbc.lfn_broadcast_interval && lbc.broadcast_sync_period) {
+        ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
+        if (!cur->ws_info->lfn.lbc_learned || c->bc_interval_ms != lbc.lfn_broadcast_interval || c->bc_sync_period != lbc.broadcast_sync_period) {
+            bool changed = c->bc_interval_ms != lbc.lfn_broadcast_interval;
+            tr_info("LBC-IE: LFN broadcast interval %"PRIu32" ms, sync period %u", (uint32_t)lbc.lfn_broadcast_interval, lbc.broadcast_sync_period);
+            c->bc_interval_ms = lbc.lfn_broadcast_interval;
+            c->bc_sync_period = lbc.broadcast_sync_period;
+            cur->ws_info->lfn.lbc_learned = true;
+            if (changed && cur->ws_info->lfn_parent && cur->ws_info->fhss_api) {
+                fhss_ws_lfn_bc_t bc = {
+                    .interval_ms = c->bc_interval_ms,
+                    .bsi = cur->ws_info->hopping_schedule.fhss_bsi,
+                };
+                if (ns_fhss_ws_lfn_bc_set(cur->ws_info->fhss_api, &bc)) {
+                    tr_error("LFN broadcast schedule: FHSS refused the LBC-IE values");
+                }
+            }
+        }
+    }
+
     ws_lfnver_ie_t lfn_version;
     if (!ws_wp_nested_lfn_version_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &lfn_version)) {
         return; // LFN version

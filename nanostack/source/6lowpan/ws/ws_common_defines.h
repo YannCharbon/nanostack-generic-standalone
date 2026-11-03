@@ -40,6 +40,7 @@
 #define WH_IE_LND_TYPE              16  /**< LFN Network Discovery information */
 #define WH_IE_LTO_TYPE              17  /**< LFN Timing information */
 #define WH_IE_PANID_TYPE            18  /**< PAN Identifier information */
+#define WH_IE_LBC_TYPE              0xC0 /**< LFN Broadcast Configuration (PAN-wide LFN broadcast interval and sync period; Wireshark's dissector, wisun-br-linux ws_ie.c) */
 
 
 #define WS_WP_NESTED_IE             4 /**< WS nested Payload IE element'selement could include mltiple sub payload IE */
@@ -236,6 +237,11 @@ typedef struct ws_lto_ie {
 /**
  * @brief ws_lbs_ie_t WS LBS-IE
  */
+typedef struct ws_lbc_ie {
+    uint_fast24_t lfn_broadcast_interval;   /**< ms */
+    uint8_t broadcast_sync_period;          /**< LFN broadcast intervals between sync frames */
+} ws_lbc_ie_t;
+
 typedef struct ws_lbs_ie {
     uint8_t channel_plan_tag;
     uint8_t broadcast_sync_period;      /**< LFN broadcast intervals between sync frames (Wireshark's layout) */

@@ -41,6 +41,7 @@ typedef struct ws_wp_network_name {
 #define ws_wh_flus_length() 2
 #define ws_wh_lbt_length() 5
 #define ws_wh_lbs_length() 7
+#define ws_wh_lbc_length() 4
 #define ws_wh_lnd_length() 8
 #define ws_wh_lto_length() 6
 #define ws_wh_panid_length() 2
@@ -58,6 +59,7 @@ uint8_t *ws_wh_lus_write(uint8_t *ptr, struct ws_lus_ie *lus_ptr);
 uint8_t *ws_wh_flus_write(uint8_t *ptr, struct ws_flus_ie *flus_ptr);
 uint8_t *ws_wh_lbt_write(uint8_t *ptr);
 uint8_t *ws_wh_lbs_write(uint8_t *ptr, struct ws_lbs_ie *lbs_ptr);
+uint8_t *ws_wh_lbc_write(uint8_t *ptr, uint32_t interval_ms, uint8_t sync_period);
 uint8_t *ws_wh_nr_write(uint8_t *ptr, struct ws_nr_ie *nr_ptr);
 uint16_t ws_wh_nr_length(struct ws_nr_ie *nr_ptr);
 uint8_t *ws_wh_lnd_write(uint8_t *ptr, struct ws_lnd_ie *lnd_ptr);
@@ -76,6 +78,7 @@ bool ws_wh_lus_read(uint8_t *data, uint16_t length, struct ws_lus_ie *lus_ptr);
 bool ws_wh_flus_read(uint8_t *data, uint16_t length, struct ws_flus_ie *flus_ptr);
 bool ws_wh_lbt_read(uint8_t *data, uint16_t length, struct ws_lbt_ie *ws_lbt);
 bool ws_wh_lbs_read(uint8_t *data, uint16_t length, struct ws_lbs_ie *lbs_ptr);
+bool ws_wh_lbc_read(uint8_t *data, uint16_t length, struct ws_lbc_ie *lbc_ptr);
 bool ws_wh_nr_read(uint8_t *data, uint16_t length, struct ws_nr_ie *nr_ptr);
 bool ws_wh_lnd_read(uint8_t *data, uint16_t length, struct ws_lnd_ie *lnd_ptr);
 bool ws_wh_lto_read(uint8_t *data, uint16_t length, struct ws_lto_ie *lto_ptr);

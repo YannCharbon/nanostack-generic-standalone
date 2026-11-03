@@ -422,6 +422,9 @@ static uint16_t ws_wh_headers_length(wh_ie_sub_list_t requested_list, llc_ie_par
     if (requested_list.lbs_ie) {
         length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_lbs_length();
     }
+    if (requested_list.lbc_ie) {
+        length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_lbc_length();
+    }
     if (requested_list.lbt_ie) {
         length += WH_IE_ELEMENT_HEADER_LENGTH + ws_wh_lbt_length();
     }
@@ -494,6 +497,9 @@ static uint8_t *ws_llc_lfn_wh_write(uint8_t *ptr, llc_data_base_t *base, wh_ie_s
     }
     if (list.lbt_ie) {
         ptr = ws_wh_lbt_write(ptr);
+    }
+    if (list.lbc_ie) {
+        ptr = ws_wh_lbc_write(ptr, ws->lfn_cfg.bc_interval_ms, ws->lfn_cfg.bc_sync_period);
     }
     return ptr;
 }

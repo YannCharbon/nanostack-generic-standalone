@@ -138,6 +138,7 @@ typedef struct ws_lfn_state_s {
     uint8_t earo_tid;               /**< RFC 8505 TID of our multicast registrations (EARO) */
     uint8_t addr_tid;               /**< RFC 8505 TID of our address registrations (EARO; RFC 9010 path sequence) */
     bool addr_tid_valid: 1;
+    bool lbc_learned: 1;            /**< Router: the PAN-wide LFN broadcast configuration (LBC-IE) heard in a PAN configuration */
     uint32_t na_wait_s;             /**< Seconds left to wait for the NA of our address registration (0: none pending) */
     uint8_t na_tries;               /**< Registrations sent without an NA */
     uint16_t dhcp_delay_s;          /**< Seconds left before the DHCPv6 Solicit (0: none pending) */
