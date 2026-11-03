@@ -183,6 +183,19 @@ static uint32_t ws_lfn_sync_period_s(protocol_interface_info_entry_t *cur)
     return (cur->ws_info->lfn_cfg.bc_interval_ms * cur->ws_info->lfn_cfg.bc_sync_period + 999) / 1000;
 }
 
+/* The parent search starts this long after the last sync frame: the sync
+ * periods of the setting, plus one LFN broadcast interval, since a parent
+ * may send a sync frame one slot late (its radio busy at the slot) and the
+ * search must not start while the LFN's window for the next one is open
+ * (Eco profile runs: the search's LPAS sweep took the radio 0.25 s before
+ * the sync frame came) */
+static uint32_t ws_lfn_search_limit_s(protocol_interface_info_entry_t *cur)
+{
+    uint32_t bc_ms = cur->ws_info->lfn.lbs_interval_ms ? cur->ws_info->lfn.lbs_interval_ms : cur->ws_info->lfn_cfg.bc_interval_ms;
+
+    return ws_lfn_sync_period_s(cur) * cur->ws_info->lfn_cfg.search_sync_periods + (bc_ms + 999) / 1000;
+}
+
 /* An LPA heard in the discovery window: the frame, kept until the window
  * ends and the best parent is chosen (GS8 stage 5) */
 typedef struct ws_lfn_lpa_candidate {
@@ -855,7 +868,7 @@ uint32_t ws_bootstrap_lfn_seconds_timer_next(protocol_interface_info_entry_t *cu
         if (c->search_uplink_fails && lfn->uplink_fails >= c->search_uplink_fails) {
             at = 1;
         } else if (c->search_sync_periods) {
-            uint32_t lim = ws_lfn_sync_period_s(cur) * c->search_sync_periods;
+            uint32_t lim = ws_lfn_search_limit_s(cur);
             at = since < lim ? lim - since + 1 : 1;
         }
         if (at) {
@@ -929,7 +942,7 @@ void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
             cur->ws_info->uptime >= lfn->search_next_s) {
         const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
         uint32_t since = cur->ws_info->uptime - lfn->parent_rx_s;
-        bool silent = c->search_sync_periods && since > ws_lfn_sync_period_s(cur) * c->search_sync_periods;
+        bool silent = c->search_sync_periods && since > ws_lfn_search_limit_s(cur);
         bool failing = c->search_uplink_fails && lfn->uplink_fails >= c->search_uplink_fails;
         if (silent || failing) {
             tr_info("LFN: parent search (%s), parent kept meanwhile", silent ? "no sync frame" : "uplinks failed");
