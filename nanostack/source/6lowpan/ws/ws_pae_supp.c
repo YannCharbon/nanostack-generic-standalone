@@ -388,13 +388,20 @@ int8_t ws_pae_supp_ffn_lgtk_hash_update(protocol_interface_info_entry_t *interfa
 }
 
 /* A key request now, unless an authentication or a key request is already
- * on its way; the retries are those of an FFN's key update */
+ * on its way (a GTK update still waiting on its trickle is replaced); the
+ * retries are those of an FFN's key update */
 static int8_t ws_pae_supp_key_request_now(pae_supp_t *pae_supp)
 {
     if (pae_supp->auth_requested || ws_pae_lib_kmp_list_count(&pae_supp->entry.kmp_list) > 0 ||
-            pae_supp->gtk_update_trickle_running || pae_supp->initial_key_retry_timer) {
+            pae_supp->initial_key_retry_timer) {
         return 0;
     }
+    /* A GTK update waiting on its trickle (minutes): this request replaces
+       it; it carries the GTKL too, so the border router also sends the GTKs
+       we lack [I]. Seen on the kits: a router rebooted with its keys from
+       flash and a new GTK at the border router never fetched the LGTK
+       (border routers do not store LGTKs) while the trickle ran */
+    pae_supp->gtk_update_trickle_running = false;
     pae_supp->tx_failure_on_initial_key = false;
     pae_supp->initial_key_retry_cnt = KEY_UPDATE_RETRY_COUNT;
     if (ws_pae_supp_initial_key_send(pae_supp) < 0) {

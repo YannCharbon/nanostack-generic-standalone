@@ -2681,6 +2681,15 @@ static uint16_t ws_bootstrap_routing_cost_calculate(protocol_interface_info_entr
     return ws_neighbor->routing_cost + etx;
 }
 
+/* FAN 1.1 router answering an LFN (LPA): its routing cost now, as a PAN
+ * advertisement computes it (ws_bootstrap_pan_advert()) */
+void ws_bootstrap_routing_cost_update(protocol_interface_info_entry_t *cur)
+{
+    if (cur->bootstrap_mode != ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_BORDER_ROUTER) {
+        cur->ws_info->pan_information.routing_cost = ws_bootstrap_routing_cost_calculate(cur);
+    }
+}
+
 static struct rpl_instance *ws_bootstrap_get_rpl_instance(protocol_interface_info_entry_t *cur)
 {
     if (!cur || !cur->rpl_domain) {

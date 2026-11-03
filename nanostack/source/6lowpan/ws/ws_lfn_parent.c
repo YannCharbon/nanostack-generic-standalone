@@ -60,6 +60,7 @@
 #include "6lowpan/ws/ws_neighbor_class.h"
 #include "6lowpan/ws/ws_lfn_parent.h"
 #include "core/ns_buffer.h"
+#include "ipv6_stack/ipv6_routing_table.h"
 #include "common_protocols/ipv6_constants.h"
 #include "core/ns_address_internal.h"
 #include "6lowpan/iphc_decode/iphc_compress.h"
@@ -139,7 +140,7 @@ static void ws_lfn_security_set(protocol_interface_info_entry_t *cur, asynch_req
     req->security.KeyIndex = mac_helper_default_key_index_get(cur);
 }
 
-static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t *dst, const ws_nr_ie_t *nr, uint32_t proposed_ms, const ws_lnd_ie_t *lnd, uint32_t rx_timestamp)
+static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t *dst, const ws_nr_ie_t *nr, uint32_t proposed_ms, const ws_lnd_ie_t *lnd, uint32_t rx_timestamp, bool lto)
 {
     const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
     asynch_request_t req;
@@ -168,7 +169,7 @@ static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t 
     req.wh_requested_ie_list.lbs_ie = true;
     req.wh_requested_ie_list.lbt_ie = true;
     req.wh_requested_ie_list.flus_ie = true;
-    if (c->lto) {
+    if (c->lto && lto) {
         uint32_t ivl = ws_lfn_adjusted_interval(c->bc_interval_ms, proposed_ms, nr->listen_interval_min, nr->listen_interval_max);
         req.wh_requested_ie_list.lto_ie = true;
         req.lto.adjusted_listening_interval = ivl;
@@ -184,6 +185,9 @@ static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t 
     req.wp_requested_nested_ie_list.bs_ie = true;
     req.wp_requested_nested_ie_list.pan_ie = true;
     req.wp_requested_nested_ie_list.net_name_ie = true;
+    // A router's routing cost is updated when it sends a PAN advertisement,
+    // which can be rare: the PAN-IE of an LPA gives the current one
+    ws_bootstrap_routing_cost_update(cur);
     // Unsecured, as a PAN advertisement
     ws_llc_asynch_request(cur, &req);
 }
@@ -277,6 +281,8 @@ static bool ws_lfn_is_child(protocol_interface_info_entry_t *cur, mac_neighbor_t
  * parent may be chosen); the LFN's LPCS and its secured frames make it a
  * child for twice its registration lifetime [I]. */
 #define WS_LFN_CANDIDATE_LIFETIME_S 600
+/* An LFN child that deregistered (moved to another parent) */
+#define WS_LFN_RELEASED_LIFETIME_S 60
 static void ws_lfn_child_refresh(protocol_interface_info_entry_t *cur, mac_neighbor_table_entry_t *n, bool chosen)
 {
     uint32_t life = (uint32_t)cur->ws_info->lfn_cfg.registration_lifetime_min * 60 * 2;
@@ -302,7 +308,9 @@ void ws_lfn_parent_frame_rx(protocol_interface_info_entry_t *cur, const uint8_t 
         return;
     }
     n = mac_neighbor_table_address_discover(mac_neighbor_info(cur), src64, MAC_ADDR_MODE_64_BIT);
-    if (n && ws_lfn_is_child(cur, n, NULL)) {
+    // Not a child that released us (its last frames, the deregistrations,
+    // do not keep it): its LPAS or LPCS makes it a child again
+    if (n && ws_lfn_is_child(cur, n, NULL) && n->link_lifetime != WS_LFN_RELEASED_LIFETIME_S) {
         ws_lfn_child_refresh(cur, n, true);
     }
 }
@@ -386,6 +394,12 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
             tr_warn("LPAS: no room for LFN %s", trace_array(data->SrcAddr, 8));
             return true;
         }
+        /* Our child already (its LPCS or secured frames made it one): an LPAS
+           of a background check for a better parent. No LTO-IE then: its
+           slots stay where they are, in its view and ours, whether or not
+           our LPA and its ACK get through [I] */
+        bool known_child = ni.neighbor->trusted_device && ws_lfn_is_child(cur, ni.neighbor, NULL) &&
+                           ni.neighbor->link_lifetime > WS_LFN_CANDIDATE_LIFETIME_S;
         ws_neighbor_class_neighbor_unicast_schedule_set(cur, ni.ws_neighbor, &us, &cur->ws_info->hopping_schedule, data->SrcAddr);
         if (!ws_llc_lfn_timing_update(cur, ni.ws_neighbor, ie_ext, data->timestamp)) {
             return true;
@@ -402,7 +416,7 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
         tr_info("LPAS from LFN %s: interval %"PRIu32" ms", trace_array(data->SrcAddr, 8), (uint32_t)lus.listen_interval);
         ws_lnd_ie_t lnd;
         bool has_lnd = ws_wh_lnd_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lnd);
-        ws_lfn_lpa_send(cur, data->SrcAddr, &nr, lus.listen_interval, has_lnd ? &lnd : NULL, data->timestamp);
+        ws_lfn_lpa_send(cur, data->SrcAddr, &nr, lus.listen_interval, has_lnd ? &lnd : NULL, data->timestamp, !known_child);
         return true;
     }
     /* LPCS: from a known LFN. Silicon Labs' LFN sends it unsecured (with its
@@ -585,17 +599,35 @@ static uint16_t ws_lfn_mc_tunnel_len(buffer_t *buf)
     return 40 + hbh_len;
 }
 
-void ws_lfn_parent_multicast_copy(protocol_interface_info_entry_t *cur, buffer_t *buf, bool stable_only, uint_fast16_t max_iphc_size)
+/* A hop-by-hop header right after the IPv6 header holding an MPL option */
+static bool ws_lfn_mc_has_mpl(buffer_t *buf)
 {
-    bool all_nodes;
+    const uint8_t *ip = buffer_data_pointer(buf);
+    uint16_t len = buffer_data_length(buf);
 
-    if (!cur->ws_info->lfn_parent) {
-        return;
+    if (len < 48 || ip[6] != IPV6_NH_HOP_BY_HOP) {
+        return false;
     }
+    uint16_t hbh_len = (ip[41] + 1) * 8;
+    for (uint16_t i = 42; i + 1 < 40 + hbh_len && i + 1 < len;) {
+        if (ip[i] == 0) {
+            i++;
+        } else if (ip[i] == 0x6d) {
+            return true;
+        } else {
+            i += 2 + ip[i + 1];
+        }
+    }
+    return false;
+}
+
+static void ws_lfn_mc_copy(protocol_interface_info_entry_t *cur, buffer_t *buf, bool stable_only, uint_fast16_t max_iphc_size, bool from_mpl)
+{
     // A group's packet tunnelled in MPL: the inner packet is the one copied
     uint16_t outer = ws_lfn_mc_tunnel_len(buf);
     const uint8_t *ip_dst = buffer_data_pointer(buf) + outer + 24;
-    all_nodes = !memcmp(ip_dst, ADDR_LINK_LOCAL_ALL_NODES, 16);
+    bool all_nodes = !memcmp(ip_dst, ADDR_LINK_LOCAL_ALL_NODES, 16);
+
     ns_list_foreach(mac_neighbor_table_entry_t, n, &mac_neighbor_info(cur)->neighbour_list) {
         if (!n->trusted_device || !ws_lfn_is_child(cur, n, NULL) ||
                 (!all_nodes && !ws_lfn_mc_registered(cur, n->mac64, ip_dst))) {
@@ -609,6 +641,19 @@ void ws_lfn_parent_multicast_copy(protocol_interface_info_entry_t *cur, buffer_t
             buffer_data_strip_header(copy, outer);
         }
         ws_lfn_mc_strip_mpl(copy);
+        if (from_mpl) {
+            // Taken from MPL (received or seeded), not from lowpan_down():
+            // our MAC address as the source, fresh link-layer options
+            memset(&copy->link_specific, 0, sizeof(copy->link_specific));
+            copy->link_specific.ieee802_15_4.useDefaultPanId = true;
+            copy->src_sa.addr_type = ADDR_802_15_4_LONG;
+            if (!mac_helper_write_our_addr(cur, &copy->src_sa)) {
+                buffer_free(copy);
+                continue;
+            }
+            copy->interface = cur;
+            copy->route = NULL;
+        }
         copy->dst_sa.addr_type = ADDR_802_15_4_LONG;
         common_write_16_bit(cur->mac_parameters.pan_id, copy->dst_sa.address);
         memcpy(copy->dst_sa.address + 2, n->mac64, 8);
@@ -621,6 +666,61 @@ void ws_lfn_parent_multicast_copy(protocol_interface_info_entry_t *cur, buffer_t
         tr_debug("multicast copy to LFN %s", trace_array(n->mac64, 8));
         protocol_push(copy);
     }
+}
+
+/* lowpan_down(): a multicast leaving this parent. A packet carried by MPL
+ * (tunnelled, or with an MPL option) is copied once, when MPL accepts it
+ * (ws_lfn_parent_mpl_copy()): MPL transmits it again on Trickle timer
+ * expirations, or not at all when it hears enough copies (k) */
+void ws_lfn_parent_multicast_copy(protocol_interface_info_entry_t *cur, buffer_t *buf, bool stable_only, uint_fast16_t max_iphc_size)
+{
+    if (!cur->ws_info->lfn_parent || ws_lfn_mc_tunnel_len(buf) || ws_lfn_mc_has_mpl(buf)) {
+        return;
+    }
+    ws_lfn_mc_copy(cur, buf, stable_only, max_iphc_size, false);
+}
+
+/* MPL accepted a new data message (received from a neighbour, or seeded
+ * here): one copy to each LFN child that registered its group (RFC 9685),
+ * also when this node never forwards it */
+void ws_lfn_parent_mpl_copy(protocol_interface_info_entry_t *cur, buffer_t *buf)
+{
+    if (!cur || !ws_info(cur) || !cur->ws_info->lfn_parent || !ws_lfn_parent_ready(cur)) {
+        return;
+    }
+    uint16_t overhead = mac_helper_frame_overhead(cur, buf);
+    ws_lfn_mc_copy(cur, buf, true, mac_helper_max_payload_size(cur, overhead) - 4, true);
+}
+
+/* An LFN child ended its registrations (ARO lifetime 0: it moved to another
+ * parent): its group registrations end, and it stays a child only for
+ * WS_LFN_RELEASED_LIFETIME_S, so that this parent stops its sync frames and
+ * copies to it [I] */
+void ws_lfn_parent_child_release(protocol_interface_info_entry_t *cur, const uint8_t eui64[8])
+{
+    if (!cur || !ws_info(cur) || !cur->ws_info->lfn_parent) {
+        return;
+    }
+    mac_neighbor_table_entry_t *n = mac_neighbor_table_address_discover(mac_neighbor_info(cur), eui64, MAC_ADDR_MODE_64_BIT);
+    if (!n || !ws_lfn_is_child(cur, n, NULL)) {
+        return;
+    }
+    // Another address still registered (the deregistered one is now tentative)
+    ns_list_foreach(ipv6_neighbour_t, e, &cur->ipv6_neighbour_cache.list) {
+        if (e->type == IP_NEIGHBOUR_REGISTERED && !memcmp(ipv6_neighbour_eui64(&cur->ipv6_neighbour_cache, e), eui64, 8)) {
+            return;
+        }
+    }
+    for (int i = 0; i < WS_LFN_MC_REG_MAX; i++) {
+        if (!memcmp(ws_lfn_mc_reg[i].eui64, eui64, 8)) {
+            ws_lfn_mc_reg[i].until_s = cur->ws_info->uptime;
+        }
+    }
+    if (n->lifetime > WS_LFN_RELEASED_LIFETIME_S) {
+        n->lifetime = WS_LFN_RELEASED_LIFETIME_S;
+    }
+    n->link_lifetime = WS_LFN_RELEASED_LIFETIME_S;
+    tr_info("LFN child %s released its registrations", trace_array(eui64, 8));
 }
 
 bool ws_lfn_parent_neighbor_keep(protocol_interface_info_entry_t *cur, mac_neighbor_table_entry_t *n)

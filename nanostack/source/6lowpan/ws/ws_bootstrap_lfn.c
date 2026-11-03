@@ -51,6 +51,7 @@
 #include "common_protocols/icmpv6_radv.h"
 #include "common_protocols/ipv6_constants.h"
 #include "common_protocols/ip.h"
+#include "common_protocols/ipv6.h"
 #include "libdhcpv6/libdhcpv6.h"
 #include "libdhcpv6/libdhcpv6_vendordata.h"
 #include "dhcpv6_client/dhcpv6_client_api.h"
@@ -209,7 +210,7 @@ static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur)
        lnd_slots x lnd_slot_time_ms long; the parents answer in a random slot
        of it [S: LND-IE; M items 4-5] */
     uint32_t now = ns_sw_mac_read_current_timestamp(cur->mac_api);
-    uint32_t window_ms = (uint32_t)c->lnd_slots * c->lnd_slot_time_ms;
+    uint32_t window_ms = (uint32_t)(cur->ws_info->lfn.disc_slots ? cur->ws_info->lfn.disc_slots : c->lnd_slots) * c->lnd_slot_time_ms;
     /* Never before the sweep can have ended: about 20 ms per channel [M:
        16.8 ms on Silicon Labs' LFN, item 1], plus 300 ms [I] */
     uint32_t delay_ms = c->lnd_response_delay_ms;
@@ -315,6 +316,50 @@ void ws_bootstrap_lfn_uplink_result(protocol_interface_info_entry_t *cur, const 
     }
 }
 
+/* ---- Better parent while attached (docs/LFN_STACK.md §9) */
+
+/* The parent's link is weak: its smoothed RSL below the candidate-parent
+ * threshold, DEVICE_MIN_SENS + CAND_PARENT_THRESHOLD [S: Wi-SUN FAN
+ * candidate parent set, ws_common_defines.h] */
+static bool ws_lfn_parent_weak(protocol_interface_info_entry_t *cur)
+{
+    uint16_t x8 = cur->ws_info->lfn.parent_rsl_x8;
+    return x8 && (x8 >> WS_RSL_SCALING) < cur->ws_info->device_min_sens + CAND_PARENT_THRESHOLD;
+}
+
+static uint32_t ws_lfn_check_interval(protocol_interface_info_entry_t *cur)
+{
+    const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
+    if (ws_lfn_parent_weak(cur) && c->parent_check_weak_s) {
+        return c->parent_check_weak_s;
+    }
+    return c->parent_check_s;
+}
+
+/* The next background check: uniformly 0.5-1.5 x the interval from now
+ * (LFNs that joined together do not sweep together) [I] */
+static void ws_lfn_check_schedule(protocol_interface_info_entry_t *cur)
+{
+    uint32_t ivl = ws_lfn_check_interval(cur);
+    if (!ivl) {
+        cur->ws_info->lfn.check_next_s = 0;
+        return;
+    }
+    cur->ws_info->lfn.check_next_s = cur->ws_info->uptime + ivl / 2 + rand_get_32bit() % (ivl + 1);
+}
+
+/* The link became weak: the next check no later than the weak interval */
+static void ws_lfn_check_weak_pull(protocol_interface_info_entry_t *cur)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+    uint32_t w = cur->ws_info->lfn_cfg.parent_check_weak_s;
+    if (w && lfn->check_next_s && ws_lfn_parent_weak(cur) && lfn->check_next_s - cur->ws_info->uptime > w * 3 / 2) {
+        ws_lfn_check_schedule(cur);
+        tr_info("LFN: parent link weak (RSL %d dBm): next check in %"PRIu32" s",
+                (int)((lfn->parent_rsl_x8 + 4) >> WS_RSL_SCALING) - 174, lfn->check_next_s - cur->ws_info->uptime);
+    }
+}
+
 /* A frame from the parent with an LBT-IE: sync to its LFN broadcast
  * schedule (LBS-IE values from this frame or an earlier one), and keep the
  * parent (black-box item 34: maintenance counts sync frames) */
@@ -350,6 +395,11 @@ static void ws_lfn_sync(protocol_interface_info_entry_t *cur, const struct mcps_
         return;
     }
     lfn->parent_rx_s = cur->ws_info->uptime;
+    // The parent's RSL, smoothed as Wi-SUN's RSL EWMA (1/8) [S: Wi-SUN FAN
+    // RSL EWMA; Nanostack ws_neighbor_class_rsl_in_calculate()]
+    uint16_t rsl = ws_neighbor_class_rsl_from_dbm_calculate(data->signal_dbm);
+    lfn->parent_rsl_x8 = lfn->parent_rsl_x8 ? lfn->parent_rsl_x8 + rsl - (lfn->parent_rsl_x8 >> WS_RSL_SCALING) : rsl << WS_RSL_SCALING;
+    ws_lfn_check_weak_pull(cur);
     tr_debug("LFN: parent heard (sync)");
 }
 
@@ -408,6 +458,75 @@ static bool ws_lfn_lpa_keep(protocol_interface_info_entry_t *cur, const struct m
 
 static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struct mcps_data_ind_s *data, const struct mcps_data_ie_list *ie_ext);
 
+/* A background check: the parent's own LPA. Its LTO-IE is applied as the
+ * parent applies it when we acknowledge the LPA, and its UTT and BT refresh
+ * its timing in our neighbour table. */
+static void ws_lfn_lpa_refresh(protocol_interface_info_entry_t *cur, ws_lfn_lpa_candidate_t *c)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+    mcps_data_ie_list_t ie = {
+        .headerIeList = c->ie, .headerIeListLength = c->hdr_len,
+        .payloadIeList = c->ie + c->hdr_len, .payloadIeListLength = c->pl_len,
+    };
+    ws_lto_ie_t lto;
+    ws_utt_ie_t utt;
+    ws_bt_ie_t bt;
+    llc_neighbour_req_t ni;
+
+    if (ws_bootstrap_neighbor_info_request(cur, c->ind.SrcAddr, &ni, false)) {
+        if (ws_wh_utt_read(ie.headerIeList, ie.headerIeListLength, &utt)) {
+            ws_neighbor_class_neighbor_unicast_time_info_update(ni.ws_neighbor, &utt, c->ind.timestamp, c->ind.SrcAddr);
+        }
+        if (ws_wh_bt_read(ie.headerIeList, ie.headerIeListLength, &bt)) {
+            ws_neighbor_class_neighbor_broadcast_time_info_update(ni.ws_neighbor, &bt, c->ind.timestamp);
+        }
+    }
+    if (ws_wh_lto_read(ie.headerIeList, ie.headerIeListLength, &lto)) {
+        uint32_t ivl = lto.adjusted_listening_interval;
+        if (ivl && (ivl < cur->ws_info->lfn_cfg.listen_interval_min_ms || ivl > cur->ws_info->lfn_cfg.listen_interval_max_ms)) {
+            ivl = 0;
+        }
+        if (ns_fhss_ws_lfn_timing_set(cur->ws_info->fhss_api, lto.offset, ivl, c->ind.timestamp) == 0 && ivl) {
+            lfn->listen_interval_ms = ivl;
+        }
+    }
+    ws_lfn_sync(cur, &c->ind, &ie);
+    if (c->routing_cost != 0xffff) {
+        lfn->parent_cost = c->routing_cost;
+    }
+}
+
+/* A background check: is the candidate better than the parent? The RSL
+ * classes of the candidate-parent rule first, with Wi-SUN's hysteresis: a
+ * parent whose smoothed RSL is under DEVICE_MIN_SENS + CAND_PARENT_THRESHOLD
+ * (weak) gives way to a candidate CAND_PARENT_HYSTERISIS dB above it (good)
+ * [S: Wi-SUN FAN CAND_PARENT_THRESHOLD and CAND_PARENT_HYSTERESIS,
+ * ws_bootstrap.c candidate parents]; two weak links: the candidate must be
+ * 2 x CAND_PARENT_HYSTERISIS dB stronger [I]; two good links: its routing
+ * cost must be lower by parent_switch_cost (192 = RFC 6719
+ * PARENT_SWITCH_THRESHOLD, MRHOF's switch hysteresis) [S]. A good parent
+ * never gives way to a weak candidate. */
+static bool ws_lfn_better(protocol_interface_info_entry_t *cur, const ws_lfn_lpa_candidate_t *c, const ws_lfn_lpa_candidate_t *own)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+    int thr = cur->ws_info->device_min_sens + CAND_PARENT_THRESHOLD;
+    int now_rsl = lfn->parent_rsl_x8 ? (lfn->parent_rsl_x8 + 4) >> WS_RSL_SCALING : (own ? own->ind.signal_dbm + 174 : 0);
+    int new_rsl = c->ind.signal_dbm + 174;
+    uint32_t now_cost = own ? own->routing_cost : lfn->parent_cost;
+    bool better;
+
+    if (now_rsl < thr) {
+        better = new_rsl >= thr + CAND_PARENT_HYSTERISIS || new_rsl >= now_rsl + 2 * CAND_PARENT_HYSTERISIS;
+    } else if (new_rsl < thr) {
+        better = false;
+    } else {
+        better = (uint32_t)c->routing_cost + cur->ws_info->lfn_cfg.parent_switch_cost <= now_cost;
+    }
+    tr_info("LFN: check: parent %d dBm cost %"PRIu32", %s %d dBm cost %u: %s", now_rsl - 174, now_cost,
+            trace_array(c->ind.SrcAddr, 8), new_rsl - 174, c->routing_cost, better ? "better" : "not better");
+    return better;
+}
+
 /* The discovery window has ended: the parent with the lowest routing cost
  * among those heard CAND_PARENT_THRESHOLD dB above the device's minimum
  * sensitivity (as an FFN chooses its candidate parents), the strongest on a
@@ -436,6 +555,31 @@ static void ws_lfn_lpa_choose(protocol_interface_info_entry_t *cur)
         }
     }
     lfn->disc_decide_s = 0;
+    lfn->disc_slots = 0;
+    if (lfn->searching && lfn->check) {
+        // A background check: the parent is kept unless a better one answered
+        lfn->searching = false;
+        lfn->check = false;
+        ws_lfn_lpa_candidate_t *own = NULL;
+        for (int i = 0; i < 4; i++) {
+            if (lfn->lpa[i] && !memcmp(lfn->lpa[i]->ind.SrcAddr, lfn->parent_eui64, 8)) {
+                own = lfn->lpa[i];
+            }
+        }
+        if (own) {
+            // Its LPA's LTO-IE moved our slots in its view: follow it, and
+            // refresh its timing (the release below needs its channel)
+            ws_lfn_lpa_refresh(cur, own);
+        }
+        if (!best || best == own || !ws_lfn_better(cur, best, own)) {
+            tr_info("LFN: better-parent check: parent kept");
+            ws_lfn_candidates_clear(cur);
+            return;
+        }
+        tr_info("LFN: better parent: %s -> %s (routing cost %u, %d dBm)", trace_array(lfn->parent_eui64, 8),
+                trace_array(best->ind.SrcAddr, 8), best->routing_cost, best->ind.signal_dbm);
+        lfn->searching = true;  // the switch below
+    }
     if (lfn->searching) {
         // A search while keeping the parent: attach to the best parent that
         // answered, the same one included (a restarted parent has a new LFN
@@ -452,6 +596,11 @@ static void ws_lfn_lpa_choose(protocol_interface_info_entry_t *cur)
         } else {
             tr_info("LFN: parent changed: %s -> %s (routing cost %u, %d dBm)", trace_array(lfn->parent_eui64, 8),
                     trace_array(best->ind.SrcAddr, 8), best->routing_cost, best->ind.signal_dbm);
+        }
+        if (memcmp(best->ind.SrcAddr, lfn->parent_eui64, 8)) {
+            // The old parent is released after our registration with the new one
+            memcpy(lfn->old_parent_eui64, lfn->parent_eui64, 8);
+            lfn->release_at_s = UINT32_MAX;
         }
         ns_fhss_ws_lfn_bc_stop(cur->ws_info->fhss_api);
         lfn->parent_known = false;
@@ -532,6 +681,12 @@ static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struc
     memcpy(lfn->parent_eui64, data->SrcAddr, 8);
     lfn->parent_known = true;
     lfn->parent_rx_s = cur->ws_info->uptime;
+    lfn->parent_rsl_x8 = 0;
+    {
+        ws_pan_information_t pan;
+        memset(&pan, 0, sizeof(pan));
+        lfn->parent_cost = ws_wp_nested_pan_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &pan) ? pan.routing_cost : 0xffff;
+    }
     // The parent's LTO-IE: our offset and adjusted interval
     if (ws_wh_lto_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &lto)) {
         uint32_t ivl = lto.adjusted_listening_interval;
@@ -646,6 +801,82 @@ void ws_bootstrap_lfn_asynch_confirm(struct protocol_interface_info_entry *inter
     ws_stats_update(interface, STATS_WS_ASYNCH_TX, 1);
 }
 
+/* RFC 9685 multicast subscriptions: the interface's groups of realm-local
+ * scope or wider (those the application joins with SOCKET_IPV6_JOIN_GROUP,
+ * and ff03::1, which Silicon Labs' LFN also registers [M: black-box item
+ * 19]), except the MPL domain's ff03::fc and the all-routers groups (an LFN
+ * is no router) */
+static bool ws_lfn_group_registrable(const uint8_t *group)
+{
+    return addr_ipv6_multicast_scope(group) >= IPV6_SCOPE_REALM_LOCAL && !addr_ipv6_equal(group, ADDR_ALL_MPL_FORWARDERS) &&
+           !addr_ipv6_equal(group, ADDR_REALM_LOCAL_ALL_ROUTERS) && !addr_ipv6_equal(group, ADDR_SITE_LOCAL_ALL_ROUTERS);
+}
+
+static void ws_lfn_mc_send(protocol_interface_info_entry_t *cur, const uint8_t ll_dst[16], const uint8_t *group, uint16_t lifetime)
+{
+    // A new TID for each registration [I: RFC 8505 §5.2 lets the 6LN
+    // increment it; our parents ignore it]
+    buffer_t *buf = icmpv6_build_ns_earo_mc(cur, ll_dst, group, lifetime, ++cur->ws_info->lfn.earo_tid);
+    if (buf) {
+        tr_info("LFN: EARO multicast %s to %s, %u min", trace_ipv6(group), trace_ipv6(ll_dst), lifetime);
+        protocol_push(buf);
+    }
+}
+
+void ws_bootstrap_lfn_group_change(protocol_interface_info_entry_t *cur, const uint8_t group[16], bool joined)
+{
+    if (!cur || !ws_info(cur) || !wisun_mode_host(cur) || !cur->ws_info->lfn.parent_known ||
+            !cur->ws_info->lfn.addr_registered || !ws_lfn_group_registrable(group)) {
+        return;     // registered with the addresses once the LFN is operational
+    }
+    uint8_t ll_parent[16];
+    ws_common_create_ll_address(ll_parent, cur->ws_info->lfn.parent_eui64);
+    ws_lfn_mc_send(cur, ll_parent, group, joined ? cur->ws_info->lfn_cfg.registration_lifetime_min : 0);
+}
+
+/* The parent left for a better one: its registrations end (lifetime 0, RFC
+ * 6775/8505), so that it drops its route and its DAO target for our
+ * addresses, its copies of our groups, and us as a child. Sent once the new
+ * parent's route has reached the border router (parent_release_s after our
+ * registration with it) [I] */
+static void ws_lfn_old_parent_release(protocol_interface_info_entry_t *cur)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+    uint8_t ll[16];
+    aro_t aro;
+
+    lfn->release_at_s = 0;
+    if (!memcmp(lfn->old_parent_eui64, lfn->parent_eui64, 8) ||
+            !mac_neighbor_table_address_discover(mac_neighbor_info(cur), lfn->old_parent_eui64, MAC_ADDR_MODE_64_BIT)) {
+        return;
+    }
+    ws_common_create_ll_address(ll, lfn->old_parent_eui64);
+    ns_list_foreach(if_address_entry_t, addr, &cur->ip_addresses) {
+        if (addr_is_ipv6_link_local(addr->address)) {
+            continue;
+        }
+        memset(&aro, 0, sizeof(aro));
+        aro.status = ARO_SUCCESS;
+        aro.present = true;
+        memcpy(aro.eui64, cur->mac, 8);
+        aro.lifetime = 0;
+        buffer_t *buf = icmpv6_build_ns(cur, ll, addr->address, true, false, &aro);
+        if (buf) {
+            // icmpv6_build_ns() routes before it sets the interface, so a
+            // link-local destination would take our default route (the new
+            // parent): on-link to the old parent
+            ipv6_buffer_route_to(buf, ll, cur);
+            protocol_push(buf);
+        }
+    }
+    ns_list_foreach(if_group_entry_t, g, &cur->ip_groups) {
+        if (ws_lfn_group_registrable(g->group)) {
+            ws_lfn_mc_send(cur, ll, g->group, 0);
+        }
+    }
+    tr_info("LFN: old parent %s released", trace_array(lfn->old_parent_eui64, 8));
+}
+
 /* Address registration: NS with ARO to the parent, which registers the
  * address on our behalf (6LoWPAN-ND, RFC 8505) */
 void ws_bootstrap_lfn_address_register(protocol_interface_info_entry_t *cur)
@@ -675,6 +906,26 @@ void ws_bootstrap_lfn_address_register(protocol_interface_info_entry_t *cur)
         }
     }
     if (sent) {
+        // Our groups (RFC 9685), with the same lifetime and refresh
+        ns_list_foreach(if_group_entry_t, g, &cur->ip_groups) {
+            if (ws_lfn_group_registrable(g->group)) {
+                ws_lfn_mc_send(cur, ll_parent, g->group, cur->ws_info->lfn_cfg.registration_lifetime_min);
+            }
+        }
+        // A parent left for this one: released once our route has moved.
+        // Meanwhile it may still hold frames for us, which it would send in
+        // our old windows: a frame to it now (an NS for its link-local
+        // address) carries our new timing (LUTT, LUS) [I]
+        if (cur->ws_info->lfn.release_at_s == UINT32_MAX) {
+            uint8_t ll_old[16];
+            ws_common_create_ll_address(ll_old, cur->ws_info->lfn.old_parent_eui64);
+            buffer_t *ns = icmpv6_build_ns(cur, ll_old, NULL, true, false, NULL);
+            if (ns) {
+                ipv6_buffer_route_to(ns, ll_old, cur);
+                protocol_push(ns);
+            }
+            cur->ws_info->lfn.release_at_s = cur->ws_info->uptime + cur->ws_info->lfn_cfg.parent_release_s;
+        }
         // Re-registration at 92 % of the lifetime (black-box item 52)
         cur->ws_info->aro_registration_timer = 0;
         cur->ws_info->lfn.addr_registered = true;
@@ -723,6 +974,11 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             lfn->uplink_fails = 0;
             lfn->searching = false;
             lfn->search_next_s = 0;
+            lfn->check = false;
+            lfn->check_next_s = 0;
+            lfn->disc_slots = 0;
+            lfn->release_at_s = 0;
+            lfn->parent_rsl_x8 = 0;
             ws_lfn_network_configure(cur);
             // The receiver is off outside the listen windows
             cur->ws_info->rx_off_when_idle = true;
@@ -784,6 +1040,7 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             ws_pae_controller_nw_key_valid(cur, NULL);
             ws_pae_controller_frame_counter_store_now(cur);
             cur->ws_info->connected_time = cur->ws_info->uptime;
+            ws_lfn_check_schedule(cur);
             ws_bootstrap_state_change(cur, ER_BOOTSTRAP_DONE);
             break;
         case WS_FAST_DISCONNECT:
@@ -844,6 +1101,14 @@ uint32_t ws_bootstrap_lfn_seconds_timer_next(protocol_interface_info_entry_t *cu
     }
     if (lfn->lgtk_mismatch_timer_s) {
         next = protocol_timer_next_min(next, lfn->lgtk_mismatch_timer_s);
+    }
+    if (lfn->release_at_s && lfn->release_at_s != UINT32_MAX) {
+        uint32_t up = cur->ws_info->uptime;
+        next = protocol_timer_next_min(next, lfn->release_at_s > up ? lfn->release_at_s - up : 1);
+    }
+    if (lfn->check_next_s && lfn->parent_known && cur->nwk_bootstrap_state == ER_BOOTSTRAP_DONE && !lfn->searching) {
+        uint32_t up = cur->ws_info->uptime;
+        next = protocol_timer_next_min(next, lfn->check_next_s > up ? lfn->check_next_s - up : 1);
     }
     if (lfn->parent_known && cur->nwk_bootstrap_state == ER_BOOTSTRAP_DONE && !lfn->searching) {
         // The parent search (see ws_bootstrap_lfn_seconds_timer)
@@ -921,6 +1186,28 @@ void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
         }
     }
     ws_lfn_parent_lgtk_timer(cur, seconds);
+    // The old parent's release
+    if (lfn->release_at_s && lfn->release_at_s != UINT32_MAX && cur->ws_info->uptime >= lfn->release_at_s) {
+        ws_lfn_old_parent_release(cur);
+    }
+    // Background check for a better parent (docs/LFN_STACK.md §9) [I]
+    if (lfn->parent_known && cur->nwk_bootstrap_state == ER_BOOTSTRAP_DONE && !lfn->searching && !lfn->disc_decide_s &&
+            lfn->check_next_s && cur->ws_info->uptime >= lfn->check_next_s) {
+        tr_info("LFN: better-parent check (parent %s, %d dBm, routing cost %u)", trace_array(lfn->parent_eui64, 8),
+                lfn->parent_rsl_x8 ? (int)((lfn->parent_rsl_x8 + 4) >> WS_RSL_SCALING) - 174 : 0, lfn->parent_cost);
+        ws_lfn_check_schedule(cur);
+        lfn->searching = true;
+        lfn->check = true;
+        lfn->disc_slots = cur->ws_info->lfn_cfg.parent_check_lnd_slots;
+        ws_lfn_lpas_send(cur);
+        if (!lfn->disc_decide_s) {
+            // No discovery window (a broadcast window was open): in a second
+            lfn->searching = false;
+            lfn->check = false;
+            lfn->disc_slots = 0;
+            lfn->check_next_s = cur->ws_info->uptime + 1;
+        }
+    }
     // Parent change without loss: a discovery while the parent is kept, when
     // it has been silent for search_sync_periods sync periods or has missed
     // search_uplink_fails uplinks in a row [I]

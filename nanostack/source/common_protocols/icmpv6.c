@@ -508,8 +508,9 @@ static buffer_t *icmpv6_ns_handler(buffer_t *buf)
         aro_out.lifetime = common_read_16_bit(aro + 6);
         memcpy(aro_out.eui64, aro + 8, 8);
         if (((earo_flags & ICMPV6_EARO_P_MASK) >> 4) == ICMPV6_EARO_P_MULTICAST) {
-            /* A multicast group subscription (RFC 9685): accepted. Only
-             * ff02::1 is copied to LFN children today (docs/LFN_STACK.md) */
+            /* A multicast group subscription (RFC 9685): kept with its
+             * lifetime; the parent copies the group's packets to the LFN
+             * child (ws_lfn_parent_multicast_copy(), docs/LFN_STACK.md) */
             aro_out.present = true;
             aro_out.status = addr_is_ipv6_multicast(target) ? ARO_SUCCESS : ARO_TOPOLOGICALLY_INCORRECT;
             tr_info("EARO multicast %s from %s", trace_ipv6(target), trace_array(aro_out.eui64, 8));
@@ -573,6 +574,10 @@ static buffer_t *icmpv6_ns_handler(buffer_t *buf)
          */
         if (!nd_ns_aro_handler(cur, aro, sllao, buf->src_sa.address, &aro_out)) {
             goto drop;
+        }
+        /* FAN 1.1: an LFN child that moved to another parent deregisters */
+        if (aro_out.present && aro_out.status == ARO_SUCCESS && aro_out.lifetime == 0 && ws_info(cur)) {
+            ws_lfn_parent_child_release(cur, aro_out.eui64);
         }
     }
 
@@ -1571,6 +1576,54 @@ buffer_t *icmpv6_build_ns(protocol_interface_info_entry_t *cur, const uint8_t ta
     buf->interface = cur;
     buf->info = (buffer_info_t)(B_FROM_ICMP | B_TO_ICMP | B_DIR_DOWN);
 
+    return buf;
+}
+
+/* FAN 1.1 LFN: an RFC 9685 multicast subscription to the parent. NS from our
+ * link-local address to the parent's, the group as Target, an RFC 8505 EARO
+ * with T set, P = 1 (multicast) and a TID, and an SLLAO [S: RFC 9685 §5,
+ * RFC 8505 §4.1; M: Silicon Labs' LFN, black-box item 19]. Lifetime 0 ends
+ * the subscription. */
+buffer_t *icmpv6_build_ns_earo_mc(protocol_interface_info_entry_t *cur, const uint8_t dst_ll[16], const uint8_t group[16], uint16_t lifetime, uint8_t tid)
+{
+    if (!cur || !addr_is_ipv6_multicast(group)) {
+        return NULL;
+    }
+    buffer_t *buf = buffer_get(127);
+    if (!buf) {
+        return buf;
+    }
+    buf->options.type = ICMPV6_TYPE_INFO_NS;
+    buf->options.code = 0;
+    buf->options.hop_limit = 255;
+
+    uint8_t *ptr = buffer_data_pointer(buf);
+    ptr = common_write_32_bit(0, ptr);
+    memcpy(ptr, group, 16);
+    ptr += 16;
+    *ptr++ = ICMPV6_OPT_ADDR_REGISTRATION;
+    *ptr++ = 2;
+    *ptr++ = ARO_SUCCESS;
+    *ptr++ = 0;                                         // Opaque
+    *ptr++ = ICMPV6_EARO_T | (ICMPV6_EARO_P_MULTICAST << 4);
+    *ptr++ = tid;
+    ptr = common_write_16_bit(lifetime, ptr);
+    memcpy(ptr, cur->mac, 8);                           // ROVR: the EUI-64
+    ptr += 8;
+
+    if (addr_interface_get_ll_address(cur, buf->src_sa.address, 0) < 0) {
+        return buffer_free(buf);
+    }
+    ptr = icmpv6_write_icmp_lla(cur, ptr, ICMPV6_OPT_SRC_LL_ADDR, true, buf->src_sa.address);
+    memcpy(buf->dst_sa.address, dst_ll, 16);
+    buf->dst_sa.addr_type = ADDR_IPV6;
+    buf->src_sa.addr_type = ADDR_IPV6;
+    // On-link to this neighbour (the interface first: a link-local
+    // destination needs it, or the default route would be used)
+    buf->interface = cur;
+    ipv6_buffer_route_to(buf, buf->dst_sa.address, cur);
+    buffer_data_end_set(buf, ptr);
+    buf->info = (buffer_info_t)(B_FROM_ICMP | B_TO_ICMP | B_DIR_DOWN);
     return buf;
 }
 

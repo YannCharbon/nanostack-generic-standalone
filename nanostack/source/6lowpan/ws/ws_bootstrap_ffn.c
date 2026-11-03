@@ -430,6 +430,16 @@ static void ws_bootstrap_ffn_pan_config_lfn_analyze(struct protocol_interface_in
         }
     } else {
         if (cur->ws_info->lfngtk.lfn_version == lfn_version.lfn_version) {
+            // An LFN parent that still lacks the active LGTK: its key request
+            // could not start (an authentication was still running) or its
+            // group-key handshake was lost, and the border router's retries
+            // are refused once the authentication has ended. Ask again: the
+            // request waits while another one is on its way [I]
+            if (cur->ws_info->lfn_parent && !ws_pae_controller_lgtk_is_set(cur, cur->ws_info->lfngtk.active_key_index)) {
+                ws_pae_controller_ffn_lgtk_hash_update(cur, cur->ws_info->lfngtk.lgtkhash,
+                                                       cur->ws_info->lfngtk.active_hash_1 | cur->ws_info->lfngtk.active_hash_2 << 1 |
+                                                       cur->ws_info->lfngtk.active_hash_3 << 2);
+            }
             return;
         }
 

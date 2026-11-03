@@ -32,6 +32,7 @@
 #include "6lowpan/mac/mac_helper.h"
 #include "6lowpan/ws/ws_common.h"
 #include "mpl/mpl.h"
+#include "6lowpan/ws/ws_lfn_parent.h"
 
 #define TRACE_GROUP "mpl"
 
@@ -898,6 +899,9 @@ bool mpl_forwarder_process_message(buffer_t *buf, mpl_domain_t *domain, bool see
     if (!seeding && hop_limit != 0) {
         hop_limit--;
     }
+
+    /* FAN 1.1: LFN children that registered the group get a copy now */
+    ws_lfn_parent_mpl_copy(domain->interface, buf);
 
     if (domain->data_trickle_params.TimerExpirations == 0 || hop_limit == 0) {
         /* As a non-forwarder, just accept the packet and advance the

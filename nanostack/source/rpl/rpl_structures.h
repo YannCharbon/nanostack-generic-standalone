@@ -117,6 +117,7 @@ typedef struct rpl_dao_root {
     uint32_t cost;                      /* Routing cost - (used as number of incoming graph edges during topo sort) */
     rpl_dao_root_transit_children_list_t children;   /* Child list - only valid after routing cost computation */
     rpl_dao_root_transit_list_t transits;
+    uint8_t originator[16];             /* Source of the last DAO accepted for it (external targets: a host's router) */
 } rpl_dao_root_t;
 
 /* Information held for a DAO target in other nodes */

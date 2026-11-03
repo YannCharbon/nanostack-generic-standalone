@@ -1141,8 +1141,19 @@ static bool rpl_downward_process_targets_for_transit(rpl_dodag_t *dodag, bool st
                         tr_info("Ignoring stale path %s->%s (seq=%d vs %d)", parent ? trace_ipv6(parent) : "", trace_ipv6_prefix(prefix, prefix_len), path_sequence, target->path_sequence);
                         break;
                     }
+                    /* An external target (a host registered with a router)
+                     * that another router publishes now: the host moved to
+                     * that router (FAN 1.1 LFN parent change). The newest
+                     * publisher replaces the old one, whose stale path would
+                     * otherwise stay until its lifetime ends [I: RFC 9010
+                     * gives the 6LR's DAO the registration's TID as path
+                     * sequence for this] */
+                    bool moved = !storing && external && target->root && src && !addr_ipv6_equal(target->info.root.originator, src);
+                    if (moved) {
+                        tr_info("External target %s now from %s", trace_ipv6_prefix(prefix, prefix_len), trace_ipv6(src));
+                    }
                     /* If path sequence is different, we clear existing transits for this target */
-                    if (!(seq_cmp & RPL_CMP_EQUAL)) {
+                    if (!(seq_cmp & RPL_CMP_EQUAL) || moved) {
                         if (target->root) {
                             ns_list_foreach_safe(rpl_dao_root_transit_t, transit, &target->info.root.transits) {
                                 ns_list_remove(&target->info.root.transits, transit);
@@ -1167,6 +1178,9 @@ static bool rpl_downward_process_targets_for_transit(rpl_dodag_t *dodag, bool st
                 }
 
                 /* No-Paths don't reach here - we break out above */
+                if (target && target->root && src) {
+                    memcpy(target->info.root.originator, src, 16);
+                }
                 if (target) {
                     if (path_control & ~ target->path_control) {
                         target->path_control |= path_control;

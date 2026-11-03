@@ -462,7 +462,7 @@ static uint8_t *ws_llc_lfn_wh_write(uint8_t *ptr, llc_data_base_t *base, wh_ie_s
         ws_lnd_ie_t lnd = { 0 };
         lnd.response_delay = ws->lfn_cfg.lnd_response_delay_ms;
         lnd.discovery_slot_time = ws->lfn_cfg.lnd_slot_time_ms;
-        lnd.discovery_slots = ws->lfn_cfg.lnd_slots;
+        lnd.discovery_slots = ws->lfn.disc_slots ? ws->lfn.disc_slots : ws->lfn_cfg.lnd_slots;
         lnd.discovery_first_slot = ws->lfn.disc_first_slot;
         ptr = ws_wh_lnd_write(ptr, &lnd);
     }

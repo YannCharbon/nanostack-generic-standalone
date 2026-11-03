@@ -996,6 +996,11 @@ typedef struct ws_lfn_settings {
     uint16_t restart_max_ms;            /**< ... capped at this (ms): together long enough to outlast the parent's asynchronous sweeps */
     uint8_t search_sync_periods;        /**< Discovery while keeping the parent after this many sync periods without a sync frame from it (0: never) */
     uint8_t search_uplink_fails;        /**< ... or after this many consecutive failed uplinks to it (0: never) */
+    uint32_t parent_check_s;            /**< Background check for a better parent while attached: mean interval while the parent's link is good (s; 0: never) */
+    uint32_t parent_check_weak_s;       /**< ... while the parent's RSL is below the candidate threshold (s; 0: as parent_check_s) */
+    uint8_t parent_check_lnd_slots;     /**< LND-IE discovery slots of a background check (0: lnd_slots) */
+    uint16_t parent_switch_cost;        /**< A parent of the same RSL class is better only if its routing cost is lower by at least this */
+    uint16_t parent_release_s;          /**< The old parent is released (ARO lifetime 0) this long after the registration with the new one (s) */
     /* Parent (border router) */
     uint32_t bc_interval_ms;            /**< LFN broadcast interval (LBS-IE); the sync period is a multiple of it (ms) */
     uint8_t bc_sync_period;             /**< LFN broadcast sync period, in LFN broadcast intervals */
@@ -1032,6 +1037,18 @@ typedef struct ws_lfn_settings {
  * 1.5 x maintain_parent_time sync periods (375 s) */
 #define WS_LFN_SEARCH_SYNC_PERIODS_DEFAULT       2
 #define WS_LFN_SEARCH_UPLINK_FAILS_DEFAULT       2
+/* Better parent while attached (docs/LFN_STACK.md §9): a background
+ * discovery every 6 h on average (every 1 h while the parent's RSL is below
+ * DEVICE_MIN_SENS + CAND_PARENT_THRESHOLD), with a 10-slot window (0.6 s);
+ * a switch needs the Wi-SUN candidate-parent hysteresis (3 dB) across the
+ * RSL threshold, or a routing cost lower by PARENT_SWITCH_THRESHOLD (192,
+ * RFC 6719); the old parent is released 15 s after the new registration,
+ * once the new route has reached the border router (RPL DAO delay 1-7 s) */
+#define WS_LFN_PARENT_CHECK_S_DEFAULT            21600
+#define WS_LFN_PARENT_CHECK_WEAK_S_DEFAULT       3600
+#define WS_LFN_PARENT_CHECK_LND_SLOTS_DEFAULT    10
+#define WS_LFN_PARENT_SWITCH_COST_DEFAULT        192
+#define WS_LFN_PARENT_RELEASE_S_DEFAULT          15
 #define WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT      5
 #define WS_LFN_LGTK_MAX_MISMATCH_S_DEFAULT       120
 #define WS_LFN_REGISTRATION_LIFETIME_MIN_DEFAULT 2160

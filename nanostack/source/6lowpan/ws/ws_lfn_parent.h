@@ -25,7 +25,8 @@ bool ws_lfn_parent_asynch_ind(struct protocol_interface_info_entry *cur, const s
 void ws_lfn_parent_seconds_timer(struct protocol_interface_info_entry *cur, uint32_t seconds);
 /* A frame from a neighbour: an LFN child's entry is kept */
 void ws_lfn_parent_frame_rx(struct protocol_interface_info_entry *cur, const uint8_t *src64);
-/* A multicast to ff02::1: a MAC-unicast copy to each LFN child */
+/* A multicast leaving the parent (not MPL): a MAC-unicast copy to each LFN
+ * child for ff02::1, and to those that registered its group */
 void ws_lfn_parent_multicast_copy(struct protocol_interface_info_entry *cur, struct buffer *buf, bool stable_only, uint_fast16_t max_iphc_size);
 /* An LFN child: no FFN probing or NUD */
 bool ws_lfn_parent_neighbor_keep(struct protocol_interface_info_entry *cur, struct mac_neighbor_table_entry *n);
@@ -41,10 +42,17 @@ void ws_lfn_parent_lgtk_update(struct protocol_interface_info_entry *cur, struct
 uint8_t ws_lfn_parent_tx_key_index(struct protocol_interface_info_entry *cur, const uint8_t *dst64);
 /* Parent: an LFN child's RFC 9685 multicast registration (lifetime 0: removed) */
 void ws_lfn_parent_mc_register(struct protocol_interface_info_entry *cur, const uint8_t eui64[8], const uint8_t group[16], uint16_t lifetime_min);
+/* Parent: a new MPL data message (received or seeded): copies to the LFN
+ * children that registered its group */
+void ws_lfn_parent_mpl_copy(struct protocol_interface_info_entry *cur, struct buffer *buf);
+/* Parent: an LFN child deregistered (ARO lifetime 0) */
+void ws_lfn_parent_child_release(struct protocol_interface_info_entry *cur, const uint8_t eui64[8]);
 /* Parent: the destination is an LFN child (frames to it carry an LBT-IE) */
 bool ws_lfn_parent_dst_is_lfn(struct protocol_interface_info_entry *cur, const uint8_t *dst64);
 #else
 #define ws_lfn_parent_dst_is_lfn(cur, dst64) (false)
+#define ws_lfn_parent_mpl_copy(cur, buf) ((void)0)
+#define ws_lfn_parent_child_release(cur, eui64) ((void)0)
 #define ws_lfn_parent_mc_register(cur, eui64, group, lifetime) ((void)0)
 #define ws_lfn_parent_lgtk_update(cur, lgtks, active_index, event) ((void)0)
 #define ws_lfn_parent_tx_key_index(cur, dst64) (0)

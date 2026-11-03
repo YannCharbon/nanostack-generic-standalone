@@ -18,6 +18,9 @@
 #ifndef WS_BOOTSTRAP_LFN_H_
 #define WS_BOOTSTRAP_LFN_H_
 
+struct mcps_data_ind_s;
+struct mcps_data_ie_list;
+
 #ifdef HAVE_WS_HOST
 
 void ws_bootstrap_lfn_asynch_ind(struct protocol_interface_info_entry *cur, const struct mcps_data_ind_s *data, const struct mcps_data_ie_list *ie_ext, uint8_t message_type);
@@ -32,6 +35,8 @@ void ws_bootstrap_lfn_address_register(protocol_interface_info_entry_t *cur);
 void ws_bootstrap_lfn_parent_heard(protocol_interface_info_entry_t *cur, const uint8_t *src64);
 /* An acknowledged uplink to dst64 succeeded or failed (after the MAC's retries) */
 void ws_bootstrap_lfn_uplink_result(protocol_interface_info_entry_t *cur, const uint8_t *dst64, bool success);
+/* A multicast group joined or left (mld.c): RFC 9685 registration with the parent */
+void ws_bootstrap_lfn_group_change(struct protocol_interface_info_entry *cur, const uint8_t group[16], bool joined);
 
 #define wisun_mode_host(cur) (cur->bootstrap_mode == ARM_NWK_BOOTSTRAP_MODE_6LoWPAN_HOST)
 
@@ -46,6 +51,7 @@ void ws_bootstrap_lfn_uplink_result(protocol_interface_info_entry_t *cur, const 
 #define ws_bootstrap_lfn_address_register(cur) ((void) 0)
 #define ws_bootstrap_lfn_parent_heard(cur, src64) ((void) 0)
 #define ws_bootstrap_lfn_uplink_result(cur, dst64, success) ((void) 0)
+#define ws_bootstrap_lfn_group_change(cur, group, joined) ((void) 0)
 
 #define wisun_mode_host(cur) (false)
 
