@@ -130,6 +130,7 @@ typedef struct {
     /* FAN 1.1 LGTKs (border router parenting LFNs; docs/LFN_STACK.md §8) */
     ws_pae_auth_lgtk_update *lgtk_update;                    /**< LGTKs changed callback */
     uint32_t lgtk_since_install_s;                           /**< Time since the last LGTK was installed */
+    uint32_t lgtk_fc_check_s;                                /**< Time since the last LGTK frame counter lifetime check */
     bool lgtk_started : 1;                                   /**< LGTKs generated */
     bool lgtk_guard_traced : 1;                              /**< Activation held by the guard: traced once */
 } pae_auth_t;
@@ -142,6 +143,7 @@ static pae_auth_t *ws_pae_auth_get(protocol_interface_info_entry_t *interface_pt
 static pae_auth_t *ws_pae_auth_by_kmp_service_get(kmp_service_t *service);
 static int8_t ws_pae_auth_event_send(kmp_service_t *service, void *data);
 static void ws_pae_auth_tasklet_handler(arm_event_s *event);
+static void ws_pae_auth_lgtk_revoke(pae_auth_t *pae_auth);
 static uint32_t ws_pae_auth_lifetime_key_frame_cnt_check(pae_auth_t *pae_auth, uint8_t gtk_index, uint16_t seconds);
 static uint32_t ws_pae_auth_lifetime_system_time_check(pae_auth_t *pae_auth, int8_t gtk_index, uint16_t seconds, uint32_t dec_extra_seconds);
 static void ws_pae_auth_gtk_key_insert(pae_auth_t *pae_auth);
@@ -223,6 +225,7 @@ int8_t ws_pae_auth_init(protocol_interface_info_entry_t *interface_ptr, sec_prot
     pae_auth->lgtk_since_install_s = 0;
     pae_auth->lgtk_started = false;
     pae_auth->lgtk_guard_traced = false;
+    pae_auth->lgtk_fc_check_s = 0;
     pae_auth->prev_system_time_set = false;
 
     pae_auth->relay_socked_msg_if_instance_id = 0;
@@ -535,6 +538,9 @@ int8_t ws_pae_auth_node_access_revoke_start(protocol_interface_info_entry_t *int
 
     // Update keys to NVM as needed
     pae_auth->nw_info_updated(pae_auth->interface_ptr);
+
+    // FAN 1.1: the LGTKs the same way
+    ws_pae_auth_lgtk_revoke(pae_auth);
 
     return 0;
 }
@@ -1714,6 +1720,83 @@ static int8_t ws_pae_auth_lgtk_next_get(sec_prot_gtk_keys_t *lgtks)
     return -1;
 }
 
+/* Revocation of node access for the LGTKs [S: Wi-SUN FAN 1.1 6.5.2.5 as
+ * quoted in wisun-br-linux authenticator.c auth_revoke_gtks()]: with the
+ * reduced lifetime R = lgtk_lifetime_s / lgtk_revocation_reduction,
+ * a. if the active LGTK has more than R left: every other LGTK is removed and
+ *    the active one gets R;
+ * b. otherwise: every LGTK but the active one and the next one is removed and
+ *    the next one gets R;
+ * then a new LGTK is installed with the normal lifetime. The revoked nodes
+ * (whose keys the border router deleted) cannot fetch it. */
+static void ws_pae_auth_lgtk_revoke(pae_auth_t *pae_auth)
+{
+    const ws_lfn_settings_t *c = ws_pae_auth_lgtk_cfg(pae_auth);
+    sec_prot_gtk_keys_t *lgtks = pae_auth->sec_keys_nw_info->lgtks;
+
+    if (!c || !pae_auth->lgtk_started || !c->lgtk_revocation_reduction) {
+        return;
+    }
+    int8_t active = sec_prot_keys_gtk_status_active_get(lgtks);
+    if (active < 0) {
+        return;
+    }
+    uint32_t reduced = c->lgtk_lifetime_s / c->lgtk_revocation_reduction;
+    uint32_t left = sec_prot_keys_gtk_lifetime_get(lgtks, active);
+    uint64_t now = ws_pae_current_time_get();
+    int8_t keep = active;
+    if (left > reduced) {
+        sec_prot_keys_gtk_lifetime_decrement(lgtks, active, now, left - reduced, false);
+    } else {
+        int8_t next = ws_pae_auth_lgtk_next_get(lgtks);
+        if (next >= 0) {
+            uint32_t nl = sec_prot_keys_gtk_lifetime_get(lgtks, next);
+            if (nl > reduced) {
+                sec_prot_keys_gtk_lifetime_decrement(lgtks, next, now, nl - reduced, false);
+            }
+            keep = next;
+        }
+    }
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        if (i != active && i != keep && sec_prot_keys_gtk_is_set(lgtks, i)) {
+            sec_prot_keys_gtk_clear(lgtks, i);
+            tr_info("LGTK revocation: index %i removed", i);
+        }
+    }
+    tr_info("LGTK revocation: index %i lifetime %"PRIu32" s", keep, reduced);
+    ws_pae_auth_lgtk_insert(pae_auth, c->lgtk_lifetime_s);
+    ws_pae_auth_lgtk_changed(pae_auth, "revocation");
+}
+
+/* LGTK lifetime by frame counter [S: the Arm stack's GTK check,
+ * ws_pae_auth_lifetime_key_frame_cnt_check(), applied to the LGTKs]: once
+ * an hour, if the active LGTK's frame counter space is used up faster than
+ * its lifetime (and more than 20 % of it), its lifetime is cut to the share
+ * of the counter space left, so that the next LGTK is installed and
+ * activated before the counter runs out. */
+static void ws_pae_auth_lgtk_fc_lifetime_check(pae_auth_t *pae_auth, const ws_lfn_settings_t *c)
+{
+    sec_prot_gtk_keys_t *lgtks = pae_auth->sec_keys_nw_info->lgtks;
+    int8_t active = sec_prot_keys_gtk_status_active_get(lgtks);
+    uint32_t fc = 0;
+
+    if (active < 0 || !c->lgtk_lifetime_s) {
+        return;
+    }
+    mac_helper_key_link_frame_counter_read(pae_auth->interface_ptr->id, &fc, WS_LGTK_MAC_SLOT_FIRST + active);
+    uint32_t left = sec_prot_keys_gtk_lifetime_get(lgtks, active);
+    uint32_t life_left_pc = (uint32_t)((uint64_t)left * 100 / c->lgtk_lifetime_s);
+    uint32_t fc_left_pc = (uint32_t)((uint64_t)(UINT32_MAX - fc) * 100 / UINT32_MAX);
+    if (fc_left_pc < life_left_pc && fc_left_pc < 80) {
+        uint32_t target = (uint32_t)((uint64_t)c->lgtk_lifetime_s * fc_left_pc / 100);
+        if (target < left) {
+            tr_info("LGTK index %i: frame counter %"PRIu32" (%"PRIu32" %% left), lifetime %"PRIu32" -> %"PRIu32" s",
+                    active, fc, fc_left_pc, left, target);
+            sec_prot_keys_gtk_lifetime_decrement(lgtks, active, ws_pae_current_time_get(), left - target, false);
+        }
+    }
+}
+
 static void ws_pae_auth_lgtk_timer(pae_auth_t *pae_auth, uint16_t seconds)
 {
     const ws_lfn_settings_t *c = ws_pae_auth_lgtk_cfg(pae_auth);
@@ -1722,6 +1805,9 @@ static void ws_pae_auth_lgtk_timer(pae_auth_t *pae_auth, uint16_t seconds)
     if (!c) {
         return;
     }
+    // Role-based PMK and PTK lifetimes of the LFN supplicants
+    pae_auth->sec_cfg->timer_cfg.lfn_pmk_lifetime = c->lpmk_lifetime_s;
+    pae_auth->sec_cfg->timer_cfg.lfn_ptk_lifetime = c->lptk_lifetime_s;
     if (!pae_auth->lgtk_started && ws_pae_auth_lgtks_restore(pae_auth)) {
         pae_auth->lgtk_started = true;
         // Installs the LGTKs on the MAC; then their frame counters
@@ -1750,6 +1836,11 @@ static void ws_pae_auth_lgtk_timer(pae_auth_t *pae_auth, uint16_t seconds)
     if (pae_auth->lgtk_since_install_s % 60 < seconds) {
         ws_pae_auth_lgtk_fc_check(pae_auth);
     }
+    pae_auth->lgtk_fc_check_s += seconds;
+    if (pae_auth->lgtk_fc_check_s >= 3600) {
+        pae_auth->lgtk_fc_check_s = 0;
+        ws_pae_auth_lgtk_fc_lifetime_check(pae_auth, c);
+    }
 
     uint64_t current_time = ws_pae_current_time_get();
     int8_t active = sec_prot_keys_gtk_status_active_get(lgtks);
@@ -1768,6 +1859,15 @@ static void ws_pae_auth_lgtk_timer(pae_auth_t *pae_auth, uint16_t seconds)
                 tr_info("LGTK activated: index %i (the active one expired)", next);
                 ws_pae_auth_lgtk_changed(pae_auth, "activated");
                 active = next;
+                /* An LFN learns the new active index from the next LPC or
+                   sync frame: until then its uplinks use the old LGTK. With
+                   no overlap (activation at expiry: a revocation, or a guard
+                   longer than the time left) the old one stays one sync
+                   period + 60 s more for reception [I] */
+                uint32_t grace = (uint32_t)((uint64_t)c->bc_interval_ms * c->bc_sync_period / 1000) + 60;
+                lgtks->gtk[i].lifetime = grace;
+                tr_info("LGTK index %i kept %"PRIu32" s after its expiry (reception)", i, grace);
+                continue;
             } else {
                 active = -1;
             }

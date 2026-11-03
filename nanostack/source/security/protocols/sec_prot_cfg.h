@@ -43,7 +43,18 @@ typedef struct sec_timer_cfg_s {
     uint16_t gtk_request_imax;                       /* GTK_REQUEST_IMAX (seconds) */
     uint16_t gtk_max_mismatch;                       /* GTK_MAX_MISMATCH (seconds) */
     uint8_t gtk_new_install_req;                     /* GTK_NEW_INSTALL_REQUIRED (percent of GTK lifetime) */
+    uint32_t lfn_pmk_lifetime;                       /* FAN 1.1: PMK lifetime of an LFN supplicant (seconds) */
+    uint32_t lfn_ptk_lifetime;                       /* FAN 1.1: PTK lifetime of an LFN supplicant (seconds) */
 } sec_timer_cfg_t;
+
+/* FAN 1.1 LFN PMK and PTK lifetimes [S: wisun-br-linux examples/wsbrd.conf
+ * lpmk_lifetime 788 400 min (18 months), lptk_lifetime 525 600 min (12 months);
+ * the FFN ones are 4 and 2 months] */
+#define SEC_LFN_PMK_LIFETIME_DEFAULT  (788400UL * 60)
+#define SEC_LFN_PTK_LIFETIME_DEFAULT  (525600UL * 60)
+/* The PMK or PTK lifetime of a supplicant by its role */
+#define SEC_PMK_LIFETIME(cfg, keys) ((keys)->lfn && (cfg)->timer_cfg.lfn_pmk_lifetime ? (cfg)->timer_cfg.lfn_pmk_lifetime : (cfg)->timer_cfg.pmk_lifetime)
+#define SEC_PTK_LIFETIME(cfg, keys) ((keys)->lfn && (cfg)->timer_cfg.lfn_ptk_lifetime ? (cfg)->timer_cfg.lfn_ptk_lifetime : (cfg)->timer_cfg.ptk_lifetime)
 
 /* Security radius configuration settings */
 

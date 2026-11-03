@@ -417,7 +417,7 @@ static void supp_fwh_sec_prot_state_machine(sec_prot_t *prot)
 
                 tr_info("4WH: finish, wait Message 3 retry");
 
-                sec_prot_keys_ptk_write(prot->sec_keys, data->new_ptk, prot->sec_cfg->timer_cfg.ptk_lifetime);
+                sec_prot_keys_ptk_write(prot->sec_keys, data->new_ptk, SEC_PTK_LIFETIME(prot->sec_cfg, prot->sec_keys));
                 sec_prot_keys_ptk_eui_64_write(prot->sec_keys, data->remote_eui64);
 
                 data->common.ticks = 60 * 10; // 60 seconds

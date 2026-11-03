@@ -252,3 +252,14 @@ int ws_test_lfn_lpa_unusable(int8_t interface_id, bool unusable)
     cur->ws_info->lfn.test_lpa_no_bs = unusable;
     return 0;
 }
+
+int ws_test_lgtk_frame_counter_set(int8_t interface_id, uint32_t frame_counter)
+{
+    protocol_interface_info_entry_t *cur = protocol_stack_interface_info_get_by_id(interface_id);
+
+    if (!cur || !ws_info(cur) || !cur->ws_info->lfn_parent) {
+        return -1;
+    }
+    mac_helper_key_link_frame_counter_set(cur->id, frame_counter, WS_LGTK_MAC_SLOT_FIRST + cur->ws_info->lfngtk.active_key_index);
+    return 0;
+}

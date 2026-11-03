@@ -55,6 +55,8 @@ void ws_pae_timers_settings_init(sec_timer_cfg_t *timer_settings, ws_sec_timer_c
     timer_settings->gtk_request_imax = new_timer_settings->gtk_request_imax * SECONDS_IN_MINUTE;
     timer_settings->gtk_max_mismatch = new_timer_settings->gtk_max_mismatch * SECONDS_IN_MINUTE;
     timer_settings->gtk_new_install_req = new_timer_settings->gtk_new_install_req;
+    timer_settings->lfn_pmk_lifetime = SEC_LFN_PMK_LIFETIME_DEFAULT;
+    timer_settings->lfn_ptk_lifetime = SEC_LFN_PTK_LIFETIME_DEFAULT;
 
     ws_pae_timers_calculate(timer_settings);
 }

@@ -1091,6 +1091,9 @@ void ws_management_lfn_settings_defaults(ws_lfn_settings_t *s)
     s->parent_check_sweeps = WS_LFN_PARENT_CHECK_SWEEPS_DEFAULT;
     s->parent_switch_cost = WS_LFN_PARENT_SWITCH_COST_DEFAULT;
     s->parent_release_s = WS_LFN_PARENT_RELEASE_S_DEFAULT;
+    s->lgtk_revocation_reduction = 30;
+    s->lpmk_lifetime_s = 788400UL * 60;
+    s->lptk_lifetime_s = 525600UL * 60;
     s->na_wait_s = WS_LFN_NA_WAIT_S_DEFAULT;
     s->dhcp_max_delay_s = WS_LFN_DHCP_MAX_DELAY_S_DEFAULT;
     s->dhcp_irt_s = WS_LFN_DHCP_IRT_S_DEFAULT;

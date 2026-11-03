@@ -1028,6 +1028,9 @@ typedef struct ws_lfn_settings {
     uint8_t lgtk_new_install_required;  /**< Next LGTK installed when the active one has used this % of its lifetime */
     uint16_t lgtk_new_activation_time;  /**< Next LGTK activated lifetime / this before the active one expires */
     uint32_t lgtk_activation_guard_s;   /**< Next LGTK activated no sooner than this after its installation (s) */
+    uint16_t lgtk_revocation_reduction; /**< Node revocation: the active (or next) LGTK lifetime becomes lgtk_lifetime_s / this (FAN 1.1 6.5.2.5, wsbrd lfn_revocation_lifetime_reduction) */
+    uint32_t lpmk_lifetime_s;        /**< PMK lifetime of LFN supplicants (s; wsbrd lpmk_lifetime) */
+    uint32_t lptk_lifetime_s;        /**< PTK lifetime of LFN supplicants (s; wsbrd lptk_lifetime) */
 } ws_lfn_settings_t;
 
 #define WS_LFN_LISTEN_INTERVAL_MS_DEFAULT        6000

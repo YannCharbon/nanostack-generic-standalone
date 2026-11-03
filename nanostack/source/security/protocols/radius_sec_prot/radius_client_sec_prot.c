@@ -1214,7 +1214,7 @@ static void radius_client_sec_prot_state_machine(sec_prot_t *prot)
             tr_info("Radius: finish, eui-64: %s", trace_array(sec_prot_remote_eui_64_addr_get(prot), 8));
 
             if (sec_prot_result_ok_check(&data->common)) {
-                sec_prot_keys_pmk_write(prot->sec_keys, data->new_pmk, prot->sec_cfg->timer_cfg.pmk_lifetime);
+                sec_prot_keys_pmk_write(prot->sec_keys, data->new_pmk, SEC_PMK_LIFETIME(prot->sec_cfg, prot->sec_keys));
                 // Supplicant PMK is now valid
                 sec_prot_keys_pmk_mismatch_reset(prot->sec_keys);
                 /* Calls KMP-FINISHED.indication with ignore results because next

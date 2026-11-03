@@ -250,5 +250,12 @@ int ws_test_lfn_lpa_drop(int8_t interface_id, uint8_t count);
  */
 int ws_test_lfn_lpa_unusable(int8_t interface_id, bool unusable);
 
+/**
+ * Test hook: the border router's MAC frame counter of its active LGTK (the
+ * LGTK lifetime by frame counter, docs/LFN_STACK.md §8). \return 0 OK, -1
+ * not an LFN parent.
+ */
+int ws_test_lgtk_frame_counter_set(int8_t interface_id, uint32_t frame_counter);
+
 #endif /* DOXYGEN */
 #endif /* NET_THREAD_TEST_H_ */
