@@ -405,7 +405,11 @@ static int8_t ws_pae_supp_key_request_now(pae_supp_t *pae_supp)
     pae_supp->tx_failure_on_initial_key = false;
     pae_supp->initial_key_retry_cnt = KEY_UPDATE_RETRY_COUNT;
     if (ws_pae_supp_initial_key_send(pae_supp) < 0) {
+        /* No target yet (a router before it has an RPL parent): no retry
+           timer, so that the next call (next PAN configuration) tries
+           again [I] */
         tr_info("EAPOL-Key send failed");
+        return 0;
     }
     pae_supp->initial_key_retry_cnt--;
     pae_supp->initial_key_retry_max_value = pae_supp->sec_cfg->prot_cfg.initial_key_retry_max;
