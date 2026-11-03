@@ -185,7 +185,8 @@ static void ws_lfn_lpa_send(protocol_interface_info_entry_t *cur, const uint8_t 
     // Our unicast schedule as FLUS-IE + LCP-IE (tag 0), no US-IE [S:
     // wisun-br-linux ws_mngt.c; M: Silicon Labs' LPA]
     req.wp_requested_nested_ie_list.lcp_ie = true;
-    req.wp_requested_nested_ie_list.bs_ie = true;
+    // Test hook (ws_test_lfn_lpa_unusable()): an LPA without BS-IE
+    req.wp_requested_nested_ie_list.bs_ie = !cur->ws_info->lfn.test_lpa_no_bs;
     req.wp_requested_nested_ie_list.pan_ie = true;
     req.wp_requested_nested_ie_list.net_name_ie = true;
     // A router's routing cost is updated when it sends a PAN advertisement,

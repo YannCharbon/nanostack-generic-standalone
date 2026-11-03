@@ -554,6 +554,35 @@ static bool ws_lfn_better(protocol_interface_info_entry_t *cur, const ws_lfn_lpa
  * among those heard CAND_PARENT_THRESHOLD dB above the device's minimum
  * sensitivity (as an FFN chooses its candidate parents), the strongest on a
  * tie; without one, the same among those above the minimum [I] */
+/* Whether ws_lfn_lpa_analyse() can take this LPA: checked before a parent
+ * change drops the current parent (a failed change used to leave the LFN
+ * operational with no parent and no timer to recover) */
+static bool ws_lfn_lpa_valid(protocol_interface_info_entry_t *cur, const struct mcps_data_ind_s *data, const struct mcps_data_ie_list *ie_ext)
+{
+    ws_utt_ie_t utt;
+    ws_bt_ie_t bt;
+    ws_us_ie_t us;
+    ws_bs_ie_t bs;
+    ws_panid_ie_t panid;
+    ws_flus_ie_t flus;
+
+    if (data->SrcAddrMode != MAC_ADDR_MODE_64_BIT || !ws_bootstrap_network_name_matches(ie_ext, cur->ws_info->cfg->gen.network_name)) {
+        return false;
+    }
+    bool has_us = ws_wh_flus_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &flus) &&
+                  ws_wp_nested_lcp_us_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, flus.channel_plan_tag, flus.dwell_interval, &us);
+    if (!has_us) {
+        has_us = ws_wp_nested_us_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &us);
+    }
+    if (!ws_wh_utt_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &utt) ||
+            !ws_wh_bt_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &bt) ||
+            !ws_wh_panid_read(ie_ext->headerIeList, ie_ext->headerIeListLength, &panid) || !has_us ||
+            !ws_wp_nested_bs_read(ie_ext->payloadIeList, ie_ext->payloadIeListLength, &bs)) {
+        return false;
+    }
+    return ws_bootstrap_validate_channel_plan(&us, cur) && ws_bootstrap_validate_channel_function(&us, &bs);
+}
+
 static void ws_lfn_lpa_choose(protocol_interface_info_entry_t *cur)
 {
     ws_lfn_state_t *lfn = &cur->ws_info->lfn;
@@ -599,6 +628,15 @@ static void ws_lfn_lpa_choose(protocol_interface_info_entry_t *cur)
             ws_lfn_candidates_clear(cur);
             return;
         }
+        mcps_data_ie_list_t bie = {
+            .headerIeList = best->ie, .headerIeListLength = best->hdr_len,
+            .payloadIeList = best->ie + best->hdr_len, .payloadIeListLength = best->pl_len,
+        };
+        if (!ws_lfn_lpa_valid(cur, &best->ind, &bie)) {
+            tr_warn("LFN: better-parent check: LPA from %s unusable, parent kept", trace_array(best->ind.SrcAddr, 8));
+            ws_lfn_candidates_clear(cur);
+            return;
+        }
         tr_info("LFN: better parent: %s -> %s (routing cost %u, %d dBm)", trace_array(lfn->parent_eui64, 8),
                 trace_array(best->ind.SrcAddr, 8), best->routing_cost, best->ind.signal_dbm);
         lfn->searching = true;  // the switch below
@@ -609,6 +647,16 @@ static void ws_lfn_lpa_choose(protocol_interface_info_entry_t *cur)
         // broadcast schedule and applies the LTO-IE of its LPA), without
         // EAPOL; nobody: keep the parent
         lfn->searching = false;
+        if (best) {
+            mcps_data_ie_list_t bie = {
+                .headerIeList = best->ie, .headerIeListLength = best->hdr_len,
+                .payloadIeList = best->ie + best->hdr_len, .payloadIeListLength = best->pl_len,
+            };
+            if (!ws_lfn_lpa_valid(cur, &best->ind, &bie)) {
+                tr_warn("LFN: parent search: LPA from %s unusable, parent kept", trace_array(best->ind.SrcAddr, 8));
+                best = NULL;
+            }
+        }
         if (!best) {
             tr_info("LFN: parent search: no parent heard, parent kept");
             ws_lfn_candidates_clear(cur);
@@ -636,7 +684,16 @@ static void ws_lfn_lpa_choose(protocol_interface_info_entry_t *cur)
             .payloadIeList = best->ie + best->hdr_len, .payloadIeListLength = best->pl_len,
         };
         tr_info("LFN: parent chosen: %s (routing cost %u, %d dBm)", trace_array(best->ind.SrcAddr, 8), best->routing_cost, best->ind.signal_dbm);
+        bool operational = cur->nwk_bootstrap_state == ER_BOOTSTRAP_DONE;
         ws_lfn_lpa_analyse(cur, &best->ind, &ie);
+        if (!lfn->parent_known && operational && cur->nwk_bootstrap_state == ER_BOOTSTRAP_DONE) {
+            /* The change failed after the old parent was dropped (no
+               neighbour entry for the new one): a full rejoin, keys kept */
+            tr_warn("LFN: parent change failed: discovery again");
+            ws_lfn_candidates_clear(cur);
+            ws_bootstrap_event_discovery_start(cur);
+            return;
+        }
     }
     ws_lfn_candidates_clear(cur);
 }

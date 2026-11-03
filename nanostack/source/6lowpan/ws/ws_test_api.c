@@ -241,3 +241,14 @@ int ws_test_lfn_lpa_drop(int8_t interface_id, uint8_t count)
     cur->ws_info->lfn.test_lpa_drop = count;
     return 0;
 }
+
+int ws_test_lfn_lpa_unusable(int8_t interface_id, bool unusable)
+{
+    protocol_interface_info_entry_t *cur = protocol_stack_interface_info_get_by_id(interface_id);
+
+    if (!cur || !ws_info(cur) || !cur->ws_info->lfn_parent) {
+        return -1;
+    }
+    cur->ws_info->lfn.test_lpa_no_bs = unusable;
+    return 0;
+}

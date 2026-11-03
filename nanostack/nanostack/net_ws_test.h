@@ -243,5 +243,12 @@ int ws_test_lfn_parent_silence(int8_t interface_id, bool silent);
  */
 int ws_test_lfn_lpa_drop(int8_t interface_id, uint8_t count);
 
+/**
+ * Test hook: an LFN parent sends its LPAs without the BS-IE, which LFNs
+ * cannot use (a parent change to it must fail cleanly). \return 0 OK, -1
+ * not an LFN parent.
+ */
+int ws_test_lfn_lpa_unusable(int8_t interface_id, bool unusable);
+
 #endif /* DOXYGEN */
 #endif /* NET_THREAD_TEST_H_ */

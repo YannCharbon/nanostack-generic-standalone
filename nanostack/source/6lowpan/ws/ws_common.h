@@ -155,6 +155,7 @@ typedef struct ws_lfn_state_s {
     uint8_t tx_lgtk;                /**< FFN router: the LGTK (0-2) its LFN frames use (ws_lfn_parent.c) */
     bool test_silent;               /**< Test hook: answer no LFN and send no LPC (ws_test_lfn_parent_silence()) */
     uint8_t test_lpa_drop;          /**< Test hook: LPAs still to drop, as if lost (ws_test_lfn_lpa_drop()) */
+    bool test_lpa_no_bs;            /**< Test hook: LPAs without BS-IE, unusable (ws_test_lfn_lpa_unusable()) */
 
 } ws_lfn_state_t;
 
