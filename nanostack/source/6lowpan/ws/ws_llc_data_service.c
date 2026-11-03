@@ -758,7 +758,12 @@ static void ws_llc_mac_confirm_cb(const mac_api_t *api, const mcps_data_conf_t *
                 ws_llc_mpx_eapol_send(base, message);
             }
         } else {
-            if (neighbor_info.ws_neighbor && neighbor_info.neighbor && neighbor_info.neighbor->link_lifetime <= WS_NEIGHBOUR_TEMPORARY_NEIGH_MAX_LIFETIME) {
+            /* Not an LFN child (FAN 1.1): one that released us keeps a
+               short lifetime so that we deliver what we still hold for it
+               (ws_lfn_parent_child_release()); removing it here purged
+               those frames */
+            if (neighbor_info.ws_neighbor && neighbor_info.neighbor && neighbor_info.neighbor->link_lifetime <= WS_NEIGHBOUR_TEMPORARY_NEIGH_MAX_LIFETIME &&
+                    !neighbor_info.ws_neighbor->fhss_data.lfn_uc_timing_info.listen_interval_ms) {
                 //Remove temp neighbour
                 tr_debug("Remove Temp Entry by TX confirm");
                 mac_neighbor_table_neighbor_remove(mac_neighbor_info(interface), neighbor_info.neighbor);

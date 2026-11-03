@@ -141,7 +141,10 @@ typedef struct ws_lfn_state_s {
     uint16_t parent_cost;           /**< Routing cost of the parent (PAN-IE of its LPA) */
     uint16_t parent_rsl_x8;         /**< EWMA of the parent's RSL (dB above -174 dBm, x 8; 0: none) */
     uint8_t old_parent_eui64[8];    /**< Parent left for a better one: released (ARO lifetime 0) at release_at_s */
-    uint32_t release_at_s;          /**< Uptime of that release (0: none pending) */
+    uint32_t release_at_s;          /**< Uptime of that release, or of its next try (0: none pending) */
+    uint8_t release_tries;          /**< Release tries made (0: not sent yet) */
+    uint8_t release_sent;           /**< NS sent in the last try */
+    uint8_t release_acked;          /**< Of them, acknowledged (MAC ACK; the NA of a successful ARO is omitted) */
 
     /* Parent (border router) */
     uint8_t lpc_pending;            /**< An LGTK event: a broadcast LPC in the next LFN broadcast slot */

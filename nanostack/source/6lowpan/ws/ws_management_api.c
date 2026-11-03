@@ -1087,6 +1087,7 @@ void ws_management_lfn_settings_defaults(ws_lfn_settings_t *s)
     s->parent_check_s = WS_LFN_PARENT_CHECK_S_DEFAULT;
     s->parent_check_weak_s = WS_LFN_PARENT_CHECK_WEAK_S_DEFAULT;
     s->parent_check_lnd_slots = WS_LFN_PARENT_CHECK_LND_SLOTS_DEFAULT;
+    s->parent_check_sweeps = WS_LFN_PARENT_CHECK_SWEEPS_DEFAULT;
     s->parent_switch_cost = WS_LFN_PARENT_SWITCH_COST_DEFAULT;
     s->parent_release_s = WS_LFN_PARENT_RELEASE_S_DEFAULT;
     s->lpcs_retry_intervals = WS_LFN_LPCS_RETRY_INTERVALS_DEFAULT;
@@ -1128,6 +1129,7 @@ int ws_management_lfn_settings_set(int8_t interface_id, const ws_lfn_settings_t 
             !s->tx_ttl_intervals || s->tx_min_prep_us > s->tx_lead_us || s->tx_lead_us > 60000 ||
             s->lgtk_lifetime_s < 60 || !s->lgtk_new_install_required || s->lgtk_new_install_required > 99 ||
             !s->lgtk_new_activation_time ||
+            s->parent_check_sweeps > 4 ||
             // the next LGTK must be installed before its activation point
             (uint32_t)s->lgtk_new_activation_time * (100 - s->lgtk_new_install_required) <= 100) {
         return -2;

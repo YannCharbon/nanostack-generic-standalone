@@ -1000,6 +1000,7 @@ typedef struct ws_lfn_settings {
     uint32_t parent_check_s;            /**< Background check for a better parent while attached: mean interval while the parent's link is good (s; 0: never) */
     uint32_t parent_check_weak_s;       /**< ... while the parent's RSL is below the candidate threshold (s; 0: as parent_check_s) */
     uint8_t parent_check_lnd_slots;     /**< LND-IE discovery slots of a background check (0: lnd_slots) */
+    uint8_t parent_check_sweeps;        /**< LPAS sweeps of a background check, back to back before its window (1..4; 0: 1) */
     uint16_t parent_switch_cost;        /**< A parent of the same RSL class is better only if its routing cost is lower by at least this */
     uint16_t parent_release_s;          /**< The old parent is released (ARO lifetime 0) this long after the registration with the new one (s) */
     /* Parent (border router) */
@@ -1043,11 +1044,15 @@ typedef struct ws_lfn_settings {
  * DEVICE_MIN_SENS + CAND_PARENT_THRESHOLD), with a 10-slot window (0.6 s);
  * a switch needs the Wi-SUN candidate-parent hysteresis (3 dB) across the
  * RSL threshold, or a routing cost lower by PARENT_SWITCH_THRESHOLD (192,
- * RFC 6719); the old parent is released 15 s after the new registration,
- * once the new route has reached the border router (RPL DAO delay 1-7 s) */
+ * RFC 6719); the old parent is released 15 s plus two listen intervals
+ * after the new registration, once the new route has reached the border
+ * router (RPL DAO delay 1-7 s) and the old parent has delivered what it held */
 #define WS_LFN_PARENT_CHECK_S_DEFAULT            21600
 #define WS_LFN_PARENT_CHECK_WEAK_S_DEFAULT       3600
 #define WS_LFN_PARENT_CHECK_LND_SLOTS_DEFAULT    10
+/* Two sweeps per check: an FFN hears an LPAS only on the channel it listens
+ * on (one sweep: 72-81 % of checks in the emulator; two: see LFN_STACK.md §9) */
+#define WS_LFN_PARENT_CHECK_SWEEPS_DEFAULT       2
 #define WS_LFN_PARENT_SWITCH_COST_DEFAULT        192
 #define WS_LFN_PARENT_RELEASE_S_DEFAULT          15
 #define WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT      5

@@ -441,10 +441,11 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
     return true;
 }
 
+/* An LFN child that needs our sync frames: not one that released us */
 static bool ws_lfn_has_child(protocol_interface_info_entry_t *cur)
 {
     ns_list_foreach(mac_neighbor_table_entry_t, n, &mac_neighbor_info(cur)->neighbour_list) {
-        if (ws_lfn_is_child(cur, n, NULL)) {
+        if (ws_lfn_is_child(cur, n, NULL) && n->link_lifetime != WS_LFN_RELEASED_LIFETIME_S) {
             return true;
         }
     }
@@ -728,8 +729,17 @@ void ws_lfn_parent_child_release(protocol_interface_info_entry_t *cur, const uin
             ws_lfn_mc_reg[i].until_s = cur->ws_info->uptime;
         }
     }
-    if (n->lifetime > WS_LFN_RELEASED_LIFETIME_S) {
-        n->lifetime = WS_LFN_RELEASED_LIFETIME_S;
+    /* Kept WS_LFN_RELEASED_LIFETIME_S, and at least two of its listen
+       intervals, to deliver the frames still queued for it (the LFN listens
+       in the same slots, which its last frames gave us) */
+    ws_neighbor_class_entry_t *w = NULL;
+    ws_lfn_is_child(cur, n, &w);
+    uint32_t keep = 2 * ((w->fhss_data.lfn_uc_timing_info.listen_interval_ms + 999) / 1000) + 10;
+    if (keep < WS_LFN_RELEASED_LIFETIME_S) {
+        keep = WS_LFN_RELEASED_LIFETIME_S;
+    }
+    if (n->lifetime > keep) {
+        n->lifetime = keep;
     }
     n->link_lifetime = WS_LFN_RELEASED_LIFETIME_S;
     tr_info("LFN child %s released its registrations", trace_array(eui64, 8));

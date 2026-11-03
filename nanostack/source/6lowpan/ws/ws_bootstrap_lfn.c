@@ -227,8 +227,15 @@ static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur)
     uint32_t window_ms = (uint32_t)(cur->ws_info->lfn.disc_slots ? cur->ws_info->lfn.disc_slots : c->lnd_slots) * c->lnd_slot_time_ms;
     /* Never before the sweep can have ended: about 20 ms per channel [M:
        16.8 ms on Silicon Labs' LFN, item 1], plus 300 ms [I] */
+    /* A background check sends parent_check_sweeps sweeps back to back: an
+       FFN hears an LPAS only on the channel it listens on, and it may be on
+       its broadcast channel or hop away during one sweep [I] */
+    uint8_t sweeps = 1;
+    if (cur->ws_info->lfn.check && c->parent_check_sweeps > 1) {
+        sweeps = c->parent_check_sweeps;
+    }
     uint32_t delay_ms = c->lnd_response_delay_ms;
-    uint32_t sweep_ms = (uint32_t)cur->ws_info->hopping_schedule.number_of_channels * 20 + 300;
+    uint32_t sweep_ms = (uint32_t)sweeps * cur->ws_info->hopping_schedule.number_of_channels * 20 + 300;
     if (delay_ms < sweep_ms) {
         delay_ms = sweep_ms;
     }
@@ -259,9 +266,11 @@ static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur)
     ws_common_generate_channel_list(cur, req.channel_list.channel_mask, cur->ws_info->hopping_schedule.number_of_channels,
                                     cur->ws_info->hopping_schedule.regulatory_domain, cur->ws_info->hopping_schedule.operating_class,
                                     cur->ws_info->hopping_schedule.channel_plan_id);
-    tr_info("LFN: LPAS sweep");
-    ws_stats_update(cur, STATS_WS_ASYNCH_TX_PAS, 1);
-    ws_llc_asynch_request(cur, &req);
+    for (uint8_t i = 0; i < sweeps; i++) {
+        tr_info("LFN: LPAS sweep");
+        ws_stats_update(cur, STATS_WS_ASYNCH_TX_PAS, 1);
+        ws_llc_asynch_request(cur, &req);
+    }
 }
 
 /* Before the first LPC tells the active key: the first LGTK installed (key
@@ -826,15 +835,28 @@ static bool ws_lfn_group_registrable(const uint8_t *group)
            !addr_ipv6_equal(group, ADDR_REALM_LOCAL_ALL_ROUTERS) && !addr_ipv6_equal(group, ADDR_SITE_LOCAL_ALL_ROUTERS);
 }
 
-static void ws_lfn_mc_send(protocol_interface_info_entry_t *cur, const uint8_t ll_dst[16], const uint8_t *group, uint16_t lifetime)
+/* A release NS reached the old parent (MAC ACK) */
+static void ws_lfn_release_ack_cb(buffer_t *buf, uint8_t status)
+{
+    if (status == SOCKET_TX_DONE && buf->interface && ws_info(buf->interface)) {
+        buf->interface->ws_info->lfn.release_acked++;
+    }
+}
+
+static bool ws_lfn_mc_send(protocol_interface_info_entry_t *cur, const uint8_t ll_dst[16], const uint8_t *group, uint16_t lifetime, bool release)
 {
     // A new TID for each registration [I: RFC 8505 §5.2 lets the 6LN
     // increment it; our parents ignore it]
     buffer_t *buf = icmpv6_build_ns_earo_mc(cur, ll_dst, group, lifetime, ++cur->ws_info->lfn.earo_tid);
     if (buf) {
         tr_info("LFN: EARO multicast %s to %s, %u min", trace_ipv6(group), trace_ipv6(ll_dst), lifetime);
+        if (release) {
+            buf->ack_receive_cb = ws_lfn_release_ack_cb;
+        }
         protocol_push(buf);
+        return true;
     }
+    return false;
 }
 
 void ws_bootstrap_lfn_group_change(protocol_interface_info_entry_t *cur, const uint8_t group[16], bool joined)
@@ -845,14 +867,21 @@ void ws_bootstrap_lfn_group_change(protocol_interface_info_entry_t *cur, const u
     }
     uint8_t ll_parent[16];
     ws_common_create_ll_address(ll_parent, cur->ws_info->lfn.parent_eui64);
-    ws_lfn_mc_send(cur, ll_parent, group, joined ? cur->ws_info->lfn_cfg.registration_lifetime_min : 0);
+    ws_lfn_mc_send(cur, ll_parent, group, joined ? cur->ws_info->lfn_cfg.registration_lifetime_min : 0, false);
 }
 
 /* The parent left for a better one: its registrations end (lifetime 0, RFC
  * 6775/8505), so that it drops its route and its DAO target for our
  * addresses, its copies of our groups, and us as a child. Sent once the new
- * parent's route has reached the border router (parent_release_s after our
- * registration with it) [I] */
+ * parent's route has reached the border router and the old parent has had
+ * two of our listen intervals to deliver what it still held for us
+ * (parent_release_s + 2 listen intervals after our registration with the new
+ * parent). A lost release would leave the old parent publishing our address
+ * (its DAO refreshes would take the route back): the NS are sent again every
+ * WS_LFN_RELEASE_RETRY_S until each was acknowledged at the MAC (the NA of a
+ * successful ARO is omitted in Wi-SUN), WS_LFN_RELEASE_TRIES tries in all [I] */
+#define WS_LFN_RELEASE_TRIES 4
+#define WS_LFN_RELEASE_RETRY_S 10
 static void ws_lfn_old_parent_release(protocol_interface_info_entry_t *cur)
 {
     ws_lfn_state_t *lfn = &cur->ws_info->lfn;
@@ -860,10 +889,21 @@ static void ws_lfn_old_parent_release(protocol_interface_info_entry_t *cur)
     aro_t aro;
 
     lfn->release_at_s = 0;
+    if (lfn->release_tries && lfn->release_acked >= lfn->release_sent) {
+        tr_info("LFN: old parent %s released (acknowledged, %u tries)", trace_array(lfn->old_parent_eui64, 8), lfn->release_tries);
+        return;
+    }
+    if (lfn->release_tries >= WS_LFN_RELEASE_TRIES) {
+        tr_warn("LFN: old parent %s: release not acknowledged after %u tries", trace_array(lfn->old_parent_eui64, 8), lfn->release_tries);
+        return;
+    }
     if (!memcmp(lfn->old_parent_eui64, lfn->parent_eui64, 8) ||
             !mac_neighbor_table_address_discover(mac_neighbor_info(cur), lfn->old_parent_eui64, MAC_ADDR_MODE_64_BIT)) {
         return;
     }
+    lfn->release_tries++;
+    lfn->release_sent = 0;
+    lfn->release_acked = 0;
     ws_common_create_ll_address(ll, lfn->old_parent_eui64);
     ns_list_foreach(if_address_entry_t, addr, &cur->ip_addresses) {
         if (addr_is_ipv6_link_local(addr->address)) {
@@ -880,15 +920,19 @@ static void ws_lfn_old_parent_release(protocol_interface_info_entry_t *cur)
             // link-local destination would take our default route (the new
             // parent): on-link to the old parent
             ipv6_buffer_route_to(buf, ll, cur);
+            buf->ack_receive_cb = ws_lfn_release_ack_cb;
             protocol_push(buf);
+            lfn->release_sent++;
         }
     }
     ns_list_foreach(if_group_entry_t, g, &cur->ip_groups) {
-        if (ws_lfn_group_registrable(g->group)) {
-            ws_lfn_mc_send(cur, ll, g->group, 0);
+        if (ws_lfn_group_registrable(g->group) && ws_lfn_mc_send(cur, ll, g->group, 0, true)) {
+            lfn->release_sent++;
         }
     }
-    tr_info("LFN: old parent %s released", trace_array(lfn->old_parent_eui64, 8));
+    tr_info("LFN: old parent %s released (try %u)", trace_array(lfn->old_parent_eui64, 8), lfn->release_tries);
+    // Checked (and sent again if needed) later
+    lfn->release_at_s = cur->ws_info->uptime + WS_LFN_RELEASE_RETRY_S;
 }
 
 /* Address registration: NS with ARO to the parent, which registers the
@@ -923,7 +967,7 @@ void ws_bootstrap_lfn_address_register(protocol_interface_info_entry_t *cur)
         // Our groups (RFC 9685), with the same lifetime and refresh
         ns_list_foreach(if_group_entry_t, g, &cur->ip_groups) {
             if (ws_lfn_group_registrable(g->group)) {
-                ws_lfn_mc_send(cur, ll_parent, g->group, cur->ws_info->lfn_cfg.registration_lifetime_min);
+                ws_lfn_mc_send(cur, ll_parent, g->group, cur->ws_info->lfn_cfg.registration_lifetime_min, false);
             }
         }
         // A parent left for this one: released once our route has moved.
@@ -938,7 +982,9 @@ void ws_bootstrap_lfn_address_register(protocol_interface_info_entry_t *cur)
                 ipv6_buffer_route_to(ns, ll_old, cur);
                 protocol_push(ns);
             }
-            cur->ws_info->lfn.release_at_s = cur->ws_info->uptime + cur->ws_info->lfn_cfg.parent_release_s;
+            cur->ws_info->lfn.release_at_s = cur->ws_info->uptime + cur->ws_info->lfn_cfg.parent_release_s +
+                                             2 * ((cur->ws_info->lfn.listen_interval_ms + 999) / 1000);
+            cur->ws_info->lfn.release_tries = 0;
         }
         // Re-registration at 92 % of the lifetime (black-box item 52)
         cur->ws_info->aro_registration_timer = 0;
