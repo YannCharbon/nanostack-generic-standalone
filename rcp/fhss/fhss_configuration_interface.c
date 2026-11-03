@@ -143,6 +143,7 @@ void ns_fhss_ws_lfn_listen_defaults(fhss_ws_lfn_listen_t *cfg)
     cfg->uplink_guard_us = FHSS_LFN_UPLINK_GUARD_US_DEFAULT;
     cfg->drift_ppm = FHSS_LFN_DRIFT_PPM_DEFAULT;
     cfg->widening_max_us = FHSS_LFN_WIDENING_MAX_US_DEFAULT;
+    cfg->bc_widening_max_us = 0;
     cfg->bc_rx_window_us = FHSS_LFN_BC_RX_WINDOW_US_DEFAULT;
     cfg->bc_sync_only = false;
 }

@@ -1090,6 +1090,7 @@ void ws_management_lfn_settings_defaults(ws_lfn_settings_t *s)
     s->registration_lifetime_min = WS_LFN_REGISTRATION_LIFETIME_MIN_DEFAULT;
     s->drift_ppm = FHSS_LFN_DRIFT_PPM_DEFAULT;
     s->widening_max_us = FHSS_LFN_WIDENING_MAX_US_DEFAULT;
+    s->bc_widening_max_us = 0;
     s->bc_rx_window_us = FHSS_LFN_BC_RX_WINDOW_US_DEFAULT;
     s->bc_sync_only = false;
     s->bc_interval_ms = WS_LFN_BC_INTERVAL_MS_DEFAULT;

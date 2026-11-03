@@ -128,6 +128,7 @@ static void ws_lfn_listen_apply(protocol_interface_info_entry_t *cur, uint32_t i
     l.uplink_guard_us = c->uplink_guard_us;
     l.drift_ppm = c->drift_ppm;
     l.widening_max_us = c->widening_max_us;
+    l.bc_widening_max_us = c->bc_widening_max_us;
     l.bc_rx_window_us = c->bc_rx_window_us;
     l.bc_sync_only = c->bc_sync_only;
     cur->ws_info->lfn.listen_interval_ms = interval_ms;
