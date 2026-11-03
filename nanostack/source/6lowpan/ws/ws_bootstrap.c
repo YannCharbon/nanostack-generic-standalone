@@ -1528,6 +1528,10 @@ static void ws_neighbor_entry_remove_notify(mac_neighbor_table_entry_t *entry_pt
 
     ws_bootstrap_neighbor_delete(cur, entry_ptr);
     ws_stats_update(cur, STATS_WS_NEIGHBOUR_REMOVE, 1);
+    // FAN 1.1 LFN parent: a removed LFN child's multicast registrations
+    if (cur->ws_info->lfn_parent) {
+        ws_lfn_parent_child_removed(cur, entry_ptr->mac64);
+    }
 
 }
 

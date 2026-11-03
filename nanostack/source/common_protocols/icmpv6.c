@@ -515,7 +515,8 @@ static buffer_t *icmpv6_ns_handler(buffer_t *buf)
             aro_out.status = addr_is_ipv6_multicast(target) ? ARO_SUCCESS : ARO_TOPOLOGICALLY_INCORRECT;
             tr_info("EARO multicast %s from %s", trace_ipv6(target), trace_array(aro_out.eui64, 8));
             if (aro_out.status == ARO_SUCCESS) {
-                ws_lfn_parent_mc_register(cur, aro_out.eui64, target, aro_out.lifetime);
+                // ARO_FULL (2, Neighbor Cache Full) when it does not fit
+                aro_out.status = ws_lfn_parent_mc_register(cur, aro_out.eui64, target, aro_out.lifetime);
             }
         } else if (addr_is_ipv6_multicast(target) || !nd_ns_aro_handler(cur, aro, sllao, target, &aro_out)) {
             goto drop;
@@ -1065,6 +1066,13 @@ static buffer_t *icmpv6_na_handler(buffer_t *buf)
     target = dptr;
 
     if (addr_is_ipv6_multicast(target)) {
+        /* FAN 1.1 LFN: the answer to an RFC 9685 multicast registration; a
+           refusal (e.g. status 2, Neighbor Cache Full) is reported, and the
+           registration is tried again at its next refresh */
+        const uint8_t *earo = icmpv6_find_option_in_buffer(buf, 20, ICMPV6_OPT_ADDR_REGISTRATION, 2);
+        if (earo && earo[2] != ARO_SUCCESS) {
+            tr_warn("EARO multicast %s refused by %s: status %u", trace_ipv6(target), trace_ipv6(buf->src_sa.address), earo[2]);
+        }
         goto drop;
     }
 
@@ -1835,7 +1843,11 @@ buffer_t *icmpv6_build_na_earo(protocol_interface_info_entry_t *cur, bool solici
         memcpy(ptr, aro->eui64, 8);
         ptr += 8;
     }
-    if (ws_info(cur) && aro && (aro->status != ARO_SUCCESS && aro->status != ARO_TOPOLOGICALLY_INCORRECT)) {
+    /* A refused RFC 9685 multicast registration (EARO with P = 1, e.g. the
+       parent's table full) keeps the neighbour: its address registration
+       stands */
+    bool mc_earo = earo_flags >= 0 && ((earo_flags & ICMPV6_EARO_P_MASK) >> 4) == ICMPV6_EARO_P_MULTICAST;
+    if (ws_info(cur) && aro && !mc_earo && (aro->status != ARO_SUCCESS && aro->status != ARO_TOPOLOGICALLY_INCORRECT)) {
         /*If Aro failed we will kill the neigbour after we have succeeded in sending message*/
         if (!ws_common_negative_aro_mark(cur, aro->eui64)) {
             tr_debug("Neighbour removed for negative response send");

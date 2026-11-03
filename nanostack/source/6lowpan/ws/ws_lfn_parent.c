@@ -48,6 +48,7 @@
 #include "nanostack/ws_management_api.h"
 #include "nwk_interface/protocol.h"
 #include "service_libs/mac_neighbor_table/mac_neighbor_table.h"
+#include "common_protocols/icmpv6.h"
 #include "6lowpan/mac/mac_helper.h"
 #include "6lowpan/ws/ws_common_defines.h"
 #include "6lowpan/ws/ws_common.h"
@@ -559,14 +560,21 @@ void ws_lfn_parent_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t 
 
 /* RFC 9685 multicast registrations of LFN children (EARO with P = 1,
  * icmpv6.c): the group, the LFN, and the end of the registration */
-#define WS_LFN_MC_REG_MAX 16
+/* Sized for about 4 groups for each of 8 LFN children; an application with
+ * more children or groups raises it at build time. A registration that does
+ * not fit is refused with EARO status 2 (Neighbor Cache Full, RFC 8505 §4.1)
+ * so that the LFN knows; entries of LFNs that are no longer our neighbours
+ * are free. */
+#ifndef WS_LFN_MC_REG_MAX
+#define WS_LFN_MC_REG_MAX 32
+#endif
 static struct {
     uint8_t eui64[8];
     uint8_t group[16];
     uint32_t until_s;
 } ws_lfn_mc_reg[WS_LFN_MC_REG_MAX];
 
-void ws_lfn_parent_mc_register(protocol_interface_info_entry_t *cur, const uint8_t eui64[8], const uint8_t group[16], uint16_t lifetime_min)
+uint8_t ws_lfn_parent_mc_register(protocol_interface_info_entry_t *cur, const uint8_t eui64[8], const uint8_t group[16], uint16_t lifetime_min)
 {
     uint32_t now = cur->ws_info->uptime;
     int slot = -1;
@@ -577,17 +585,38 @@ void ws_lfn_parent_mc_register(protocol_interface_info_entry_t *cur, const uint8
             slot = i;
             break;
         }
+        if (live && memcmp(ws_lfn_mc_reg[i].eui64, eui64, 8) &&
+                !mac_neighbor_table_address_discover(mac_neighbor_info(cur), ws_lfn_mc_reg[i].eui64, MAC_ADDR_MODE_64_BIT)) {
+            // The LFN left us (its neighbour entry was removed): free
+            ws_lfn_mc_reg[i].until_s = now;
+            live = false;
+        }
         if (!live && slot < 0) {
             slot = i;
         }
     }
     if (slot < 0) {
-        tr_warn("LFN multicast registrations full: %s not kept", trace_ipv6(group));
-        return;
+        if (!lifetime_min) {
+            return ARO_SUCCESS;     // nothing to remove
+        }
+        tr_warn("LFN multicast registrations full: %s from %s refused (status 2)", trace_ipv6(group), trace_array(eui64, 8));
+        return ARO_FULL;
     }
     memcpy(ws_lfn_mc_reg[slot].eui64, eui64, 8);
     memcpy(ws_lfn_mc_reg[slot].group, group, 16);
     ws_lfn_mc_reg[slot].until_s = lifetime_min ? now + (uint32_t)lifetime_min * 60 : now;
+    return ARO_SUCCESS;
+}
+
+/* A child removed (neighbour table): its registrations are freed */
+void ws_lfn_parent_child_removed(protocol_interface_info_entry_t *cur, const uint8_t eui64[8])
+{
+    for (int i = 0; i < WS_LFN_MC_REG_MAX; i++) {
+        if (!memcmp(ws_lfn_mc_reg[i].eui64, eui64, 8)) {
+            ws_lfn_mc_reg[i].until_s = cur->ws_info->uptime;
+            memset(ws_lfn_mc_reg[i].eui64, 0, 8);
+        }
+    }
 }
 
 static bool ws_lfn_mc_registered(protocol_interface_info_entry_t *cur, const uint8_t eui64[8], const uint8_t *group)

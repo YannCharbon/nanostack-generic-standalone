@@ -41,7 +41,8 @@ void ws_lfn_parent_lgtk_update(struct protocol_interface_info_entry *cur, struct
 /* Border router: the LGTK key index for a frame to an LFN child, 0 otherwise */
 uint8_t ws_lfn_parent_tx_key_index(struct protocol_interface_info_entry *cur, const uint8_t *dst64);
 /* Parent: an LFN child's RFC 9685 multicast registration (lifetime 0: removed) */
-void ws_lfn_parent_mc_register(struct protocol_interface_info_entry *cur, const uint8_t eui64[8], const uint8_t group[16], uint16_t lifetime_min);
+uint8_t ws_lfn_parent_mc_register(struct protocol_interface_info_entry *cur, const uint8_t eui64[8], const uint8_t group[16], uint16_t lifetime_min);
+void ws_lfn_parent_child_removed(struct protocol_interface_info_entry *cur, const uint8_t eui64[8]);
 /* Parent: a new MPL data message (received or seeded): copies to the LFN
  * children that registered its group */
 void ws_lfn_parent_mpl_copy(struct protocol_interface_info_entry *cur, struct buffer *buf);
@@ -55,7 +56,8 @@ bool ws_lfn_parent_dst_is_lfn(struct protocol_interface_info_entry *cur, const u
 #define ws_lfn_parent_mpl_copy(cur, buf) ((void)0)
 #define ws_lfn_parent_child_release(cur, eui64) ((void)0)
 #define ws_lfn_parent_lpa_confirm(cur, eui64, acked) ((void)0)
-#define ws_lfn_parent_mc_register(cur, eui64, group, lifetime) ((void)0)
+#define ws_lfn_parent_mc_register(cur, eui64, group, lifetime) (0)
+#define ws_lfn_parent_child_removed(cur, eui64) ((void)0)
 #define ws_lfn_parent_lgtk_update(cur, lgtks, active_index, event) ((void)0)
 #define ws_lfn_parent_tx_key_index(cur, dst64) (0)
 #define ws_lfn_parent_asynch_ind(cur, data, ie_ext, type) (false)
