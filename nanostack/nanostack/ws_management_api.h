@@ -1004,6 +1004,15 @@ typedef struct ws_lfn_settings {
     uint8_t parent_check_sweeps;        /**< LPAS sweeps of a background check, back to back before its window (1..4; 0: 1) */
     uint16_t parent_switch_cost;        /**< A parent of the same RSL class is better only if its routing cost is lower by at least this */
     uint16_t parent_release_s;          /**< The old parent is released (ARO lifetime 0) this long after the registration with the new one (s) */
+    /* LFN timers that scale with the listen interval (Silicon Labs' profiles, sl_wisun_lfn_params_api.h) */
+    uint32_t na_wait_s;                 /**< An address registration is sent again if its NA does not come within this (s; 0: no wait) */
+    uint16_t dhcp_max_delay_s;          /**< DHCPv6 Solicit after a random delay up to this (s) */
+    uint16_t dhcp_irt_s;                /**< DHCPv6 Solicit initial retransmission time (s, RFC 8415 IRT) */
+    uint16_t dhcp_mrt_s;                /**< DHCPv6 Solicit maximum retransmission time (s, RFC 8415 MRT) */
+    uint16_t initial_key_max_s;         /**< First EAPOL key request after a random delay of 1 s up to this */
+    uint16_t initial_key_retry_min_s;   /**< Key request retransmission: first interval (s) */
+    uint16_t initial_key_retry_max_limit_s; /**< ... doubling up to this (s) */
+    uint8_t initial_key_retry_limit;    /**< ... this many retransmissions */
     /* Parent: RFC 9685 multicast registrations of its LFN children */
     uint8_t mc_reg_per_child;           /**< At most this many groups per LFN child (0: no limit) */
     uint16_t mc_reg_max;                /**< At most this many registrations in all (0: no limit but memory) */
@@ -1066,6 +1075,19 @@ typedef struct ws_lfn_settings {
 #define WS_LFN_PARENT_CHECK_SWEEPS_DEFAULT       2
 #define WS_LFN_PARENT_SWITCH_COST_DEFAULT        192
 #define WS_LFN_PARENT_RELEASE_S_DEFAULT          15
+/* LFN timers, Silicon Labs' Test profile (SL_WISUN_PARAMS_LFN_TEST, Simplicity
+ * SDK 2025.12 sl_wisun_lfn_params_api.h): NA wait 5 min, DHCPv6 Solicit delay
+ * 10 s, IRT 10 s, MRT 1 h, first key request within 3 s, retries 18 s
+ * doubling to 42 s, 3 of them. Balanced: 60 min; 300 s, 900 s, 1 h; 30 s,
+ * 180 to 420 s, 3. Eco: 120 min; 600 s, 1 800 s, 1 h; 30 s, 300 to 900 s, 5 */
+#define WS_LFN_NA_WAIT_S_DEFAULT                 300
+#define WS_LFN_DHCP_MAX_DELAY_S_DEFAULT          10
+#define WS_LFN_DHCP_IRT_S_DEFAULT                10
+#define WS_LFN_DHCP_MRT_S_DEFAULT                3600
+#define WS_LFN_INITIAL_KEY_MAX_S_DEFAULT         3
+#define WS_LFN_INITIAL_KEY_RETRY_MIN_S_DEFAULT   18
+#define WS_LFN_INITIAL_KEY_RETRY_MAX_LIMIT_S_DEFAULT 42
+#define WS_LFN_INITIAL_KEY_RETRY_LIMIT_DEFAULT   3
 #define WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT      5
 #define WS_LFN_LGTK_MAX_MISMATCH_S_DEFAULT       120
 #define WS_LFN_REGISTRATION_LIFETIME_MIN_DEFAULT 2160

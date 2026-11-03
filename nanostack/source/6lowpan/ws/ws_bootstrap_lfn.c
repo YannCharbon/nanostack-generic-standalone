@@ -340,6 +340,20 @@ void ws_bootstrap_lfn_uplink_result(protocol_interface_info_entry_t *cur, const 
     }
 }
 
+/* The NA of an address registration (EARO) from our parent */
+void ws_bootstrap_lfn_na_received(protocol_interface_info_entry_t *cur, const uint8_t *target, uint8_t status)
+{
+    if (!wisun_mode_host(cur)) {
+        return;
+    }
+    if (status != ARO_SUCCESS) {
+        tr_warn("LFN: registration of %s refused: status %u", trace_ipv6(target), status);
+        return;
+    }
+    cur->ws_info->lfn.na_wait_s = 0;
+    cur->ws_info->lfn.na_tries = 0;
+}
+
 /* ---- Better parent while attached (docs/LFN_STACK.md §9) */
 
 /* The parent's link is weak: its smoothed RSL below the candidate-parent
@@ -1023,6 +1037,8 @@ void ws_bootstrap_lfn_address_register(protocol_interface_info_entry_t *cur)
             tr_info("LFN: ARO %s to %s, %u min (EARO, TID %u)", trace_ipv6(addr->address), trace_ipv6(ll_parent), lifetime, cur->ws_info->lfn.addr_tid);
             protocol_push(buf);
             sent = true;
+            cur->ws_info->lfn.na_wait_s = cur->ws_info->lfn_cfg.na_wait_s;
+            cur->ws_info->lfn.na_tries++;
         }
     }
     if (sent) {
@@ -1101,6 +1117,9 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             lfn->disc_slots = 0;
             lfn->release_at_s = 0;
             lfn->parent_rsl_x8 = 0;
+            lfn->na_wait_s = 0;
+            lfn->na_tries = 0;
+            lfn->dhcp_delay_s = 0;
             ws_lfn_network_configure(cur);
             // The receiver is off outside the listen windows
             cur->ws_info->rx_off_when_idle = true;
@@ -1149,8 +1168,16 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
                     // Rejoin with an address kept: register it again
                     ws_bootstrap_lfn_address_register(cur);
                 } else {
-                    // DHCPv6 through the parent; no prefix hint (no RPL)
-                    ws_dhcp_client_address_request(cur, NULL, ll_parent);
+                    /* DHCPv6 through the parent, after a random delay and with
+                       the LFN's Solicit timers (they scale with the listen
+                       interval, Silicon Labs' profiles) */
+                    const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
+                    dhcp_client_solicit_timeout_set(cur->id, c->dhcp_irt_s, c->dhcp_mrt_s, 0, 0);
+                    lfn->dhcp_delay_s = c->dhcp_max_delay_s ? rand_get_random_in_range(1, c->dhcp_max_delay_s) : 0;
+                    if (!lfn->dhcp_delay_s) {
+                        // no prefix hint (no RPL)
+                        ws_dhcp_client_address_request(cur, NULL, ll_parent);
+                    }
                 }
             }
             break;
@@ -1220,6 +1247,12 @@ uint32_t ws_bootstrap_lfn_seconds_timer_next(protocol_interface_info_entry_t *cu
     }
     if (lfn->reregister_s) {
         next = protocol_timer_next_min(next, lfn->reregister_s);
+    }
+    if (lfn->na_wait_s) {
+        next = protocol_timer_next_min(next, lfn->na_wait_s);
+    }
+    if (lfn->dhcp_delay_s) {
+        next = protocol_timer_next_min(next, lfn->dhcp_delay_s);
     }
     if (lfn->lgtk_mismatch_timer_s) {
         next = protocol_timer_next_min(next, lfn->lgtk_mismatch_timer_s);
@@ -1296,6 +1329,36 @@ void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
             ws_bootstrap_event_discovery_start(cur);
         } else {
             ws_lfn_lpcs_send(cur);
+        }
+    }
+    // DHCPv6 Solicit after its delay
+    if (lfn->dhcp_delay_s) {
+        if (lfn->dhcp_delay_s > seconds) {
+            lfn->dhcp_delay_s -= seconds;
+        } else if (lfn->parent_known) {
+            uint8_t ll_parent[16];
+            lfn->dhcp_delay_s = 0;
+            ws_common_create_ll_address(ll_parent, lfn->parent_eui64);
+            ws_dhcp_client_address_request(cur, NULL, ll_parent);
+        } else {
+            lfn->dhcp_delay_s = 0;
+        }
+    }
+    // The NA of our address registration (RFC 8505: always sent for an EARO
+    // on FAN 1.1): registered again once, then a parent search
+    if (lfn->na_wait_s) {
+        if (lfn->na_wait_s > seconds) {
+            lfn->na_wait_s -= seconds;
+        } else {
+            lfn->na_wait_s = 0;
+            if (lfn->na_tries < 2) {
+                tr_warn("LFN: no NA for our registration in %"PRIu32" s: registering again", cur->ws_info->lfn_cfg.na_wait_s);
+                ws_bootstrap_lfn_address_register(cur);
+            } else {
+                tr_warn("LFN: no NA for our registration: parent search");
+                lfn->uplink_fails = 255;
+                lfn->na_tries = 0;
+            }
         }
     }
     // Address re-registration

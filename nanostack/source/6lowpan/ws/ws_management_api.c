@@ -1091,6 +1091,14 @@ void ws_management_lfn_settings_defaults(ws_lfn_settings_t *s)
     s->parent_check_sweeps = WS_LFN_PARENT_CHECK_SWEEPS_DEFAULT;
     s->parent_switch_cost = WS_LFN_PARENT_SWITCH_COST_DEFAULT;
     s->parent_release_s = WS_LFN_PARENT_RELEASE_S_DEFAULT;
+    s->na_wait_s = WS_LFN_NA_WAIT_S_DEFAULT;
+    s->dhcp_max_delay_s = WS_LFN_DHCP_MAX_DELAY_S_DEFAULT;
+    s->dhcp_irt_s = WS_LFN_DHCP_IRT_S_DEFAULT;
+    s->dhcp_mrt_s = WS_LFN_DHCP_MRT_S_DEFAULT;
+    s->initial_key_max_s = WS_LFN_INITIAL_KEY_MAX_S_DEFAULT;
+    s->initial_key_retry_min_s = WS_LFN_INITIAL_KEY_RETRY_MIN_S_DEFAULT;
+    s->initial_key_retry_max_limit_s = WS_LFN_INITIAL_KEY_RETRY_MAX_LIMIT_S_DEFAULT;
+    s->initial_key_retry_limit = WS_LFN_INITIAL_KEY_RETRY_LIMIT_DEFAULT;
     s->mc_reg_per_child = WS_LFN_MC_REG_PER_CHILD_DEFAULT;
     s->mc_reg_max = WS_LFN_MC_REG_MAX_DEFAULT;
     s->lpcs_retry_intervals = WS_LFN_LPCS_RETRY_INTERVALS_DEFAULT;

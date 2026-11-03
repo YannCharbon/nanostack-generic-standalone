@@ -229,6 +229,23 @@ int8_t ws_pae_supp_authenticate(protocol_interface_info_entry_t *interface_ptr, 
 
     // Randomizes the sending of initial EAPOL-Key message
     pae_supp->initial_key_timer = rand_get_random_in_range(INITIAL_KEY_TIMER_MIN, INITIAL_KEY_TIMER_MAX);
+#ifdef HAVE_WS_VERSION_1_1
+    if (pae_supp->entry.sec_keys.lfn && interface_ptr->ws_info) {
+        /* FAN 1.1 LFN: its own key request timers, which scale with its listen
+           interval (Silicon Labs' profiles: initial_key_max_s,
+           initial_key_retry_*), instead of the FFN network-size ones */
+        const ws_lfn_settings_t *c = &interface_ptr->ws_info->lfn_cfg;
+        if (c->initial_key_max_s) {
+            pae_supp->initial_key_timer = rand_get_random_in_range(1, c->initial_key_max_s);
+        }
+        if (c->initial_key_retry_min_s) {
+            pae_supp->sec_cfg->prot_cfg.initial_key_retry_min = c->initial_key_retry_min_s;
+            pae_supp->sec_cfg->prot_cfg.initial_key_retry_max = c->initial_key_retry_min_s + c->initial_key_retry_min_s / 10;
+            pae_supp->sec_cfg->prot_cfg.initial_key_retry_max_limit = c->initial_key_retry_max_limit_s;
+            pae_supp->sec_cfg->prot_cfg.initial_key_retry_cnt = c->initial_key_retry_limit;
+        }
+    }
+#endif
 
     // Starts supplicant timer
     ws_pae_supp_timer_start(pae_supp);

@@ -37,6 +37,8 @@
 #include "6lowpan/ws/ws_common_defines.h"
 #include "6lowpan/ws/ws_common.h"
 #include "6lowpan/ws/ws_lfn_parent.h"
+#include "nanostack-event-loop/eventOS_event.h"
+#include "6lowpan/ws/ws_bootstrap_lfn.h"
 #include "net_lib/net_dns_internal.h"
 
 #include "common_protocols/icmpv6.h"
@@ -1104,6 +1106,11 @@ static buffer_t *icmpv6_na_handler(buffer_t *buf)
             addr_duplicate_detected(cur, target);
         } else {
             tr_debug("NA received for our own address: %s", trace_ipv6(target));
+            // FAN 1.1 LFN: the answer to our address registration (EARO)
+            const uint8_t *earo = icmpv6_find_option_in_buffer(buf, 20, ICMPV6_OPT_ADDR_REGISTRATION, 2);
+            if (earo && ws_info(cur)) {
+                ws_bootstrap_lfn_na_received(cur, target, earo[2]);
+            }
         }
         goto drop;
     }
