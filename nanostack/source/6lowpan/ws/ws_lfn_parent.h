@@ -43,6 +43,8 @@ uint8_t ws_lfn_parent_tx_key_index(struct protocol_interface_info_entry *cur, co
 /* Parent: an LFN child's RFC 9685 multicast registration (lifetime 0: removed) */
 uint8_t ws_lfn_parent_mc_register(struct protocol_interface_info_entry *cur, const uint8_t eui64[8], const uint8_t group[16], uint16_t lifetime_min);
 void ws_lfn_parent_child_removed(struct protocol_interface_info_entry *cur, const uint8_t eui64[8]);
+struct ws_lfn_child_info;
+int ws_lfn_parent_children_get(struct protocol_interface_info_entry *cur, struct ws_lfn_child_info *table, int size);
 /* Parent: a new MPL data message (received or seeded): copies to the LFN
  * children that registered its group */
 void ws_lfn_parent_mpl_copy(struct protocol_interface_info_entry *cur, struct buffer *buf);

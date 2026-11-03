@@ -1093,4 +1093,20 @@ eturn 0 OK, -1 unknown interface or no LFN parenting.
  */
 int ws_management_lfn_lgtk_rotate(int8_t interface_id);
 
+/** An LFN child of this parent (ws_management_lfn_children_get()) */
+typedef struct ws_lfn_child_info {
+    uint8_t eui64[8];
+    uint32_t listen_interval_ms;    /**< Its listen interval, as this parent schedules it (LUS-IE, LTO-IE) */
+    uint32_t last_heard_s;          /**< Seconds since the last frame that kept it (LPAS, LPCS or a secured frame) */
+    uint8_t state;                  /**< 0: candidate (sent us an LPAS), 1: child, 2: released us (moved to another parent) */
+} ws_lfn_child_info_t;
+
+/**
+ * LFN parent (border router or FFN router): its LFN children and candidates,
+ * for management (emulator D-Bus property LfnChildren). Fills at most size
+ * entries.
+ * \return the number of entries filled, -1 unknown interface or no LFN parenting.
+ */
+int ws_management_lfn_children_get(int8_t interface_id, ws_lfn_child_info_t *table, int size);
+
 #endif /* WS_MANAGEMENT_API_H_ */

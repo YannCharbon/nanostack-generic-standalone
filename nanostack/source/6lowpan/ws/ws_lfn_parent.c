@@ -486,6 +486,24 @@ bool ws_lfn_parent_asynch_ind(protocol_interface_info_entry_t *cur, const struct
     return true;
 }
 
+int ws_lfn_parent_children_get(protocol_interface_info_entry_t *cur, ws_lfn_child_info_t *table, int size)
+{
+    int n = 0;
+    ns_list_foreach(mac_neighbor_table_entry_t, e, &mac_neighbor_info(cur)->neighbour_list) {
+        ws_neighbor_class_entry_t *w;
+        if (n >= size || !ws_lfn_is_child(cur, e, &w)) {
+            continue;
+        }
+        memcpy(table[n].eui64, e->mac64, 8);
+        table[n].listen_interval_ms = w->fhss_data.lfn_uc_timing_info.listen_interval_ms;
+        table[n].last_heard_s = e->link_lifetime >= e->lifetime ? e->link_lifetime - e->lifetime : 0;
+        table[n].state = e->link_lifetime == WS_LFN_RELEASED_LIFETIME_S ? 2 :
+                         e->link_lifetime > WS_LFN_CANDIDATE_LIFETIME_S ? 1 : 0;
+        n++;
+    }
+    return n;
+}
+
 /* An LFN child that needs our sync frames: not one that released us */
 static bool ws_lfn_has_child(protocol_interface_info_entry_t *cur)
 {

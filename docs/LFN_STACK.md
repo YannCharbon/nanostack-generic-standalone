@@ -246,7 +246,7 @@ Detection: an FFN hears an LPAS only on the channel it listens on, and it may be
 - The previous suites still pass: `test_lfn_join.sh` (traffic 10/10, `MESH` 1–3 9/9, parent loss 3/3, parent change 3/3, LGTK rotation through a router 3/3), `test_lfn_mesh.sh` 10/10, `tests/fhss_lfn` 1 082 checks. In the parent-change test (`MESH=3`, `SILENT_AT`) the border router's `ff02::1` is checked before the change only: once the LFN has moved under the router and released the border router, the border router's link-local multicast no longer reaches it.
 - FAN 1.0 `dag_simple`, 10 seeds: logs byte-identical to `b1b9cc5`.
 
-**Not done.** LGTKs and node roles in NVM; the parents' LFN children on D-Bus; an EARO (with TID) for the LFN's own addresses, which would let the root order the registrations by TID (RFC 9010) instead of by the last publisher.
+**LFN children for management** (gap U14): `ws_management_lfn_children_get()` lists a parent's LFN children and candidates (EUI-64, listen interval as the parent schedules it, seconds since the last frame that kept it, state: candidate, child or released). The emulator's `wsbrd` and `wsbrd-inproc` publish them as the D-Bus property `LfnChildren` (`a(aya{sv})`, as `Nodes`: EUI-64, then `parent`, `listen_interval_ms`, `last_heard_s`, `state`), and the virtual-time border router logs them as `brlfn` lines next to its `brtree` lines (D-Bus is not served in virtual time). An LFN under a router appears in `Nodes` with the router as parent; its listen interval is known to the router only (routers have no D-Bus service). Checked with the wall-clock in-process programs on a private session bus: the LFN listed as a child 40 s after start, interval 5 000 ms, `last_heard_s` counting up.
 
 ## 10. On the FG25 kits (stage 6)
 

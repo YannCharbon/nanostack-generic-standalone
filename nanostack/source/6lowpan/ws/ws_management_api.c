@@ -31,6 +31,7 @@
 #include "nanostack-event-loop/eventOS_event.h"
 #include "6lowpan/ws/ws_bootstrap_6lbr.h"
 #include "6lowpan/ws/ws_cfg_settings.h"
+#include "6lowpan/ws/ws_lfn_parent.h"
 #include "6lowpan/ws/ws_common_defines.h"
 #include "6lowpan/mac/mac_helper.h"
 #include "6lowpan/ws/ws_pae_controller.h"
@@ -1186,6 +1187,22 @@ int ws_management_lfn_lgtk_rotate(int8_t interface_id)
     }
     return 0;
 #else
+    return -1;
+#endif
+}
+
+int ws_management_lfn_children_get(int8_t interface_id, ws_lfn_child_info_t *table, int size)
+{
+    protocol_interface_info_entry_t *cur = protocol_stack_interface_info_get_by_id(interface_id);
+
+    if (!cur || !ws_info(cur) || !cur->ws_info->lfn_parent) {
+        return -1;
+    }
+#if defined(HAVE_WS_VERSION_1_1) && (defined(HAVE_WS_BORDER_ROUTER) || defined(HAVE_WS_ROUTER))
+    return ws_lfn_parent_children_get(cur, table, size);
+#else
+    (void)table;
+    (void)size;
     return -1;
 #endif
 }
