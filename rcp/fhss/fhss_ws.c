@@ -1879,6 +1879,28 @@ int fhss_ws_lfn_timing_set(fhss_structure_t *fhss_structure, uint32_t offset_ms,
     return 0;
 }
 
+int fhss_ws_lfn_neighbor_refresh(fhss_structure_t *fhss_structure, const uint8_t eui64[8])
+{
+    fhss_ws_neighbor_timing_info_t *info;
+    fhss_lfn_sched_t sched;
+
+    if (!fhss_structure->ws->lfn.parent_enabled) {
+        return -1;
+    }
+    info = fhss_ws_lfn_neighbor(fhss_structure, eui64);
+    if (!info) {
+        return -1;
+    }
+    uint32_t ref = info->lfn_uc_timing_info.lutt_rx_timestamp;
+    if (!fhss_ws_lfn_neighbor_sched(fhss_structure, info, &sched)) {
+        return -1;
+    }
+    if (info->lfn_uc_timing_info.lutt_rx_timestamp != ref) {
+        tr_debug("LFN %s: schedule re-anchored at slot %u", trace_array(eui64, 8), sched.anchor_slot);
+    }
+    return 0;
+}
+
 int fhss_ws_lfn_neighbor_lto(fhss_structure_t *fhss_structure, const uint8_t eui64[8], uint32_t offset_ms, uint32_t interval_ms, uint32_t tx_timestamp_us)
 {
     fhss_ws_neighbor_timing_info_t *info;

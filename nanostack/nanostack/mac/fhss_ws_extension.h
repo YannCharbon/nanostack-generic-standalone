@@ -332,6 +332,19 @@ extern int ns_fhss_ws_lfn_timing_set(const fhss_api_t *fhss_api, uint32_t offset
 extern int ns_fhss_ws_lfn_neighbor_lto(const fhss_api_t *fhss_api, const uint8_t eui64[8], uint32_t offset_ms, uint32_t interval_ms, uint32_t tx_timestamp_us);
 
 /**
+ * @brief Parent role: keep an LFN child's schedule on the 32-bit clock. The
+ * parent's view of the LFN's slots dates from its last LUTT-IE; once that is
+ * more than 2^30 µs old, it is replaced in the neighbour's entry by an
+ * equivalent reference at a recent slot start. The FHSS does this whenever it
+ * sends to the LFN; the upper layer calls this at least every 2^30 µs (its
+ * seconds timer) for every LFN child, so an LFN that stays silent and gets
+ * no downlink for longer than 2^31 µs (35.8 min) keeps its slots.
+ * docs/LFN_MAC.md §4.
+ * @return 0 OK, -1 no FHSS, not a parent or no such LFN neighbour.
+ */
+extern int ns_fhss_ws_lfn_neighbor_refresh(const fhss_api_t *fhss_api, const uint8_t eui64[8]);
+
+/**
  * @brief Parent role: start (cfg) or stop (NULL) the LFN broadcast schedule.
  * The first slot starts one interval later. Needs the parent role.
  * @return 0 OK, -1 no FHSS or not a parent, -2 invalid cfg.

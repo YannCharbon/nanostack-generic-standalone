@@ -183,6 +183,15 @@ int ns_fhss_ws_lfn_timing_set(const fhss_api_t *fhss_api, uint32_t offset_ms, ui
     return fhss_ws_lfn_timing_set(fhss_structure, offset_ms, interval_ms, rx_timestamp_us);
 }
 
+int ns_fhss_ws_lfn_neighbor_refresh(const fhss_api_t *fhss_api, const uint8_t eui64[8])
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);
+    if (!fhss_structure || !fhss_structure->ws) {
+        return -1;
+    }
+    return fhss_ws_lfn_neighbor_refresh(fhss_structure, eui64);
+}
+
 int ns_fhss_ws_lfn_neighbor_lto(const fhss_api_t *fhss_api, const uint8_t eui64[8], uint32_t offset_ms, uint32_t interval_ms, uint32_t tx_timestamp_us)
 {
     fhss_structure_t *fhss_structure = fhss_get_object_with_api(fhss_api);

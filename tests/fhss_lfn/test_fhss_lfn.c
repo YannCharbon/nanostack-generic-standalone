@@ -667,11 +667,49 @@ static void test_parent(void)
     }
     CHECK(lfn_neighbor.lfn_uc_timing_info.lutt_rx_timestamp != v.lutt_ts);   // re-anchored
 
+    // A silent LFN and no downlink for 10 h: the parent's seconds timer
+    // refreshes its children (ns_fhss_ws_lfn_neighbor_refresh(), here every
+    // 60 s), so a downlink after 1 h, 3 h and 10 h of silence still hits the
+    // LFN's window on its channel. Without the refresh the reference passed
+    // 2^31 µs after 35.8 min and the slot came out wrong.
+    {
+        uint64_t silent_from = now_us;
+        const uint64_t at[3] = { 3600, 3 * 3600, 10 * 3600 };
+        for (int k = 0; k < 3; k++) {
+            while (now_us < silent_from + at[k] * 1000000ull) {
+                now_us += 60 * 1000000ull;
+                CHECK(ns_fhss_ws_lfn_neighbor_refresh(api, lfn_mac) == 0);
+                // never older than 2^30 µs + one refresh period
+                CHECK((uint32_t)(ts() - lfn_neighbor.lfn_uc_timing_info.lutt_rx_timestamp) <= 0x40000000u + 60000000u);
+            }
+            uint32_t queued = ts();
+            fhss_lfn_tx_e r = api->lfn_tx_check(api, lfn_mac, queued, &tx_time);
+            if (r == FHSS_LFN_TX_WAIT) {
+                queue_size = 1;
+                unsigned polls = tx_polls;
+                while (tx_polls == polls && step(UINT64_MAX)) {
+                }
+                r = api->lfn_tx_check(api, lfn_mac, queued, &tx_time);
+            }
+            CHECK(r == FHSS_LFN_TX_NOW);
+            uint64_t tx64 = now_us + (uint32_t)(tx_time - ts());
+            uint64_t n = (tx64 + guard - v.slot0) / (interval_ms * 1000ull);
+            uint64_t start = v.slot0 + n * interval_ms * 1000ull;
+            CHECK(tx64 >= start - guard && tx64 < start - guard + window);
+            mac_channel = -1;
+            CHECK(api->tx_handle(api, false, (uint8_t *)lfn_mac, FHSS_DATA_FRAME, 100, 0, 0, tx_time) == 0);
+            CHECK(mac_channel == dh1cf_channel((uint16_t)n, lfn_mac));
+            queue_size = 0;
+        }
+        // An unknown neighbour or an FFN one: -1
+        CHECK(ns_fhss_ws_lfn_neighbor_refresh(api, parent_mac) == -1);
+    }
+
     // TTL: a frame queued more than tx_ttl_intervals listen intervals ago
     uint32_t old = ts() - (uint32_t)pcfg.tx_ttl_intervals * interval_ms * 1000u - 1;
     CHECK(api->lfn_tx_check(api, lfn_mac, old, &tx_time) == FHSS_LFN_TX_EXPIRED);
     ns_fhss_ws_lfn_stats_get(api, &st);
-    CHECK(st.tx_released == 12 && st.tx_expired == 1);
+    CHECK(st.tx_released == 15 && st.tx_expired == 1);
 
     // An FFN destination still takes the FFN path: its UTT schedule, unknown
     // here, so tx_handle says "unknown neighbour" (-2), as before
@@ -681,6 +719,7 @@ static void test_parent(void)
     // Disabled again: NOT_LFN
     CHECK(ns_fhss_ws_lfn_parent_set(api, NULL) == 0);
     CHECK(api->lfn_tx_check(api, lfn_mac, ts(), &tx_time) == FHSS_LFN_TX_NOT_LFN);
+    CHECK(ns_fhss_ws_lfn_neighbor_refresh(api, lfn_mac) == -1);
     CHECK(ns_fhss_delete(api) == 0);
 }
 

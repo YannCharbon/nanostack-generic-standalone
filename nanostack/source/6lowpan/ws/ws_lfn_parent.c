@@ -464,7 +464,19 @@ void ws_lfn_parent_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t 
     uint32_t start;
 
     (void)seconds;
-    if (!cur->ws_info->lfn_parent || st->test_silent || !ws_lfn_parent_ready(cur)) {
+    if (!cur->ws_info->lfn_parent) {
+        return;
+    }
+    /* Keep every LFN child's slots on the 32-bit µs clock, whether or not we
+       send to it: its LUTT reference is re-anchored once it is 2^30 µs old
+       (LFN_MAC.md §4). Without this, a child silent and without downlinks
+       for more than 2^31 µs (35.8 min) was reached on wrong slots */
+    ns_list_foreach(mac_neighbor_table_entry_t, n, &mac_neighbor_info(cur)->neighbour_list) {
+        if (ws_lfn_is_child(cur, n, NULL)) {
+            ns_fhss_ws_lfn_neighbor_refresh(cur->ws_info->fhss_api, n->mac64);
+        }
+    }
+    if (st->test_silent || !ws_lfn_parent_ready(cur)) {
         return;
     }
     if (!ws_lfn_has_child(cur)) {

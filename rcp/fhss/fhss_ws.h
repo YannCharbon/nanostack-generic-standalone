@@ -152,6 +152,7 @@ void fhss_set_txrx_slot_length(fhss_structure_t *fhss_structure);
 int fhss_ws_lfn_listen_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_listen_t *cfg);
 int fhss_ws_lfn_parent_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_parent_t *cfg);
 int fhss_ws_lfn_timing_set(fhss_structure_t *fhss_structure, uint32_t offset_ms, uint32_t interval_ms, uint32_t rx_timestamp_us);
+int fhss_ws_lfn_neighbor_refresh(fhss_structure_t *fhss_structure, const uint8_t eui64[8]);
 int fhss_ws_lfn_neighbor_lto(fhss_structure_t *fhss_structure, const uint8_t eui64[8], uint32_t offset_ms, uint32_t interval_ms, uint32_t tx_timestamp_us);
 int fhss_ws_lfn_bc_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_t *cfg);
 int fhss_ws_lfn_bc_next(fhss_structure_t *fhss_structure, uint16_t *slot, uint32_t *start_us);
