@@ -203,6 +203,7 @@ typedef struct fhss_ws_lfn_listen {
     /* GS8 stage 4: the parent's LFN broadcast schedule and clock drift */
     uint32_t drift_ppm;             /**< Both kinds of window open earlier and close later by drift_ppm µs per second since the last sync with the parent (each side); 0: no widening */
     uint32_t widening_max_us;       /**< Upper bound of that widening, per side (µs) */
+    uint32_t bc_widening_max_us;    /**< Upper bound of the widening of the broadcast windows, per side (µs); 0: widening_max_us. A sync period longer than widening_max_us / drift_ppm (Eco profile: 10 h) needs it */
     uint32_t bc_rx_window_us;       /**< Window length in the parent's LFN broadcast slots (µs), opened rx_guard_us before the slot start */
     bool bc_sync_only;              /**< Listen only in the broadcast slots that carry the parent's sync frames (slot number a multiple of the sync period) */
 } fhss_ws_lfn_listen_t;

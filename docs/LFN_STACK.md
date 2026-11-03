@@ -254,3 +254,43 @@ With both fixed, the LFN tests (one LFN with an LGTK rotation through a router, 
 - after `WS_LFN_LPCS_MAX` (4) LPCS without an LPC, the LFN drops its keys and starts its discovery again (a restarted network with the same PAN ID, or a parent that lost them).
 The parent-loss test (`SILENT_AT=300`, no traffic, 3 seeds) still rejoins without EAPOL; FAN 1.0 `dag_simple` logs are unchanged.
 
+
+## 11. Silicon Labs' LFN profiles over long runs
+
+Silicon Labs' LFN profiles [S: Simplicity SDK `sisdk-2025.12`, `wisun/stack/inc/sl_wisun_lfn_params_api.h` (`SL_WISUN_PARAMS_LFN_TEST`, `_BALANCED`, `_ECO`) and `wisun/stack/inc/border_router/sl_wisun_br_lfn_params_api.h` (`SL_WISUN_BR_PARAMS_LFN_*`), Zlib licence; profile names from docs.silabs.com, "Wi-SUN Limited Function Nodes"]:
+
+| Value | Test | Balanced | Eco | Our setting |
+| --- | --- | --- | --- | --- |
+| Unicast listen interval (proposed) | 6 s | 60 s | 300 s | `listen_interval_ms` |
+| Its range (NR-IE) | 1–60 s | 1–300 s | 1–16 776 s | `listen_interval_min_ms`, `_max_ms` (Eco: 2 147 483 ms, the 32-bit limit, LFN study M11) |
+| Listen interval during EAPOL | 1.3 s | 1.3 s | 1.3 s | `eapol_listen_interval_ms` |
+| LFN broadcast interval (parent) | 10 s | 60 s | 600 s | `bc_interval_ms` |
+| Broadcast sync period (parent) | 5 (50 s) | 15 (15 min) | 60 (10 h) | `bc_sync_period` |
+| Parent lost after (sync periods) | 5 | 20 | 60 | `maintain_parent_time` (we declare it after 1.5 ×, black-box item 46) |
+| LGTK_MAX_MISMATCH | 2 min | 60 min | 60 min | `lgtk_max_mismatch_s` |
+| Address registration lifetime | 36 h | 60 h | 84 h | `registration_lifetime_min` (re-registration at 92 %) |
+| Wake only for sync slots | no | no | yes | `bc_sync_only` |
+| Discovery slots | 40 × 60 ms | 40 × 60 ms | 40 × 60 ms | `lnd_slots`, `lnd_slot_time_ms` |
+| Window min / margin | 500 µs / 1 ms | same | same | ours: `rx_window_us` 5 ms, `rx_guard_us` 1 ms |
+
+Not used by our LFN: the NA wait duration (5 min, 1 h, 2 h; our LFN does not wait for the NA of its ARO), the EAPOL initial-key timers and the DHCPv6 solicit timers per profile (ours are the FFN's), and `allow_skip`. The LGTK, GTK, PMK and PTK lifetimes are border-router settings, the same in every profile (`wsbrd.conf`: LGTK 90 days, installed at 90 %, activated 12 h before expiry). Ours: `bc_widening_max_us` 1 800 000 for Eco (`drift_ppm` 50 × 10 h), so that the LFN catches the sync frames of a 10 h sync period before it has measured its rate; 0 (= `widening_max_us`) otherwise.
+
+**Runs** (emulator `sim_utils/vtime/test_lfn_profiles.sh`): border router, an FFN router, an LFN under each; the profile on both LFNs and both parents; each node's clock drawn within ±20 ppm; UDP request border router → each LFN and `ff02::1` every 30 min, LFN → border router every 45 min, each echoed; DHCPv6 lease infinite (`wsbrd` 2.x; ours otherwise gives 2 h in a small network and the LFN renews every 30 min, each time with an ARO); FG25 power profile, EU mode 3, +10 dBm, −50 dBm links. Balanced: 6 seeds × 72 h; Eco: 10 seeds × 96 h; LGTK renewal with lifetimes scaled to 48 h (installed at 24 h, activated 12 h later): 3 seeds × 72 h each.
+
+| Check | Balanced | Eco |
+| --- | --- | --- |
+| Join (LFN operational) | 140–143 s under the border router, 211–270 s under the router | 619–638 s and 689–3 429 s (the router itself ready late in one seed); the LPC and the ARO each wait one 300 s interval |
+| Address re-registration | at 55.2 h, 4.8 h before the 60 h lifetime ends, accepted; traffic continues | at 77.28 h, 6.72 h before the 84 h lifetime ends |
+| Unicast both ways, `ff02::1` | 864 + 576 requests per LFN, all received and echoed; `ff02::1` 864/864 | 1 920 + 1 280 per LFN, all; `ff02::1` 1 920/1 920 |
+| Sync | no sync period without a sync frame (1 722 per LFN); phase error ≤ 17 µs once the rate is measured | 7 of 180 sync periods without one (the parent sent it one slot late, its radio busy; with `bc_sync_only` the LFN listens only in sync slots, so the next comes 20 h after the last); rate measured in every run (−30 to +20 ppm, as drawn); phase error ≤ 163 µs after 10 h |
+| Parent kept | yes | yes; one seed: two consecutive late sync frames (30 h without one) started 2 parent searches, which found the parent and kept it, no traffic lost |
+| LGTK renewal | hash at the LFN in the next broadcast slot (≤ 1 min), key request 60 min later, key 19–35 s after it, new active index taken ≤ 1 min after activation | hash at the next sync slot (6.2 h and 2.2 h after the installation here), key request 60 min later, key 19–87 s after it, new index taken at the next sync slot (4.2 h after activation): within the 12 h between installation and activation of the scaled run (8.5 days with the real values) |
+| LFN average current (from 3 h) | 19.1–19.5 µA (listening 10.2, deep-sleep floor 4.6, MCU sleep 3.7, TX 0.6), 0.16 wakes/s | 11.5–11.9 µA (listening 4.5, floor 4.6, MCU sleep 1.7, TX 0.5–0.8), 0.10 wakes/s |
+
+The listening share is mostly window widening: `drift_ppm` 50 × the time since the last sync, up to 100 ms each side, while the LFN has measured its rate to within 1 ppm after the first sync period. With Eco the unicast windows stay at 205 ms (5 ms + 2 × 100 ms) for most of the 10 h, about 4 µA of the 4.5; with Balanced the unicast and broadcast windows reach 50 ms. A widening based on the measured rate (residual drift) would cut most of it; not done.
+
+**Bugs found and fixed by these runs** (all LFN or LFN-parent paths; FAN 1.0 unchanged):
+- 32-bit clock with a 10 h sync period (`LFN_MAC.md` §2.3): the rate was never measured (sync periods beyond 2^30 µs), the widening wrapped after 71.6 min, `bc_sync_only` armed its window at a wrapped time, uplinks after more than 71.6 min without a frame from the parent went to a wrong channel, and a sync moved the LFN's slots by the whole 10 h error although the parent's view of them dated from the last uplink (downlinks then missed the LFN).
+- 6LoWPAN adaptation layer: a second packet to an LFN within one listen interval was dropped after 30 s in the queue (`LOWPAN_TX_BUFFER_AGE_LIMIT_LOW_PRIORITY`): with 60–300 s intervals every second packet was lost. The MAC's LFN TTL applies instead.
+- A router whose LGTK handshake was lost at the join, and whose key request came while its authentication was still on its way, never got an LGTK and never parented its LFN (§9; Balanced seed 4).
+- The parent search started exactly two sync periods after the last sync frame, so with one late sync frame it took the radio just before the next one; it now waits one LFN broadcast interval more.

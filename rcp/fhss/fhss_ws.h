@@ -62,6 +62,9 @@ struct fhss_ws_lfn {
     uint32_t parent_bc_start_us;    // start of one of its broadcast intervals
     uint32_t parent_bc_interval_us;
     uint32_t parent_bc_dwell_us;
+    bool parent_eui64_valid;        // the parent, whose FFN schedules are re-anchored for the 32-bit clock
+    uint8_t parent_eui64[8];
+    bool bc_hop;                    // the broadcast-window timer only re-anchors (next listened slot beyond 2^30 µs)
     /* LFN role: the parent's LFN broadcast schedule (stage 4) */
     bool pbc_valid;                 // synced at least once
     fhss_lfn_sched_t pbc;           // its slots on our clock (interval corrected by rate_ppb)
@@ -71,6 +74,12 @@ struct fhss_ws_lfn {
     uint8_t pbc_channel_function;
     uint16_t pbc_fixed_channel;
     uint32_t sync_us;               // our time of the last sync: windows widen from it
+    bool sync_aged;                 // the last sync is more than 2^30 µs old: widening at its maximum (32-bit clock)
+    uint64_t ext_us;                // our clock extended past the 32-bit wrap, at ext_ref (updated at least every 2^31 µs)
+    uint32_t ext_ref;
+    uint64_t sync_ext;              // the last sync's slot start, extended
+    bool lutt_after_sync;           // a LUTT-IE was sent since the last sync: the parent's view of our slots dates from it
+    uint64_t lutt_ext;              // its TX time, extended
     bool rate_ref_valid;            // a reference sync for the rate measurement
     uint32_t rate_ref_us;           // its slot start on our clock
     uint16_t rate_ref_slot;

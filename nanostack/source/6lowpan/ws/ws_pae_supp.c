@@ -115,6 +115,7 @@ typedef struct {
     bool comp_br_eui_64_set : 1;                           /**< Border router address has been set after bootstrap completed */
     bool entry_address_active: 1;                          /**< EAPOL target address is set */
     bool tx_failure_on_initial_key: 1;                     /**< TX failure has happened on initial EAPOL-key sequence */
+    bool lgtk_request_pending: 1;                          /**< FAN 1.1 LFN parent: an LGTK key request waits for the ongoing authentication to end */
 } pae_supp_t;
 
 // How many times sending of initial EAPOL-key is initiated on key update
@@ -382,7 +383,13 @@ int8_t ws_pae_supp_ffn_lgtk_hash_update(protocol_interface_info_entry_t *interfa
            children fetch it through the router, so the GTK update trickle
            (minutes) is too slow */
         tr_info("LGTK hash mismatch: key request");
-        ws_pae_supp_key_request_now(pae_supp);
+        // Not now if the join's authentication is still on its way: then
+        // when it ends (the border router's group-key handshake with the
+        // LGTK may have been lost, and its retries are refused once the
+        // supplicant is idle)
+        pae_supp->lgtk_request_pending = !ws_pae_supp_key_request_now(pae_supp);
+    } else {
+        pae_supp->lgtk_request_pending = false;
     }
     return mismatch;
 }
@@ -909,6 +916,13 @@ void ws_pae_supp_fast_timer(uint16_t ticks)
             ws_pae_supp_authenticate_response(pae_supp, AUTH_RESULT_ERR_UNSPEC);
 
             ws_pae_supp_timer_stop(pae_supp);
+            if (pae_supp->lgtk_request_pending) {
+                // FAN 1.1 LFN parent: the LGTK key request that waited
+                pae_supp->lgtk_request_pending = false;
+                if (ws_pae_supp_key_request_now(pae_supp)) {
+                    tr_info("LGTK key request after the authentication, retry in %i s", pae_supp->initial_key_retry_timer);
+                }
+            }
         }
     }
 }

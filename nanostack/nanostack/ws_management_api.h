@@ -990,6 +990,7 @@ typedef struct ws_lfn_settings {
     uint16_t registration_lifetime_min; /**< ARO registration lifetime of the LFN's addresses (minutes) */
     uint32_t drift_ppm;                 /**< Windows widened by this many µs per second since the last sync with the parent, each side (GS8 stage 4) */
     uint32_t widening_max_us;           /**< Upper bound of that widening, each side (µs) */
+    uint32_t bc_widening_max_us;        /**< Upper bound of the widening of the broadcast windows, each side (µs); 0: widening_max_us */
     uint32_t bc_rx_window_us;           /**< Receive window in the parent's LFN broadcast slots (µs) */
     bool bc_sync_only;                  /**< Listen only in the LFN broadcast slots that carry sync frames (every sync period) */
     uint16_t restart_min_ms;            /**< A failed uplink (no ACK after the MAC retries) restarts after min x 2^n .. 2 x min x 2^n ms, n = 0, 1, ... */

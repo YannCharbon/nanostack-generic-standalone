@@ -45,6 +45,7 @@
 #include "6lowpan/mac/mpx_api.h"
 #include "6lowpan/iphc_decode/iphc_decompress.h"
 #include "6lowpan/ws/ws_common.h"
+#include "6lowpan/ws/ws_lfn_parent.h"
 
 #include "lowpan_adaptation_interface.h"
 
@@ -1195,7 +1196,13 @@ int8_t lowpan_adaptation_interface_tx(protocol_interface_info_entry_t *cur, buff
         if (!buf->adaptation_timestamp) {
             buf->adaptation_timestamp--;
         }
-    } else if (lowpan_adaptation_interface_check_buffer_timeout(buf)) {
+    } else if (lowpan_adaptation_interface_check_buffer_timeout(buf) &&
+               // FAN 1.1: a packet to an LFN child waits for the LFN's
+               // windows (listen intervals up to minutes: Silicon Labs'
+               // Balanced and Eco profiles, 60 and 300 s); the MAC drops it
+               // after its own TTL (tx_ttl_intervals listen intervals)
+               !(cur->ws_info && buf->dst_sa.addr_type == ADDR_802_15_4_LONG &&
+                 ws_lfn_parent_dst_is_lfn(cur, buf->dst_sa.address + 2))) {
         // Remove old buffers
         socket_tx_buffer_event_and_free(buf, SOCKET_TX_FAIL);
         return -1;
