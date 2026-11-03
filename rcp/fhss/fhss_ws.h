@@ -88,6 +88,7 @@ struct fhss_ws_lfn {
     uint16_t last_sync_slot;        // slot of the last sync (residual drift span)
     uint32_t own_frac_step;         // own interval's fraction of a µs, in 1e-9 µs (the rate correction is not a whole number of µs)
     uint32_t own_frac_acc;          // its accumulation since the last whole µs
+    bool own_hop;                   // the timer runs to a point on the way to a slot beyond 2^30 µs
     uint32_t residual_ppb;          // drift left after the rate correction, measured at the syncs (decays by half per sync)
     bool bc_window_open;
     uint16_t bc_slot;               // current (open) or next broadcast slot

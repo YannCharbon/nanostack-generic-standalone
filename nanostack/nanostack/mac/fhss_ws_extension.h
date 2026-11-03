@@ -73,6 +73,7 @@ typedef struct lfn_unicast_timing_info {
     uint16_t slot_number;                       /**< LUTT-IE unicast slot number */
     uint_fast24_t interval_offset_ms;           /**< LUTT-IE unicast interval offset (ms into the slot) */
     uint32_t lutt_rx_timestamp;                 /**< LUTT-IE reception timestamp (µs) */
+    uint16_t interval_offset_rem_us;            /**< FHSS re-anchoring: µs beyond interval_offset_ms (0 from a LUTT-IE) */
 } lfn_unicast_timing_info_t;
 
 /**

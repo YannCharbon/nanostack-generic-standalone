@@ -264,12 +264,12 @@ static void test_sched(void)
 {
     fhss_lfn_sched_t s;
     uint16_t slot;
-    uint32_t off;
+    uint64_t off;
 
     CHECK(!fhss_lfn_sched_from_lutt(&s, 0, 0, 0, 0));
     CHECK(!fhss_lfn_sched_from_lutt(&s, 1000, 0, 1000, 0));          // offset outside the interval
-    CHECK(!fhss_lfn_sched_from_lutt(&s, 2147484, 0, 0, 0));          // above 2^31 µs
-    CHECK(fhss_lfn_sched_from_lutt(&s, 2147483, 0, 0, 0));
+    CHECK(!fhss_lfn_sched_from_lutt(&s, 16777216, 0, 0, 0));         // above 2^24 - 1 ms (Wi-SUN maximum)
+    CHECK(fhss_lfn_sched_from_lutt(&s, 16777215, 0, 0, 0));
 
     // LUTT: slot 65534, 300 ms into it, received 1 s before the 32-bit wrap
     uint32_t rx = UINT32_MAX - 999999u;
@@ -524,7 +524,7 @@ static void test_lfn(void)
         step(UINT64_MAX);
         CHECK(nevs == 3 && evs[2].e == FHSS_RX_WINDOW_OPEN && evs[2].t == s + 1000000 - guard);
         CHECK(evs[2].channel == dh1cf_channel(207, lfn_mac));
-        CHECK(ns_fhss_ws_lfn_timing_set(api, 0, 2147484, 0) == -2);
+        CHECK(ns_fhss_ws_lfn_timing_set(api, 0, 16777216, 0) == -2);
     }
 
     // Stop: the window closes, FFN unicast hopping is back
@@ -747,6 +747,127 @@ static void test_lfn_long(void)
     CHECK(ns_fhss_delete(api) == 0);
 }
 
+
+/* Phase B1: listen intervals beyond the 32-bit clock (Wi-SUN maximum 2^24 - 1
+ * ms, about 4.66 h). Slot arithmetic with a long interval; an LFN listening
+ * every 4 h for 13 h (windows at the right times and channels, across the
+ * 32-bit wrap); its parent, from the LUTT the LFN wrote, refreshed every 60 s
+ * without traffic, sends 3 h and 7 h later inside the LFN's windows. */
+static void test_long_interval(void)
+{
+    const uint32_t iv_ms = 4 * 3600 * 1000;      // 4 h
+    const uint64_t iv = (uint64_t)iv_ms * 1000;
+    fhss_lfn_sched_t s;
+    uint16_t slot;
+    uint64_t off;
+
+    // arithmetic: anchor at a phase, t within 2^31 of it
+    CHECK(fhss_lfn_sched_from_lutt(&s, 16777215, 7, 16000000, 1000u));
+    CHECK(s.anchor_phase_us == 16000000000ull && s.anchor_us == 1000u);
+    CHECK(fhss_lfn_sched_next_delta(&s, 1000u, &slot) == 16777215000ull - 16000000000ull && slot == 8);
+    CHECK(fhss_lfn_sched_slot_at(&s, 1000u + 2000000000u, &off) == 8 && off == 18000000000ull - 16777215000ull);
+    fhss_lfn_sched_reanchor(&s, 1000u + 2000000000u);
+    CHECK(s.anchor_slot == 8 && s.anchor_phase_us == 18000000000ull - 16777215000ull);
+    {
+        fhss_lfn_sched_t l = s;
+        int64_t d;
+        CHECK(fhss_lfn_sched_nearest(&l, l.anchor_us, &d) == 8 && d == (int64_t)l.anchor_phase_us);
+        fhss_lfn_sched_shift(&l, 1000);          // 1 ms later
+        CHECK(fhss_lfn_sched_slot_at(&l, l.anchor_us, &off) == 8 && off == s.anchor_phase_us - 1000);
+    }
+
+    // The LFN
+    fhss_ws_lfn_listen_t lcfg;
+    fhss_api_t *api;
+    reset_fakes();
+    api = create_fhss(lfn_mac, 255, 0, 0);
+    ns_fhss_ws_lfn_listen_defaults(&lcfg);
+    lcfg.listen_interval_ms = iv_ms;
+    CHECK(ns_fhss_ws_lfn_listen_set(api, &lcfg) == 0);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    uint64_t slot0 = now_us + lcfg.first_slot_delay_us;
+    nevs = 0;
+    while (step(slot0 + 3 * iv + 3600000000ull)) {
+    }
+    int opens = 0;
+    for (int i = 0; i < nevs; i++) {
+        if (evs[i].e != FHSS_RX_WINDOW_OPEN) {
+            continue;
+        }
+        uint64_t k = (evs[i].t + lcfg.rx_guard_us + 1000000 - slot0) / iv;
+        CHECK(evs[i].t == slot0 + k * iv - lcfg.rx_guard_us);
+        CHECK(evs[i].channel == dh1cf_channel((uint16_t)k, lfn_mac));
+        opens++;
+    }
+    CHECK(opens == 4);                            // slots 0..3 in 13 h
+    // a LUTT written 2.5 h into slot 3
+    uint8_t ie[16];
+    int len = write_lutt_ie(ie);
+    uint64_t t_lutt = slot0 + 3 * iv + 9000000000ull;
+    while (step(t_lutt - 1000)) {      // the timer events on the way re-anchor the schedule
+    }
+    now_us = t_lutt - 1000;
+    api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, (uint32_t)(t_lutt + CLOCK32_OFFSET_US));
+    uint16_t lutt_slot = ie[4] | ie[5] << 8;
+    uint32_t lutt_off_ms = ie[6] | ie[7] << 8 | ie[8] << 16;
+    CHECK(lutt_slot == 3 && lutt_off_ms == 9000000);
+    CHECK(ns_fhss_delete(api) == 0);
+
+    // The parent
+    fhss_ws_lfn_parent_t pcfg;
+    uint32_t tx_time;
+    reset_fakes();
+    api = create_fhss(parent_mac, 255, 1020, 255);
+    ns_fhss_set_neighbor_info_fp(api, get_neighbor);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    ns_fhss_ws_lfn_parent_defaults(&pcfg);
+    CHECK(ns_fhss_ws_lfn_parent_set(api, &pcfg) == 0);
+    lfn_neighbor_known = true;
+    memset(&lfn_neighbor, 0, sizeof(lfn_neighbor));
+    lfn_neighbor.uc_timing_info.unicast_channel_function = WS_DH1CF;
+    lfn_neighbor.uc_timing_info.unicast_number_of_channels = 35;
+    lfn_neighbor.uc_channel_list.channel_count = 35;
+    for (int i = 0; i < 35; i++) {
+        lfn_neighbor.uc_channel_list.channel_mask[i / 32] |= 1u << (i % 32);
+    }
+    lfn_neighbor.lfn_uc_timing_info.listen_interval_ms = iv_ms;
+    lfn_neighbor.lfn_uc_timing_info.slot_number = lutt_slot;
+    lfn_neighbor.lfn_uc_timing_info.interval_offset_ms = lutt_off_ms;
+    lfn_neighbor.lfn_uc_timing_info.lutt_rx_timestamp = (uint32_t)(t_lutt + CLOCK32_OFFSET_US);
+    now_us = t_lutt + 1000;
+    for (int k = 0; k < 2; k++) {
+        uint64_t until = now_us + (k == 0 ? 3 : 7) * 3600000000ull;
+        while (now_us < until) {
+            now_us += 60000000ull;
+            CHECK(ns_fhss_ws_lfn_neighbor_refresh(api, lfn_mac) == 0);
+        }
+        uint32_t queued = ts();
+        fhss_lfn_tx_e r;
+        unsigned polls = 0;
+        // the frame waits; the parent polls on the way, then releases it
+        while ((r = api->lfn_tx_check(api, lfn_mac, queued, &tx_time)) == FHSS_LFN_TX_WAIT && polls < 100) {
+            queue_size = 1;
+            unsigned p0 = tx_polls;
+            while (tx_polls == p0 && step(UINT64_MAX)) {
+            }
+            polls++;
+        }
+        CHECK(r == FHSS_LFN_TX_NOW);
+        uint64_t tx64 = now_us + (uint32_t)(tx_time - ts());
+        uint64_t n = (tx64 + lcfg.rx_guard_us - slot0) / iv;
+        uint64_t start = slot0 + n * iv;
+        CHECK(tx64 >= start - lcfg.rx_guard_us && tx64 < start - lcfg.rx_guard_us + lcfg.rx_window_us);
+        mac_channel = -1;
+        CHECK(api->tx_handle(api, false, (uint8_t *)lfn_mac, FHSS_DATA_FRAME, 100, 0, 0, tx_time) == 0);
+        CHECK(mac_channel == dh1cf_channel((uint16_t)n, lfn_mac));
+        now_us = tx64 + 10000;
+        api->data_tx_done(api, false, true, 1);
+        queue_size = 0;
+    }
+    lfn_neighbor_known = false;
+    CHECK(ns_fhss_delete(api) == 0);
+}
+
 /* ------------------------------------------- 4. LFN broadcast schedule */
 
 static int write_wh_ie(uint8_t *buf, uint8_t sub_id, const uint8_t *content, int len)
@@ -861,7 +982,9 @@ static void test_bc_parent(void)
     // Applied on the ACK with the offset as written
     CHECK(ns_fhss_ws_lfn_neighbor_lto(api, lfn_mac, phase_ms, uc_ms, tx_time) == 0);
     CHECK(lfn_neighbor.lfn_uc_timing_info.listen_interval_ms == uc_ms);
-    CHECK((uint32_t)(lfn_neighbor.lfn_uc_timing_info.lutt_rx_timestamp - moved) == 0);
+    // the same grid: the reference is a slot start of it, phase 0
+    CHECK(lfn_neighbor.lfn_uc_timing_info.interval_offset_ms == 0 && lfn_neighbor.lfn_uc_timing_info.interval_offset_rem_us == 0 &&
+          (int32_t)(lfn_neighbor.lfn_uc_timing_info.lutt_rx_timestamp - moved) % (int32_t)(uc_ms * 1000) == 0);
     CHECK(ns_fhss_ws_lfn_stats_get(api, &st) == 0 && st.bc_tx_released == 1);
     lfn_neighbor_known = false;
     CHECK(ns_fhss_delete(api) == 0);
@@ -1063,6 +1186,7 @@ int main(void)
     test_sched();
     test_lfn();
     test_lfn_long();
+    test_long_interval();
     test_parent();
     test_bc_parent();
     test_bc_lfn(false);

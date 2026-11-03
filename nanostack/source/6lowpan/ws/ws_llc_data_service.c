@@ -540,6 +540,7 @@ bool ws_llc_lfn_timing_update(struct protocol_interface_info_entry *interface, s
     lt->slot_number = lutt.slot_number;
     lt->interval_offset_ms = lutt.interval_offset;
     lt->lutt_rx_timestamp = rx_timestamp;
+    lt->interval_offset_rem_us = 0;
     return true;
 }
 

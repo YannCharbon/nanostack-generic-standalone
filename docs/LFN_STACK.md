@@ -288,7 +288,7 @@ Silicon Labs' LFN profiles [S: Simplicity SDK `sisdk-2025.12`, `wisun/stack/inc/
 | Value | Test | Balanced | Eco | Our setting |
 | --- | --- | --- | --- | --- |
 | Unicast listen interval (proposed) | 6 s | 60 s | 300 s | `listen_interval_ms` |
-| Its range (NR-IE) | 1–60 s | 1–300 s | 1–16 776 s | `listen_interval_min_ms`, `_max_ms` (Eco: 2 147 483 ms, the 32-bit limit, LFN study M11) |
+| Its range (NR-IE) | 1–60 s | 1–300 s | 1–16 776 s | `listen_interval_min_ms`, `_max_ms` (up to 16 777 215 ms in the stack since phase B1, `LFN_MAC.md` §5; the profile tests use 2 147 483 ms) |
 | Listen interval during EAPOL | 1.3 s | 1.3 s | 1.3 s | `eapol_listen_interval_ms` |
 | LFN broadcast interval (parent) | 10 s | 60 s | 600 s | `bc_interval_ms` |
 | Broadcast sync period (parent) | 5 (50 s) | 15 (15 min) | 60 (10 h) | `bc_sync_period` |

@@ -10,7 +10,7 @@ Tags: **[S]** a public source (listed in §7); **[M]** observed on Silicon Labs'
 - **LFN role** (`ns_fhss_ws_lfn_listen_set()`): the FHSS runs the node's unicast listen schedule instead of the FFN unicast hopping and broadcast schedule. Around the start of each slot it opens a receive window on the channel of the node's unicast channel function for that slot; the MAC turns the radio on and, at the end of the window, off (after a frame being received and its ACK). Outside the windows the radio is off except to transmit: TX, wait for the ACK, off. The FHSS writes the LUTT-IE (slot number and offset) of every frame at TX time.
 - **Parent role** (`ns_fhss_ws_lfn_parent_set()`): an acknowledged unicast frame to a neighbour that has an LFN schedule is held in the MAC queue and released for the LFN's next slot. It is sent at the slot start plus an offset, on the LFN's channel for that slot, whatever the parent's own TX/RX slots and broadcast dwell. A failed attempt (no ACK, busy channel, late start) waits for the next slot; a frame that waits longer than its TTL is dropped as timed out.
 - **Several frames per window, with the frame-pending bit** (§4). A parent that holds more than one frame for an LFN sets the IEEE 802.15.4 frame-pending bit in the one it sends; the LFN keeps its window open `pending_hold_us` (30 ms) more after such a frame, and the parent sends the next one right after the ACK. Before, a window carried one frame: the downlink capacity to one LFN was one frame per listen interval, and a parent that held two (a group packet and an RA copy) delivered the second a whole interval later (Silicon Labs' parent behaved the same way in the black-box captures [M], where it never had two).
-- **Every timing is a setting**, with defaults (§4). The 32-bit µs clock limits the listen interval to 2^31 µs (35.8 min); see §5.
+- **Every timing is a setting**, with defaults (§4). Listen intervals up to the Wi-SUN maximum, 2^24 − 1 ms (4.66 h), in the slot arithmetic; see §5 for what is checked end to end.
 
 ## 2. The listen schedule [S, M, I]
 
@@ -124,7 +124,7 @@ All in `fhss_ws_extension.h`; `ns_fhss_ws_lfn_listen_defaults()` and `ns_fhss_ws
 
 | Setting | Default | Role | Meaning |
 | --- | --- | --- | --- |
-| `listen_interval_ms` | 1000 | LFN | Unicast listen interval (LUS-IE), 1 .. 2 147 483 ms |
+| `listen_interval_ms` | 1000 | LFN | Unicast listen interval (LUS-IE), 1 .. 16 777 215 ms |
 | `rx_window_us` | 5000 | LFN | Window length |
 | `rx_guard_us` | 1000 | LFN | Window opening before the slot start |
 | `close_retry_us` | 2000 | LFN | Retry period of a deferred close |
@@ -146,7 +146,7 @@ All in `fhss_ws_extension.h`; `ns_fhss_ws_lfn_listen_defaults()` and `ns_fhss_ws
 
 Silicon Labs' profiles use 6 s (Test), 60 s (Balanced) and up to 16 777 s (Eco) listen intervals, and the parent may adjust the interval with an LTO-IE [M] (§2.1). Limits:
 
-- **32-bit clock (LFN study M11):** listen intervals up to 2^31 µs (35.8 min); Eco's longest are not possible until 64-bit time.
+- **Long listen intervals (LFN study M11, phase B1).** The schedule arithmetic (`fhss_ws_lfn.c`) takes intervals up to 2^24 − 1 ms: the interval is 64-bit, and a schedule's anchor is a point on the 32-bit clock with the phase there (`anchor_phase_us`; at a slot start, phase 0, for intervals up to 2^30 µs as before), so only the anchor must stay within 2^31 µs of the times used; a slot start further away is a 64-bit delay (`fhss_lfn_sched_next_delta()`). The LFN reaches a slot more than 2^30 µs ahead through timer events every 2^29 µs that re-anchor its schedule (`own_hop`), and takes the next slot from the schedule, not by adding the interval to a 32-bit time. The parent re-anchors each child's reference with its phase to the µs (`interval_offset_rem_us` beside `interval_offset_ms`), polls a frame whose window is more than 2^29 µs ahead every 2^29 µs, and computes the LTO-IE conversion from the broadcast phase at the frame. The TX TTL in listen intervals only applies while it fits the MAC's 32-bit queue time (2^31 µs); beyond, a frame lives until its MAC retries (one per window) are used or the LFN is removed. The LFN broadcast interval stays at most 2^30 µs. Unit test (`tests/fhss_lfn`): arithmetic at 2^24 − 1 ms; an LFN listening every 4 h for 13 h (windows at their times and channels across the 32-bit wrap); its parent, from the LFN's LUTT-IE, refreshed every 60 s without traffic, sending 3 h and 7 h later inside the LFN's windows on their channels (2 929 checks). End to end (emulator, Eco settings with a 4 h interval, 72 h, 2 seeds): the LFN under the border router joined (operational after one interval, 4 h) and received 13 of 14 downlinks and 13 of 14 `ff02::1` copies, but only 3 of 9 of its uplinks reached the border router and it missed 3 of 6 sync periods; the LFN under a router did not become operational in 72 h; and the unicast widening had to be raised to 1.8 s (`widening_max_us`; 50 ppm × 4 h) because the rate is not measured before the second 10 h sync. Not finished: these end-to-end problems with intervals beyond 2^31 µs.
 - **Split programs (M12):** the Spinel `ns_fhss_ws_update_neighbor` does not carry `lfn_uc_timing_info`; only in-process MACs support the parent role.
 - **One node, one role:** a node is an LFN or a parent, not both (`-3`).
 
