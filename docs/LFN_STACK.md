@@ -330,3 +330,23 @@ With Eco the 5 ppm floor reaches the 100 ms cap after 5.5 h of the 10 h sync per
 - 6LoWPAN adaptation layer: a second packet to an LFN within one listen interval was dropped after 30 s in the queue (`LOWPAN_TX_BUFFER_AGE_LIMIT_LOW_PRIORITY`): with 60–300 s intervals every second packet was lost. The MAC's LFN TTL applies instead.
 - A router whose LGTK handshake was lost at the join, and whose key request came while its authentication was still on its way, never got an LGTK and never parented its LFN (§9; Balanced seed 4).
 - The parent search started exactly two sync periods after the last sync frame, so with one late sync frame it took the radio just before the next one; it now waits one LFN broadcast interval more.
+
+## 12. Test commands
+
+From the emulator's root (`mesh-emulator-orchestrator/`), with its virtual-time build in `build-vt/`; every script's environment options are in its header and in `sim_utils/vtime/README.md`.
+
+| What | Command |
+| --- | --- |
+| FAN 1.0 non-regression (10 seeds, byte for byte) | `sim_utils/migration/nonreg_dag_simple.sh build-vt $(pwd) <reference-runs>/dag_simple_b1b9cc5` |
+| The LFN suite (quick: 37 runs, about 1 min; full: 112 runs, about 5 min) | `sim_utils/vtime/lfn_suite.sh quick build-vt $(pwd) <out>` |
+| FHSS unit test (stack repo) | `tests/fhss_lfn/run.sh` |
+| One LFN, a router, LGTK rotation, parent change | `sim_utils/vtime/test_lfn_join.sh build-vt $(pwd) <out>` (`MESH`, `SILENT_AT`, `LGTK_ROTATE_AT`, …) |
+| Six LFNs in `dag_simple` | `sim_utils/vtime/test_lfn_mesh.sh build-vt $(pwd) <out>` |
+| Better parent (two LPAS sweeps, release, unusable LPA) | `sim_utils/vtime/test_lfn_better.sh build-vt $(pwd) <out>` (`EXPECT`, `ROUTER2_EXTRA`) |
+| RFC 9685 subscriptions, under profiles | `sim_utils/vtime/test_lfn_mcast.sh build-vt $(pwd) <out>` (`PROF`) |
+| Registrations beyond the parent's bound (status 2) | `sim_utils/vtime/test_lfn_mc_full.sh build-vt $(pwd) <out>` |
+| Silent LFNs, the parent's re-anchoring (1–10 h) | `sim_utils/vtime/test_lfn_silent.sh build-vt $(pwd) <out>` (`PERIOD`); `test_lfn_silence.sh` (tests agent) |
+| Reset of a router or an LFN with an unchanged LGTK | `sim_utils/vtime/test_lfn_reset.sh build-vt $(pwd) <out>` (`RESET`) |
+| Revocation, LFN key lifetimes | `sim_utils/vtime/test_lfn_revoke.sh build-vt $(pwd) <out>` |
+| Silicon Labs' profiles over days (currents) | `sim_utils/vtime/test_lfn_profiles.sh build-vt $(pwd) <out> <test\|balanced\|eco>` |
+| Tests agent: parent gone, restart, weak link, scale | `test_lfn_parent_gone.sh`, `test_lfn_restart.sh`, `test_lfn_weak.sh`, `test_lfn_scale.sh` (same arguments) |
