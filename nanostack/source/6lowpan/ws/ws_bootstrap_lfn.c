@@ -228,11 +228,13 @@ static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur)
     uint32_t window_ms = (uint32_t)(cur->ws_info->lfn.disc_slots ? cur->ws_info->lfn.disc_slots : c->lnd_slots) * c->lnd_slot_time_ms;
     /* Never before the sweep can have ended: about 20 ms per channel [M:
        16.8 ms on Silicon Labs' LFN, item 1], plus 300 ms [I] */
-    /* A background check sends parent_check_sweeps sweeps back to back: an
-       FFN hears an LPAS only on the channel it listens on, and it may be on
-       its broadcast channel or hop away during one sweep [I] */
+    /* A background check, or a search while the parent is kept, sends
+       parent_check_sweeps sweeps back to back: an FFN hears an LPAS only on
+       the channel it listens on, and it may be on its broadcast channel or
+       hop away during one sweep (a border router missed a single sweep of
+       its own child that way after two lost NAs) [I] */
     uint8_t sweeps = 1;
-    if (cur->ws_info->lfn.check && c->parent_check_sweeps > 1) {
+    if ((cur->ws_info->lfn.check || (cur->ws_info->lfn.searching && cur->ws_info->lfn.parent_known)) && c->parent_check_sweeps > 1) {
         sweeps = c->parent_check_sweeps;
     }
     uint32_t delay_ms = c->lnd_response_delay_ms;
@@ -308,6 +310,30 @@ static void ws_lfn_lpcs_send(protocol_interface_info_entry_t *cur)
     ws_llc_asynch_request(cur, &req);
     cur->ws_info->lfn.lpcs_count++;
     cur->ws_info->lfn.lpcs_timer_s = (cur->ws_info->lfn.listen_interval_ms * cur->ws_info->lfn_cfg.lpcs_retry_intervals + 999) / 1000 + 1;
+}
+
+/* The parent's neighbour entry does not expire while it is our parent: we
+ * may hear it once per sync period (Silicon Labs' Eco: 10 h), and an entry
+ * gone (2200 s, WS_NEIGHBOR_LINK_TIMEOUT) refused every uplink until the
+ * next frame from it [I]. Parent maintenance decides when it is lost.
+ * Dropped as parent: the usual lifetime again. */
+static void ws_lfn_parent_entry_keep(protocol_interface_info_entry_t *cur, mac_neighbor_table_entry_t *n, bool keep)
+{
+    (void)cur;
+    if (!n) {
+        return;
+    }
+    n->link_lifetime = keep ? 0xffffffff : WS_NEIGHBOR_LINK_TIMEOUT;
+    n->lifetime = n->link_lifetime;
+}
+
+static void ws_lfn_parent_drop(protocol_interface_info_entry_t *cur)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+    if (lfn->parent_known) {
+        ws_lfn_parent_entry_keep(cur, mac_neighbor_table_address_discover(mac_neighbor_info(cur), lfn->parent_eui64, MAC_ADDR_MODE_64_BIT), false);
+    }
+    lfn->parent_known = false;
 }
 
 /* The parent was heard (any secured frame, from the LLC): keep its
@@ -675,6 +701,14 @@ static void ws_lfn_lpa_choose(protocol_interface_info_entry_t *cur)
         if (!best) {
             tr_info("LFN: parent search: no parent heard, parent kept");
             ws_lfn_candidates_clear(cur);
+            /* A search for lost NAs or failed uplinks: the parent may
+               have lost our registration; registered again (a new NA
+               wait, a search again after two more without an NA) [I] */
+            lfn->uplink_fails = 0;
+            if (lfn->addr_registered && cur->nwk_bootstrap_state == ER_BOOTSTRAP_DONE) {
+                lfn->na_tries = 0;
+                ws_bootstrap_lfn_address_register(cur);
+            }
             return;
         }
         if (!memcmp(best->ind.SrcAddr, lfn->parent_eui64, 8)) {
@@ -689,7 +723,7 @@ static void ws_lfn_lpa_choose(protocol_interface_info_entry_t *cur)
             lfn->release_at_s = UINT32_MAX;
         }
         ns_fhss_ws_lfn_bc_stop(cur->ws_info->fhss_api);
-        lfn->parent_known = false;
+        ws_lfn_parent_drop(cur);
         lfn->lpc_received = false;
         lfn->uplink_fails = 0;
     }
@@ -765,6 +799,7 @@ static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struc
         return;
     }
     ws_bootstrap_neighbor_set_stable(cur, data->SrcAddr);
+    ws_lfn_parent_entry_keep(cur, ni.neighbor, true);
     ni.neighbor->link_role = PRIORITY_PARENT_NEIGHBOUR;
     mac_neighbor_table_trusted_neighbor(mac_neighbor_info(cur), ni.neighbor, true);
     ws_neighbor_class_neighbor_unicast_time_info_update(ni.ws_neighbor, &utt, data->timestamp, (uint8_t *)data->SrcAddr);
@@ -1024,6 +1059,12 @@ void ws_bootstrap_lfn_address_register(protocol_interface_info_entry_t *cur)
         return;
     }
     ws_common_create_ll_address(ll_parent, cur->ws_info->lfn.parent_eui64);
+    // The join is over: back to the agreed interval, which this NS gives
+    // the parent (WS_CONFIGURATION_START)
+    if (cur->ws_info->lfn.eapol_interval) {
+        cur->ws_info->lfn.eapol_interval = false;
+        ws_lfn_interval_set(cur, cur->ws_info->lfn_cfg.listen_interval_ms);
+    }
     // A new TID for each registration (RFC 8505 §5.2): the root orders the
     // routers that publish our address by it (RFC 9010)
     ws_lfn_addr_tid_next(cur);
@@ -1037,7 +1078,9 @@ void ws_bootstrap_lfn_address_register(protocol_interface_info_entry_t *cur)
             tr_info("LFN: ARO %s to %s, %u min (EARO, TID %u)", trace_ipv6(addr->address), trace_ipv6(ll_parent), lifetime, cur->ws_info->lfn.addr_tid);
             protocol_push(buf);
             sent = true;
-            cur->ws_info->lfn.na_wait_s = cur->ws_info->lfn_cfg.na_wait_s;
+            // The NA comes in one of our windows: up to a listen interval
+            // later (Eco: hours) [I]
+            cur->ws_info->lfn.na_wait_s = cur->ws_info->lfn_cfg.na_wait_s + (cur->ws_info->lfn.listen_interval_ms + 999) / 1000;
             cur->ws_info->lfn.na_tries++;
         }
     }
@@ -1136,13 +1179,18 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             lfn->lpas_timer_s = 1;
             break;
         case WS_CONFIGURATION_START:
-            // Authenticated (or rejoining with valid keys): back to the
-            // agreed interval, then LPCS -> LPC
+            /* Authenticated (or rejoining with valid keys): LPCS -> LPC,
+               still at the shorter join interval: the parent answers in our
+               next window, hours away at the longest listen intervals
+               (Silicon Labs' Eco: up to 16 776 s). So do the DHCPv6
+               replies; the agreed interval from our first address
+               registration on, whose NS carries it (LUS-IE) [I] */
             tr_info("LFN configuration start");
             lfn->keys_valid = true;
-            if (lfn->eapol_interval) {
-                lfn->eapol_interval = false;
-                ws_lfn_interval_set(cur, cur->ws_info->lfn_cfg.listen_interval_ms);
+            if (!lfn->eapol_interval && cur->ws_info->lfn_cfg.eapol_listen_interval_ms &&
+                    cur->ws_info->lfn_cfg.eapol_listen_interval_ms < cur->ws_info->lfn_cfg.listen_interval_ms) {
+                lfn->eapol_interval = true;
+                ws_lfn_interval_set(cur, cur->ws_info->lfn_cfg.eapol_listen_interval_ms);
             }
             cur->nwk_bootstrap_state = ER_SCAN;
             lfn->lpc_received = false;
@@ -1425,7 +1473,7 @@ void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
             ns_fhss_ws_lfn_bc_stop(cur->ws_info->fhss_api);
             ws_stats_update(cur, STATS_WS_STATE_1, 0);
             ws_bootstrap_event_discovery_start(cur);
-            lfn->parent_known = false;
+            ws_lfn_parent_drop(cur);
         }
     }
 }

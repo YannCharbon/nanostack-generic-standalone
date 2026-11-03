@@ -1087,6 +1087,8 @@ static buffer_t *icmpv6_na_handler(buffer_t *buf)
         const uint8_t *earo = icmpv6_find_option_in_buffer(buf, 20, ICMPV6_OPT_ADDR_REGISTRATION, 2);
         if (earo && earo[2] != ARO_SUCCESS) {
             tr_warn("EARO multicast %s refused by %s: status %u", trace_ipv6(target), trace_ipv6(buf->src_sa.address), earo[2]);
+        } else if (earo) {
+            tr_debug("NA received for our multicast registration: %s", trace_ipv6(target));
         }
         goto drop;
     }

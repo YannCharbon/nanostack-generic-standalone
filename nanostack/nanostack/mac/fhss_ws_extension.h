@@ -186,7 +186,8 @@ extern int ns_fhss_ws_set_tx_allowance_level(const fhss_api_t *fhss_api, const f
 #define FHSS_LFN_DRIFT_PPM_DEFAULT              50u     /**< Window widening per side, µs per second since the last sync with the parent (GS8 stage 4) */
 #define FHSS_LFN_DRIFT_FLOOR_PPB_DEFAULT        5000u   /**< Widening per side once the rate is measured: at least 5 ppm (32 kHz crystal over a few °C of temperature change) */
 #define FHSS_LFN_BC_RX_WINDOW_US_DEFAULT        5000u   /**< Receive window length in the parent's LFN broadcast slots */
-#define FHSS_LFN_WIDENING_MAX_US_DEFAULT        100000u /**< Upper bound of the widening, per side */
+#define FHSS_LFN_WIDENING_MAX_US_DEFAULT        0u      /**< Upper bound of the widening, per side; 0: automatic, drift_ppm over two sync periods and an interval, at least FHSS_LFN_WIDENING_AUTO_MIN_US */
+#define FHSS_LFN_WIDENING_AUTO_MIN_US           100000u /**< Least automatic upper bound of the widening, per side (the fixed bound before) */
 
 /**
  * @brief LFN role: the node's own unicast listen schedule (LUS-IE). The
@@ -204,8 +205,8 @@ typedef struct fhss_ws_lfn_listen {
     uint32_t uplink_guard_us;       /**< Uplink: time after the frame's airtime kept clear of the parent's broadcast dwell (µs; ACK turnaround and airtime) */
     /* GS8 stage 4: the parent's LFN broadcast schedule and clock drift */
     uint32_t drift_ppm;             /**< Both kinds of window open earlier and close later by drift_ppm µs per second since the last sync with the parent (each side); 0: no widening */
-    uint32_t widening_max_us;       /**< Upper bound of that widening, per side (µs) */
-    uint32_t bc_widening_max_us;    /**< Upper bound of the widening of the broadcast windows, per side (µs); 0: widening_max_us. A sync period longer than widening_max_us / drift_ppm (Eco profile: 10 h) needs it */
+    uint32_t widening_max_us;       /**< Upper bound of that widening, per side (µs); 0: automatic (FHSS_LFN_WIDENING_MAX_US_DEFAULT) */
+    uint32_t bc_widening_max_us;    /**< Upper bound of the widening of the broadcast windows, per side (µs); 0: widening_max_us (automatic: from the broadcast interval) */
     uint32_t drift_floor_ppb;       /**< Once the LFN has measured its clock rate against the parent's, the windows widen by twice the drift left after the correction (measured at each sync), and at least this (ppb, per side), instead of drift_ppm; 0: always drift_ppm (docs/LFN_MAC.md §2.3) */
     uint32_t bc_rx_window_us;       /**< Window length in the parent's LFN broadcast slots (µs), opened rx_guard_us before the slot start */
     bool bc_sync_only;              /**< Listen only in the broadcast slots that carry the parent's sync frames (slot number a multiple of the sync period) */

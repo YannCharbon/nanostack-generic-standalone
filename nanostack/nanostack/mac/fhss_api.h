@@ -218,6 +218,15 @@ typedef fhss_lfn_tx_e fhss_lfn_tx_at(const fhss_api_t *api, const uint8_t *desti
 typedef void fhss_lfn_pending(const fhss_api_t *api, const uint8_t *peer);
 
 /**
+ * @brief Time until a frame queued for an LFN (or, destination NULL, for the
+ * LFN broadcast slots) may next be sent, without side effects (FAN 1.1
+ * parent). The MAC keeps an asynchronous sweep from starting when it would
+ * hold the radio through that time. Optional.
+ * @return false if the destination is not an LFN (or no LFN broadcast schedule).
+ */
+typedef bool fhss_lfn_tx_delay(const fhss_api_t *api, const uint8_t *destination_address, uint32_t *delay_us);
+
+/**
  * \brief Struct fhss_api defines interface between software MAC and FHSS.
  * Application creates fhss_api_s object by calling FHSS creator function.
  * Then object is passed to software MAC which then initialises it's own callback functions.
@@ -238,6 +247,7 @@ struct fhss_api {
     fhss_lfn_tx_check *lfn_tx_check;                    /**< LFN destination check (FAN 1.1 parent). Optional, may be NULL. */
     fhss_lfn_tx_at *lfn_tx_at;                          /**< Frame to an LFN at a requested time (FAN 1.1 parent). Optional, may be NULL. */
     fhss_lfn_pending *lfn_pending;                      /**< Frame-pending bit exchanged with an LFN (FAN 1.1). Optional, may be NULL. */
+    fhss_lfn_tx_delay *lfn_tx_delay;                    /**< Time to an LFN frame's next TX opportunity (FAN 1.1 parent). Optional, may be NULL. */
 };
 
 /**

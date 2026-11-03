@@ -31,6 +31,7 @@
 #include "nanostack/mac/mlme.h"
 #include "nanostack/mac/mac_api.h"
 #include "nanostack/mac/fhss_api.h"
+#include "mac_fhss_callbacks.h"
 #include "ns_port/critical.h"
 #include "mbed-client-libservice/common_functions.h"
 #include "ns_rand.h"
@@ -859,6 +860,65 @@ static void mac_mcps_asynch_finish(protocol_interface_rf_mac_setup_s *rf_mac_set
  * whether an acknowledged unicast frame goes to an LFN, and when. Without
  * fhss_api->lfn_tx_check, or with LFN parenting off in the FHSS, every frame
  * is FHSS_LFN_TX_NOT_LFN and nothing changes. */
+/* FAN 1.1 parent: would this asynchronous sweep (one frame per channel)
+ * hold the radio through the TX time of a frame queued for an LFN (its
+ * window, an LFN broadcast slot, an LPA at its time)? Then it waits, at most
+ * MCPS_ASYNC_LFN_DEFER_MAX_US: the LFN frame goes first and the queue is read
+ * again at its confirmation [I]. */
+#define MCPS_ASYNC_LFN_DEFER_MAX_US 10000000u
+#define MCPS_ASYNC_LFN_MARGIN_US    20000u
+static bool mcps_async_lfn_conflict_queue(protocol_interface_rf_mac_setup_s *rf_mac_setup, mac_pre_build_frame_t *b, uint32_t now, uint32_t sweep_us)
+{
+    for (; b; b = b->next) {
+        uint32_t delay;
+        if (b->asynch_request) {
+            continue;
+        }
+        if (b->lfn_req_set) {
+            delay = (int32_t)(b->lfn_req_time - now) > 0 ? b->lfn_req_time - now : 0;
+        } else if (b->lfn_bc) {
+            if (!rf_mac_setup->fhss_api->lfn_tx_delay(rf_mac_setup->fhss_api, NULL, &delay)) {
+                continue;
+            }
+        } else if (mac_is_ack_request_set(b) && b->fcf_dsn.DstAddrMode == MAC_ADDR_MODE_64_BIT) {
+            if (!rf_mac_setup->fhss_api->lfn_tx_delay(rf_mac_setup->fhss_api, b->DstAddr, &delay)) {
+                continue;
+            }
+        } else {
+            continue;
+        }
+        if (delay < sweep_us) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool mcps_async_lfn_conflict(protocol_interface_rf_mac_setup_s *rf_mac_setup, mac_pre_build_frame_t *buffer)
+{
+    if (!buffer->asynch_request || !rf_mac_setup->fhss_api || !rf_mac_setup->fhss_api->lfn_tx_delay) {
+        return false;
+    }
+    uint32_t now = mac_mcps_sap_get_phy_timestamp(rf_mac_setup);
+    if (now - buffer->request_start_time_us > MCPS_ASYNC_LFN_DEFER_MAX_US) {
+        return false;
+    }
+    uint32_t channels = 0;
+    for (int i = 0; i < 8; i++) {
+        uint32_t m = buffer->asynch_channel_list.channel_mask[i];
+        while (m) {
+            m &= m - 1;
+            channels++;
+        }
+    }
+    uint32_t datarate = mac_read_phy_datarate(rf_mac_setup->fhss_api);
+    uint32_t bytes = buffer->mac_payload_length + buffer->headerIeLength + buffer->payloadsIeLength + 40;
+    uint32_t per_channel = (uint32_t)((uint64_t)bytes * 8 * 1000000 / (datarate ? datarate : 50000)) + 3000;
+    uint32_t sweep_us = channels * per_channel + MCPS_ASYNC_LFN_MARGIN_US;
+    return mcps_async_lfn_conflict_queue(rf_mac_setup, rf_mac_setup->pd_data_request_queue_to_go, now, sweep_us) ||
+           mcps_async_lfn_conflict_queue(rf_mac_setup, rf_mac_setup->pd_data_request_bc_queue_to_go, now, sweep_us);
+}
+
 static fhss_lfn_tx_e mcps_lfn_tx_check(protocol_interface_rf_mac_setup_s *rf_mac_setup, mac_pre_build_frame_t *buffer)
 {
     uint32_t tx_time = 0;
@@ -2193,6 +2253,8 @@ void mcps_sap_pd_req_queue_write(protocol_interface_rf_mac_setup_s *rf_mac_setup
                 }
                 goto push_to_queue;
             }
+        } else if (mcps_async_lfn_conflict(rf_mac_setup, buffer)) {
+            goto push_to_queue;
         }
         //Start TX process immediately
         rf_mac_setup->active_pd_data_request = buffer;
@@ -2298,7 +2360,7 @@ static mac_pre_build_frame_t *mcps_sap_pd_req_queue_read(protocol_interface_rf_m
             // FHSS_LFN_TX_NOT_LFN for every frame unless LFN parenting is on
             fhss_lfn_tx_e lfn_tx = mcps_lfn_tx_check(rf_mac_setup, buffer);
             if (mcps_sap_check_buffer_timeout(rf_mac_setup, buffer) ||
-                    buffer->asynch_request ||
+                    (buffer->asynch_request && !mcps_async_lfn_conflict(rf_mac_setup, buffer)) ||
                     (flush == true) ||
                     ((mcps_check_packet_blacklist(rf_mac_setup, buffer) == false) && (lfn_tx == FHSS_LFN_TX_NOW)) ||
                     ((lfn_tx == FHSS_LFN_TX_NOT_LFN) && (mcps_check_packet_blacklist(rf_mac_setup, buffer) == false) &&

@@ -96,6 +96,8 @@ static uint32_t fhss_ws_lfn_widening(struct fhss_ws_lfn *lfn, uint32_t t, bool b
 static uint32_t fhss_ws_lfn_local_us(const struct fhss_ws_lfn *lfn, uint32_t parent_us);
 static void fhss_ws_lfn_own_interval_set(struct fhss_ws_lfn *lfn, uint64_t nominal_us);
 static void fhss_ws_lfn_own_advance(struct fhss_ws_lfn *lfn);
+static uint64_t fhss_ws_lfn_parent_us(const struct fhss_ws_lfn *lfn, uint64_t local_us);
+static void fhss_ws_lfn_ref_from_own(struct fhss_ws_lfn *lfn, uint32_t t);
 static void fhss_ws_lfn_age(fhss_structure_t *fhss_structure, uint32_t now);
 static uint64_t fhss_ws_lfn_ext(const struct fhss_ws_lfn *lfn, uint32_t t);
 static void fhss_ws_lfn_ext_update(struct fhss_ws_lfn *lfn, uint32_t now);
@@ -108,6 +110,7 @@ static fhss_ws_neighbor_timing_info_t *fhss_ws_lfn_neighbor(fhss_structure_t *fh
 static bool fhss_ws_lfn_neighbor_sched(fhss_structure_t *fhss_structure, fhss_ws_neighbor_timing_info_t *info, fhss_lfn_sched_t *sched);
 static int32_t fhss_ws_lfn_neighbor_channel(fhss_structure_t *fhss_structure, fhss_ws_neighbor_timing_info_t *info, uint16_t slot, uint8_t *eui64);
 static fhss_lfn_tx_e fhss_ws_lfn_tx_check_callback(const fhss_api_t *api, const uint8_t *destination_address, uint32_t queued_since_us, uint32_t *tx_time);
+static bool fhss_ws_lfn_tx_delay_callback(const fhss_api_t *api, const uint8_t *destination_address, uint32_t *delay_us);
 static fhss_lfn_tx_e fhss_ws_lfn_tx_at_callback(const fhss_api_t *api, const uint8_t *destination_address, uint32_t requested_us, int32_t slot, uint32_t *tx_time);
 static void fhss_ws_lfn_pending_callback(const fhss_api_t *api, const uint8_t *peer);
 static void fhss_ws_lfn_disc_timer(fhss_structure_t *fhss_structure);
@@ -1053,18 +1056,25 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
     // (LUTT-IE: frame type, slot number, interval offset), only while the
     // listen schedule runs; otherwise the LLC's zeros stay.
     if (fhss_structure->ws->lfn.listen_running && fhss_ws_ie_header_discover(ptr, length, &header_ie, WH_SUB_ID_LUTT) >= 6) {
+        struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
         uint64_t offset_us;
-        uint16_t slot = fhss_lfn_sched_slot_at(&fhss_structure->ws->lfn.own, tx_time, &offset_us);
-        uint32_t offset_ms = (uint32_t)((offset_us + 500) / 1000);
-        if (offset_ms >= fhss_structure->ws->lfn.listen_cfg.listen_interval_ms) {
-            offset_ms = fhss_structure->ws->lfn.listen_cfg.listen_interval_ms - 1;
+        uint16_t slot = fhss_lfn_sched_slot_at(&lfn->own, tx_time, &offset_us);
+        /* The parent reads the offset on its clock: in its µs once the rate
+           is measured (an offset of hours, Eco: 20 ppm x 4 h = 0.3 s) */
+        uint32_t offset_ms = (uint32_t)((fhss_ws_lfn_parent_us(lfn, offset_us) + 500) / 1000);
+        if (offset_ms >= lfn->listen_cfg.listen_interval_ms) {
+            offset_ms = lfn->listen_cfg.listen_interval_ms - 1;
         }
         common_write_16_bit_inverse(slot, header_ie.content_ptr + 1);
         common_write_24_bit_inverse(offset_ms, header_ie.content_ptr + 3);
         // The parent's view of our slots dates from this frame
-        fhss_ws_lfn_ext_update(&fhss_structure->ws->lfn, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api));
-        fhss_structure->ws->lfn.lutt_ext = fhss_ws_lfn_ext(&fhss_structure->ws->lfn, tx_time);
-        fhss_structure->ws->lfn.lutt_after_sync = true;
+        fhss_ws_lfn_ext_update(lfn, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api));
+        lfn->lutt_ext = fhss_ws_lfn_ext(lfn, tx_time);
+        lfn->lutt_after_sync = true;
+        lfn->ref_valid = true;
+        lfn->ref_ext = lfn->lutt_ext;
+        lfn->ref_slot = slot;
+        lfn->ref_phase_us = (uint64_t)offset_ms * 1000u;
     }
     if (fhss_structure->ws->lfn.bc_enabled) {
         fhss_ws_lfn_write_lbt_lto(fhss_structure, ptr, length, tx_time);
@@ -1287,6 +1297,7 @@ int fhss_ws_set_callbacks(fhss_structure_t *fhss_structure)
     fhss_structure->fhss_api->lfn_tx_check = &fhss_ws_lfn_tx_check_callback;
     fhss_structure->fhss_api->lfn_tx_at = &fhss_ws_lfn_tx_at_callback;
     fhss_structure->fhss_api->lfn_pending = &fhss_ws_lfn_pending_callback;
+    fhss_structure->fhss_api->lfn_tx_delay = &fhss_ws_lfn_tx_delay_callback;
     return 0;
 }
 
@@ -1305,6 +1316,11 @@ int fhss_ws_set_parent(fhss_structure_t *fhss_structure, const uint8_t eui64[8],
             return 0;
         }
         if (eui64) {
+            if (!lfn->parent_eui64_valid || memcmp(lfn->parent_eui64, eui64, 8)) {
+                lfn->ffn_ref_set = false;
+                lfn->ffn_rate_known = false;
+                lfn->ffn_rate_ppb = 0;
+            }
             memcpy(lfn->parent_eui64, eui64, 8);
             lfn->parent_eui64_valid = true;
         }
@@ -1630,6 +1646,7 @@ static void fhss_ws_lfn_listen_start(fhss_structure_t *fhss_structure)
     lfn->own.anchor_phase_us = 0;
     lfn->own.anchor_slot = 0;
     lfn->own_hop = false;
+    lfn->ref_valid = false;
     lfn->slot = 0;
     lfn->slot_start = lfn->own.anchor_us;
     lfn->window_open = false;
@@ -1899,6 +1916,44 @@ static fhss_lfn_tx_e fhss_ws_lfn_tx_check_callback(const fhss_api_t *api, const 
     return FHSS_LFN_TX_WAIT;
 }
 
+/* The time to an LFN frame's next TX opportunity (as fhss_ws_lfn_tx_check
+ * would give it), without side effects: the MAC keeps an asynchronous sweep
+ * (PA, PC on every channel: 0.3-0.6 s) from holding the radio through an
+ * LFN window or an LFN broadcast slot with a frame waiting for it. A border
+ * router's PAN configuration sweep took the 10 h sync slot of the Eco
+ * profile (LTS) and an LFN window under Eco [I]. */
+static bool fhss_ws_lfn_tx_delay_callback(const fhss_api_t *api, const uint8_t *destination_address, uint32_t *delay_us)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(api);
+    if (!fhss_structure || !fhss_structure->ws->lfn.parent_enabled || fhss_structure->fhss_state != FHSS_SYNCHRONIZED) {
+        return false;
+    }
+    struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+    const fhss_ws_lfn_parent_t *cfg = &lfn->parent_cfg;
+    fhss_ws_neighbor_timing_info_t *info;
+    fhss_lfn_sched_t sched;
+    uint32_t now = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
+
+    if (!destination_address) {
+        if (!lfn->bc_enabled || !fhss_ws_lfn_bc_sched(fhss_structure, now)) {
+            return false;
+        }
+        sched = lfn->bc;
+    } else {
+        info = fhss_ws_lfn_neighbor(fhss_structure, destination_address);
+        if (!info || !fhss_ws_lfn_neighbor_sched(fhss_structure, info, &sched)) {
+            return false;
+        }
+        if (lfn->burst_valid && !memcmp(lfn->burst_dst, destination_address, 8) && (int32_t)(lfn->burst_until - now) > 0) {
+            *delay_us = 0;
+            return true;
+        }
+    }
+    uint64_t d = cfg->tx_min_prep_us + fhss_lfn_sched_next_delta(&sched, now + cfg->tx_min_prep_us - cfg->tx_offset_us, NULL);
+    *delay_us = d > 0xffffffffu ? 0xffffffffu : (uint32_t)d;
+    return true;
+}
+
 // LFN uplink and the parent's broadcast dwell: does a frame starting at t
 // (airtime plus uplink_guard_us) meet the dwell? If so, poll the TX queue at
 // the dwell's end (the LFN has no periodic poll).
@@ -1953,6 +2008,10 @@ int fhss_ws_lfn_timing_set(fhss_structure_t *fhss_structure, uint32_t offset_ms,
     fhss_lfn_sched_lto_nearest(&lfn->own, rx_timestamp_us, (uint64_t)offset_ms * 1000u,
                                interval_ms ? fhss_ws_lfn_local_us(lfn, (uint64_t)interval_ms * 1000u) : 0);
     fhss_ws_lfn_own_interval_set(lfn, (uint64_t)lfn->listen_cfg.listen_interval_ms * 1000u);
+    // The parent applied the same LTO-IE to its view (or learns the new
+    // interval from our next LUTT-IE and LUS-IE)
+    fhss_ws_lfn_ext_update(lfn, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api));
+    fhss_ws_lfn_ref_from_own(lfn, rx_timestamp_us);
     tr_info("LFN schedule: offset %"PRIu32" ms, interval %"PRIu32" ms", offset_ms, lfn->listen_cfg.listen_interval_ms);
     if (lfn->window_open) {
         lfn->resched = true;
@@ -2088,7 +2147,8 @@ int fhss_ws_lfn_parent_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_p
  * parent expects them (its view comes from our last LUTT-IE and its own
  * clock). Windows widen by drift_ppm per second since the last sync [M:
  * Silicon Labs' LFN widens about 0.11 ms per second], up to widening_max_us
- * (bc_widening_max_us for the broadcast windows).
+ * (bc_widening_max_us for the broadcast windows; 0: automatic, from the
+ * sync period and the interval).
  * ------------------------------------------------------------------------ */
 
 static uint32_t fhss_ws_lfn_local_us(const struct fhss_ws_lfn *lfn, uint32_t parent_us)
@@ -2115,6 +2175,56 @@ static void fhss_ws_lfn_own_interval_set(struct fhss_ws_lfn *lfn, uint64_t nomin
     lfn->own.interval_us = (uint64_t)whole;
     lfn->own_frac_step = (uint32_t)frac;
     lfn->own_frac_acc = 0;
+}
+
+// A time span on our clock in the parent's µs (rate_ppb: ours against its)
+static uint64_t fhss_ws_lfn_parent_us(const struct fhss_ws_lfn *lfn, uint64_t local_us)
+{
+    if (!lfn->rate_ppb) {
+        return local_us;
+    }
+    // local = parent x (1 + r): parent = local - local x r / (1 + r)
+    int64_t corr = (int64_t)(local_us / 1000u) * lfn->rate_ppb / (1000000 + lfn->rate_ppb / 1000) +
+                   (int64_t)(local_us % 1000u) * lfn->rate_ppb / 1000000000;
+    return (uint64_t)((int64_t)local_us - corr);
+}
+
+// The parent's view of our slots from our own schedule at time t
+static void fhss_ws_lfn_ref_from_own(struct fhss_ws_lfn *lfn, uint32_t t)
+{
+    uint64_t off;
+    lfn->ref_slot = fhss_lfn_sched_slot_at(&lfn->own, t, &off);
+    lfn->ref_ext = fhss_ws_lfn_ext(lfn, t);
+    lfn->ref_phase_us = fhss_ws_lfn_parent_us(lfn, off);
+    lfn->ref_valid = true;
+}
+
+/* Our slots where the parent expects them, once the rate is measured: from
+ * its view (our last LUTT-IE, or the last LTO-IE: slot ref_slot started
+ * ref_phase_us of its µs before ref_ext, and the slots follow at our
+ * nominal interval on its clock), converted to our clock at the measured
+ * rate, to the ns. The parent's view is exact on its clock however old it
+ * is; a sync's phase error scaled by the time since the LUTT-IE (the way
+ * before the rate is measured) left our slots some 0.2 s off at a 4 h
+ * interval, and the interval changed to the measured rate from an anchor
+ * that was not the parent's reference moved them as much again [I]. */
+static void fhss_ws_lfn_own_from_ref(struct fhss_ws_lfn *lfn, uint32_t now)
+{
+    const int64_t r = lfn->rate_ppb;
+    uint64_t iv_p_us = (uint64_t)lfn->listen_cfg.listen_interval_ms * 1000u;
+    int64_t iv_ns = (int64_t)iv_p_us * 1000 + (int64_t)iv_p_us * r / 1000000;
+    int64_t phase_ns = (int64_t)lfn->ref_phase_us * 1000 + (int64_t)lfn->ref_phase_us * r / 1000000;
+    int64_t pos_ns = ((int64_t)fhss_ws_lfn_ext(lfn, now) - (int64_t)lfn->ref_ext) * 1000 + phase_ns;
+    int64_t n = pos_ns >= 0 ? pos_ns / iv_ns : -((-pos_ns + iv_ns - 1) / iv_ns);
+    int64_t rem_ns = pos_ns - n * iv_ns;
+
+    fhss_ws_lfn_own_interval_set(lfn, iv_p_us);
+    lfn->own.anchor_us = now;
+    lfn->own.anchor_phase_us = (uint64_t)(rem_ns / 1000);
+    lfn->own.anchor_slot = (uint16_t)(lfn->ref_slot + n);
+    // normalized (phase within an interval, the anchor at a slot start for
+    // the short intervals)
+    fhss_lfn_sched_shift(&lfn->own, 0);
 }
 
 // The next own slot
@@ -2155,6 +2265,50 @@ static void fhss_ws_lfn_ext_update(struct fhss_ws_lfn *lfn, uint32_t now)
     }
 }
 
+/* The rate of our clock against the parent's FFN schedules, from its UTT-IEs
+ * (ACKs of our uplinks, our downlinks, LPAs): a parent router's unicast and
+ * broadcast hopping follow the border router's time base (FAN 1.0 drift
+ * compensation, fhss_ws_start_timer()), its LFN broadcast schedule (rate_ppb)
+ * its own clock. With rate_ppb, a 4 h gap between UTT-IEs left the parent's
+ * channel predicted 0.4 s off and every uplink went unheard [I]. The UFSI is
+ * 256 units per dwell, from the parent's ms: measured over at least 10 min. */
+static void fhss_ws_lfn_ffn_rate_update(struct fhss_ws_lfn *lfn, const unicast_timing_info_t *u)
+{
+    if (u->unicast_channel_function != WS_DH1CF) {
+        return;
+    }
+    if (lfn->ffn_ref_set && u->utt_rx_timestamp == lfn->ffn_ref_ts && u->ufsi == lfn->ffn_ref_ufsi) {
+        return;
+    }
+    // A new UTT-IE: the parent's time since the reference, from the UFSI
+    // (unwrapped with our time: the sequence lasts 65536 dwells, 4.6 h)
+    uint64_t obs = fhss_ws_lfn_ext(lfn, u->utt_rx_timestamp);
+    if (lfn->ffn_ref_set && obs > lfn->ffn_obs_ext) {
+        int32_t r = lfn->ffn_rate_known ? lfn->ffn_rate_ppb : lfn->rate_ppb;
+        int64_t span = (int64_t)(obs - lfn->ffn_obs_ext);
+        int64_t dt_parent = span - span / 1000 * r / (1000000 + r / 1000);
+        int64_t dwell_us = (int64_t)u->unicast_dwell_interval * 1000;
+        int64_t pred = (int64_t)lfn->ffn_obs_ufsi + dt_parent * 256 / dwell_us;
+        int32_t err_units = (int32_t)(((uint32_t)u->ufsi - (uint32_t)pred) << 8) >> 8;   // 24-bit signed
+        int64_t err_us = (int64_t)err_units * dwell_us / 256;
+        if (span >= 600000000 && err_us > -span / 2000 && err_us < span / 2000) {
+            // the parent ahead (err > 0): its clock faster, ours slower against it
+            lfn->ffn_rate_ppb = (int32_t)(r - err_us * 1000 / (span / 1000000));
+            lfn->ffn_rate_known = true;
+            tr_debug("LFN: parent FFN schedule rate %"PRIi32" ppb (error %"PRIi32" us in %"PRIu32" s)",
+                     lfn->ffn_rate_ppb, (int32_t)err_us, (uint32_t)(span / 1000000));
+            lfn->ffn_obs_ext = obs;
+            lfn->ffn_obs_ufsi = u->ufsi;
+        }
+    } else {
+        lfn->ffn_obs_ext = obs;
+        lfn->ffn_obs_ufsi = u->ufsi;
+    }
+    lfn->ffn_ref_set = true;
+    lfn->ffn_ref_ts = u->utt_rx_timestamp;
+    lfn->ffn_ref_ufsi = u->ufsi;
+}
+
 static void fhss_ws_lfn_age(fhss_structure_t *fhss_structure, uint32_t now)
 {
     struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
@@ -2170,12 +2324,13 @@ static void fhss_ws_lfn_age(fhss_structure_t *fhss_structure, uint32_t now)
     }
     // The parent's FFN broadcast schedule (uplinks avoid its dwell): whole
     // intervals, at the parent's interval on our clock
+    int32_t ffn_rate = lfn->ffn_rate_known ? lfn->ffn_rate_ppb : lfn->rate_ppb;
     if (lfn->parent_bc_valid) {
         age = now - lfn->parent_bc_start_us;
         if (age > FHSS_LFN_REANCHOR_US && age < 0xC0000000u) {
             uint32_t k = age / lfn->parent_bc_interval_us;
             lfn->parent_bc_start_us += (uint32_t)((int64_t)k * lfn->parent_bc_interval_us
-                                      + (int64_t)k * lfn->parent_bc_interval_us * lfn->rate_ppb / 1000000000);
+                                      + (int64_t)k * lfn->parent_bc_interval_us * ffn_rate / 1000000000);
         }
     }
     // The parent's FFN unicast schedule (UTT-IE: our uplinks' channel), in
@@ -2187,19 +2342,43 @@ static void fhss_ws_lfn_age(fhss_structure_t *fhss_structure, uint32_t now)
         unicast_timing_info_t *u = info ? &info->uc_timing_info : NULL;
         if (u && u->utt_rx_timestamp && u->unicast_dwell_interval &&
                 (u->unicast_channel_function == WS_DH1CF || (u->unicast_channel_function == WS_TR51CF && u->unicast_number_of_channels))) {
+            fhss_ws_lfn_ffn_rate_update(lfn, u);
+            ffn_rate = lfn->ffn_rate_known ? lfn->ffn_rate_ppb : lfn->rate_ppb;
             age = now - u->utt_rx_timestamp;
             if (age > FHSS_LFN_REANCHOR_US && age < 0xC0000000u) {
                 uint32_t slots = u->unicast_channel_function == WS_TR51CF ? u->unicast_number_of_channels : 1;
                 uint64_t step_us = (uint64_t)slots * u->unicast_dwell_interval * 1000u;
                 uint32_t k = (uint32_t)(age / step_us);
                 int64_t d = (int64_t)(k * step_us);
-                u->utt_rx_timestamp += (uint32_t)(d + d * lfn->rate_ppb / 1000000000);
+                u->utt_rx_timestamp += (uint32_t)(d + d * ffn_rate / 1000000000);
                 if (u->unicast_channel_function == WS_DH1CF) {
                     u->ufsi = (u->ufsi + k * 256u) & 0xffffff;
                 }
             }
+            lfn->ffn_ref_ts = u->utt_rx_timestamp;
+            lfn->ffn_ref_ufsi = u->ufsi;
         }
     }
+}
+
+/* The automatic bound of the widening: drift_ppm over two sync periods (one
+ * sync missed) and one listen interval (the window furthest from them), at
+ * least FHSS_LFN_WIDENING_AUTO_MIN_US, at most half the interval. A fixed
+ * 100 ms bound missed the windows of a 4 h interval and a 10 h sync period
+ * (Eco), which drift by up to 1.8 s at 50 ppm [I]. */
+static uint32_t fhss_ws_lfn_widening_auto(const struct fhss_ws_lfn *lfn, bool bc)
+{
+    uint64_t iv = bc ? lfn->pbc_nominal_us : lfn->own.interval_us;
+    uint64_t sp = (uint64_t)lfn->pbc_nominal_us * (lfn->pbc_sync_period ? lfn->pbc_sync_period : 1);
+    uint64_t w = (2 * sp + iv) / 1000000u * lfn->listen_cfg.drift_ppm;
+
+    if (w < FHSS_LFN_WIDENING_AUTO_MIN_US) {
+        w = FHSS_LFN_WIDENING_AUTO_MIN_US;
+    }
+    if (iv && w > iv / 2) {
+        w = iv / 2;
+    }
+    return w > 0x7fffffffu ? 0x7fffffffu : (uint32_t)w;
 }
 
 static uint32_t fhss_ws_lfn_widening(struct fhss_ws_lfn *lfn, uint32_t t, bool bc)
@@ -2211,6 +2390,9 @@ static uint32_t fhss_ws_lfn_widening(struct fhss_ws_lfn *lfn, uint32_t t, bool b
         return 0;
     }
     max = bc && lfn->listen_cfg.bc_widening_max_us ? lfn->listen_cfg.bc_widening_max_us : lfn->listen_cfg.widening_max_us;
+    if (!max) {
+        max = fhss_ws_lfn_widening_auto(lfn, bc);
+    }
     uint64_t since64;
     if (lfn->sync_ext) {
         // On the extended clock: any time since the sync (Eco: 10 h)
@@ -2474,13 +2656,19 @@ int fhss_ws_lfn_bc_next(fhss_structure_t *fhss_structure, uint16_t *slot, uint32
 }
 
 // Move our own unicast slots by delta_us (a sync's phase correction), and
-// their interval to our clock at the current rate
-static void fhss_ws_lfn_own_follow(fhss_structure_t *fhss_structure, int32_t delta_us)
+// their interval to our clock at the current rate; once the rate is
+// measured, from the parent's view of them instead (from_ref)
+static void fhss_ws_lfn_own_follow(fhss_structure_t *fhss_structure, int32_t delta_us, bool from_ref)
 {
     struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
 
-    fhss_lfn_sched_shift(&lfn->own, delta_us);
-    fhss_ws_lfn_own_interval_set(lfn, (uint64_t)lfn->listen_cfg.listen_interval_ms * 1000u);
+    if (from_ref) {
+        fhss_ws_lfn_own_from_ref(lfn, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api));
+    } else {
+        // Before the rate is measured: the sync's phase error, scaled
+        fhss_lfn_sched_shift(&lfn->own, delta_us);
+        fhss_ws_lfn_own_interval_set(lfn, (uint64_t)lfn->listen_cfg.listen_interval_ms * 1000u);
+    }
     if (lfn->window_open) {
         lfn->resched = true;
     } else if (lfn->bc_window_open) {
@@ -2611,7 +2799,7 @@ int fhss_ws_lfn_bc_sync(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_s
     lfn->stats.last_sync_error_us = delta;
     tr_debug("LFN sync: slot %u, error %"PRIi32" us, rate %"PRIi32" ppb, residual %"PRIu32" ppb", sync->slot, delta, lfn->rate_ppb, lfn->residual_ppb);
     // Our unicast slots keep their place in the parent's time base
-    fhss_ws_lfn_own_follow(fhss_structure, same ? own_delta : 0);
+    fhss_ws_lfn_own_follow(fhss_structure, same ? own_delta : 0, same && lfn->rate_known && lfn->ref_valid);
     if (!lfn->bc_window_open) {
         uint32_t now = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
         lfn->pbc_valid = true;

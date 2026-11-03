@@ -64,6 +64,13 @@ struct fhss_ws_lfn {
     uint32_t parent_bc_dwell_us;
     bool parent_eui64_valid;        // the parent, whose FFN schedules are re-anchored for the 32-bit clock
     uint8_t parent_eui64[8];
+    bool ffn_ref_set;               // the parent's UTT reference as we last left it (a new UTT-IE differs)
+    uint32_t ffn_ref_ts;
+    uint32_t ffn_ref_ufsi;
+    uint64_t ffn_obs_ext;           // the rate's reference: a UTT-IE received from it (our time, extended)
+    uint32_t ffn_obs_ufsi;          //   and its UFSI
+    int32_t ffn_rate_ppb;           // our clock against its FFN schedules (they follow the border router's time base)
+    bool ffn_rate_known;
     bool bc_hop;                    // the broadcast-window timer only re-anchors (next listened slot beyond 2^30 µs)
     /* LFN role: the parent's LFN broadcast schedule (stage 4) */
     bool pbc_valid;                 // synced at least once
@@ -80,6 +87,10 @@ struct fhss_ws_lfn {
     uint64_t sync_ext;              // the last sync's slot start, extended
     bool lutt_after_sync;           // a LUTT-IE was sent since the last sync: the parent's view of our slots dates from it
     uint64_t lutt_ext;              // its TX time, extended
+    bool ref_valid;                 // the parent's view of our slots, as we gave it (last LUTT-IE or LTO-IE applied):
+    uint64_t ref_ext;               //   its time on our extended clock,
+    uint16_t ref_slot;              //   the slot then
+    uint64_t ref_phase_us;          //   and the time into it, in the parent's µs (as the parent reads it)
     bool rate_ref_valid;            // a reference sync for the rate measurement
     uint32_t rate_ref_us;           // its slot start on our clock
     uint16_t rate_ref_slot;

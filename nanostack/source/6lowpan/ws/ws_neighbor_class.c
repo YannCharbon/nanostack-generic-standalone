@@ -380,29 +380,43 @@ void ws_neighbor_class_rsl_out_calculate(ws_neighbor_class_entry_t *ws_neighbor,
 }
 
 
-bool ws_neighbor_class_neighbor_duplicate_packet_check(ws_neighbor_class_entry_t *ws_neighbor, uint8_t mac_dsn, uint32_t rx_timestamp)
+/* A duplicate: the sequence number of the last unicast frame accepted from
+ * this neighbour, the same MSDU, within window_s of it (5 s; an LFN's parent
+ * retries in the LFN's next window, a listen interval later). The time is
+ * the last frame's own: the UTT reference that served before is moved
+ * forward on an LFN (its parent's FFN schedule, kept within the 32-bit
+ * clock), and after a 4 h listen interval a frame whose 8-bit sequence
+ * number happened to match the previous one was dropped. The MSDU checksum
+ * tells such a frame from a retry [I]. */
+static uint16_t ws_neighbor_class_msdu_sum(const uint8_t *p, uint16_t len)
 {
-    if (ws_neighbor->last_DSN != mac_dsn) {
-        // New packet allways accepted
+    uint16_t a = 0, b = 0;
+    while (len--) {
+        a = (a + *p++) % 255;
+        b = (b + a) % 255;
+    }
+    return (uint16_t)(b << 8 | a);
+}
+
+bool ws_neighbor_class_neighbor_duplicate_packet_check(ws_neighbor_class_entry_t *ws_neighbor, uint8_t mac_dsn, uint32_t rx_timestamp, uint32_t now_s,
+                                                       const uint8_t *msdu, uint16_t msdu_length, uint32_t window_s)
+{
+    uint16_t sum = ws_neighbor_class_msdu_sum(msdu, msdu_length);
+    // The age to the µs while the 32-bit clock reaches (71 min)
+    uint32_t age_s = now_s - ws_neighbor->last_DSN_rx_s;
+    if (age_s < 2000) {
+        age_s = (rx_timestamp - ws_neighbor->last_DSN_rx) / 1000000;
+    }
+    bool dup = ws_neighbor->unicast_data_rx && ws_neighbor->last_DSN == mac_dsn && ws_neighbor->last_msdu_sum == sum &&
+               age_s < window_s;
+
+    if (!dup) {
         ws_neighbor->last_DSN = mac_dsn;
-        return true;
+        ws_neighbor->last_msdu_sum = sum;
+        ws_neighbor->last_DSN_rx = rx_timestamp;
+        ws_neighbor->last_DSN_rx_s = now_s;
     }
-
-    if (!ws_neighbor->unicast_data_rx) {
-        // No unicast info stored always accepted
-        return true;
-    }
-
-    rx_timestamp -= ws_neighbor->fhss_data.uc_timing_info.utt_rx_timestamp;
-    rx_timestamp /= 1000000; //Convert to s
-
-    //Compare only when last rx timestamp is less than 5 seconds
-    if (rx_timestamp < 5) {
-        //Packet is sent too fast filter it out
-        return false;
-    }
-
-    return true;
+    return !dup;
 }
 
 #ifdef HAVE_WS_VERSION_1_1

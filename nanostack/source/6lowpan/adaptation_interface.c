@@ -1566,7 +1566,10 @@ int8_t lowpan_adaptation_interface_tx_confirm(protocol_interface_info_entry_t *c
         }
     } else if ((confirm->status == MLME_BUSY_CHAN) && !ws_info(cur)) {
         tr_error("unexpected: !ws_info(cur)");
-    } else if ((buf->link_specific.ieee802_15_4.requestAck) && (confirm->status == MLME_TRANSACTION_EXPIRED)) {
+    } else if ((buf->link_specific.ieee802_15_4.requestAck) && (confirm->status == MLME_TRANSACTION_EXPIRED) && !tx_ptr->lfn) {
+        /* (To an LFN child, the MAC's TTL, tx_ttl_intervals listen
+           intervals, is final: queued again here, the packet went back to
+           the MAC with a new sequence number at each expiry, for ever) */
         lowpan_adaptation_tx_queue_write_to_front(cur, interface_ptr, buf);
         lowpan_active_unicast_free(interface_ptr, tx_ptr);
     } else {

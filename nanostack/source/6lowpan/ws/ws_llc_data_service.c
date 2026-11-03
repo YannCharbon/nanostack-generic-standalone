@@ -958,7 +958,15 @@ static void ws_llc_data_indication_cb(const mac_api_t *api, const mcps_data_ind_
         }
     }
 
-    if (!multicast && !data->DSN_suppressed && !ws_neighbor_class_neighbor_duplicate_packet_check(neighbor_info.ws_neighbor, data->DSN, data->timestamp)) {
+    uint32_t dup_window_s = 5;
+    if (base->ie_params.lfn_role && interface->ws_info) {
+        // retries come in our next window
+        dup_window_s += 2 * ((interface->ws_info->lfn.listen_interval_ms + 999) / 1000);
+    }
+    if (!multicast && !data->DSN_suppressed &&
+            !ws_neighbor_class_neighbor_duplicate_packet_check(neighbor_info.ws_neighbor, data->DSN, data->timestamp,
+                                                                interface->ws_info ? interface->ws_info->uptime : 0,
+                                                                ie_ext->payloadIeList, ie_ext->payloadIeListLength, dup_window_s)) {
         tr_info("Drop duplicate message");
         return;
     }
@@ -2469,7 +2477,7 @@ bool ws_llc_eapol_relay_forward_filter(struct protocol_interface_info_entry *int
         if (!base->ws_neighbor_info_request_cb(interface, joiner_eui64, &neighbor_info, false)) {
             return false;
         }
-        return ws_neighbor_class_neighbor_duplicate_packet_check(neighbor_info.ws_neighbor, mac_sequency, rx_timestamp);
+        return ws_neighbor_class_neighbor_duplicate_packet_check(neighbor_info.ws_neighbor, mac_sequency, rx_timestamp, interface->ws_info ? interface->ws_info->uptime : 0, NULL, 0, 5);
     }
 
     if (neighbor->eapol_temp_info.eapol_rx_relay_filter && neighbor->eapol_temp_info.last_rx_mac_sequency == mac_sequency) {
