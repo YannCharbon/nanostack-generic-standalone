@@ -376,6 +376,7 @@ set(NANOSTACK_RCP_SOURCES
     rcp/mac/ieee802154/mac_filter.c
     rcp/mac/ieee802154/mac_header_helper_functions.c
     rcp/mac/ieee802154/mac_indirect_data.c
+    rcp/mac/ieee802154/mac_lfn_async.c
     rcp/mac/ieee802154/mac_mcps_sap.c
     rcp/mac/ieee802154/mac_mlme.c
     rcp/mac/ieee802154/mac_mode_switch.c

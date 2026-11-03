@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "nanostack/mac/fhss_api.h"
 #include "nanostack/mac/fhss_config.h"
@@ -211,14 +212,17 @@ static fhss_callback_t mac_callbacks = {
     .rx_window = m_rx_window,
 };
 
-/* Neighbour table of the parent: one entry, the LFN */
-static fhss_ws_neighbor_timing_info_t lfn_neighbor;
-static bool lfn_neighbor_known;
+/* Neighbour table: the LFN (parent role), the parent (LFN role) */
+static fhss_ws_neighbor_timing_info_t lfn_neighbor, parent_neighbor;
+static bool lfn_neighbor_known, parent_neighbor_known;
 static fhss_ws_neighbor_timing_info_t *get_neighbor(const fhss_api_t *a, uint8_t eui64[8])
 {
     (void)a;
     if (lfn_neighbor_known && !memcmp(eui64, lfn_mac, 8)) {
         return &lfn_neighbor;
+    }
+    if (parent_neighbor_known && !memcmp(eui64, parent_mac, 8)) {
+        return &parent_neighbor;
     }
     return NULL;
 }
@@ -1181,6 +1185,197 @@ static void test_discovery(void)
     CHECK(ns_fhss_delete(api) == 0);
 }
 
+/* Follow-up of phase B1: the LFN's own slots, once the rate is measured,
+ * where the parent expects them from its view (the LFN's last LUTT-IE), to
+ * well under a ms: 4 h interval, a 10 h sync period (Eco), our clock 15.6 ppm
+ * fast against the parent's, LUTT-IEs written between syncs. The parent's
+ * view: the LUTT's slot started offset (ms, read on the parent's clock)
+ * before the frame, the slots follow every interval on the parent's clock.
+ * Before the fix (own slots moved by the scaled phase error, LUTT offset
+ * written in our µs) the windows were 0.1-0.4 s off. No widening
+ * (drift_ppm 0), so a window opens exactly rx_guard_us before its slot. */
+static void test_own_ref(void)
+{
+    const uint32_t iv_ms = 4 * 3600 * 1000, bc_ms = 600000, guard = 1000;
+    const double k = 1.0 + 15600e-9;          // our µs per parent µs
+    fhss_ws_lfn_listen_t cfg;
+    fhss_ws_lfn_stats_t st;
+    fhss_api_t *api;
+
+    reset_fakes();
+    api = create_fhss(lfn_mac, 255, 0, 0);
+    ns_fhss_ws_lfn_listen_defaults(&cfg);
+    cfg.listen_interval_ms = iv_ms;
+    cfg.rx_guard_us = guard;
+    cfg.drift_ppm = 0;
+    cfg.bc_sync_only = true;
+    CHECK(ns_fhss_ws_lfn_listen_set(api, &cfg) == 0);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    uint64_t L0 = now_us + 3000000;
+    #define PS(k_) (L0 + (uint64_t)((double)(k_) * bc_ms * 1000 * k))
+    fhss_ws_lfn_bc_sync_t sy = { .interval_ms = bc_ms, .bsi = 0x77, .sync_period = 60, .channel_function = WS_DH1CF };
+    // an LPA within broadcast slot 1
+    now_us = PS(1) + 4321000;
+    sy.slot = 1;
+    sy.offset_ms = 4321;
+    sy.rx_timestamp_us = ts();
+    CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+    uint8_t ie[16];
+    int len = write_lutt_ie(ie);
+    uint64_t lutt_t = 0;
+    uint16_t lutt_slot = 0;
+    uint32_t lutt_off = 0;
+    // uplinks at 2 h and 12 h (LUTT-IE), syncs at slots 60 (10 h) and 120 (20 h)
+    const uint64_t up[2] = { 2ull * 3600000000ull, 12ull * 3600000000ull };
+    const uint16_t syn[2] = { 60, 120 };
+    for (int i = 0; i < 2; i++) {
+        while (step(L0 + up[i])) {
+        }
+        now_us = L0 + up[i];
+        api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, ts());
+        lutt_t = now_us;
+        lutt_slot = ie[4] | ie[5] << 8;
+        lutt_off = ie[6] | ie[7] << 8 | ie[8] << 16;
+        while (step(PS(syn[i]) - 1)) {
+        }
+        now_us = PS(syn[i]) + 500;
+        sy.slot = syn[i];
+        sy.offset_ms = 0;
+        sy.rx_timestamp_us = ts();
+        CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+    }
+    CHECK(ns_fhss_ws_lfn_stats_get(api, &st) == 0);
+    CHECK(st.rate_ppb > 15400 && st.rate_ppb < 15800);
+    // The next windows (to 29 h): where the parent's view puts their slots
+    nevs = 0;
+    while (step(L0 + 29ull * 3600000000ull)) {
+    }
+    int seen = 0;
+    for (int i = 0; i < nevs; i++) {
+        if (evs[i].e != FHSS_RX_WINDOW_OPEN || evs[i].t < PS(120) + 1000000) {
+            continue;
+        }
+        double start = (double)evs[i].t + guard;
+        // the parent's view of slot n, on our clock
+        double s0 = (double)lutt_t - (double)lutt_off * 1000 * k;
+        long n = lround((start - s0) / ((double)iv_ms * 1000 * k));
+        double view = s0 + (double)n * iv_ms * 1000 * k;
+        if (fabs(start - view) > 500) {
+            fprintf(stderr, "own window %ld: %.0f us from the parent's view\n", n, start - view);
+        }
+        CHECK(fabs(start - view) <= 500);
+        CHECK(evs[i].channel == dh1cf_channel((uint16_t)(lutt_slot + n), lfn_mac));
+        seen++;
+    }
+    CHECK(seen == 2);       // 24 h and 28 h
+    #undef PS
+    CHECK(ns_fhss_delete(api) == 0);
+}
+
+/* The rate of the parent's FFN unicast schedule, measured from its UTT-IEs
+ * apart from the rate against its LFN broadcast schedule (a router's FFN
+ * hopping follows the border router's time base). The parent's schedule
+ * runs 28 ppm slow against our clock; no LFN broadcast sync (rate_ppb 0).
+ * UTT-IEs at 10 s, 30 min and 2 h; at 6 h the LFN's re-anchored reference
+ * (time, UFSI) of the parent's schedule must still match the parent's: a few
+ * UFSI units (256 per dwell, about 1 ms each). Before the fix the
+ * re-anchoring ran at rate_ppb: 4 h at 28 ppm, about 400 ms (400 units). */
+static void test_ffn_rate(void)
+{
+    const double k = 1.0 - 28000e-9;      // our µs per parent µs
+    const uint32_t dwell_ms = 255;
+    fhss_ws_lfn_listen_t cfg;
+    fhss_api_t *api;
+
+    reset_fakes();
+    api = create_fhss(lfn_mac, 255, 0, 0);
+    ns_fhss_set_neighbor_info_fp(api, get_neighbor);
+    ns_fhss_ws_lfn_listen_defaults(&cfg);
+    cfg.listen_interval_ms = 4 * 3600 * 1000;
+    CHECK(ns_fhss_ws_lfn_listen_set(api, &cfg) == 0);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    memset(&parent_neighbor, 0, sizeof(parent_neighbor));
+    parent_neighbor_known = true;
+    unicast_timing_info_t *u = &parent_neighbor.uc_timing_info;
+    u->unicast_channel_function = WS_DH1CF;
+    u->unicast_dwell_interval = dwell_ms;
+    u->unicast_number_of_channels = 35;
+    parent_neighbor.uc_channel_list.channel_count = 35;
+    for (int i = 0; i < 35; i++) {
+        parent_neighbor.uc_channel_list.channel_mask[i / 32] |= 1u << (i % 32);
+    }
+    broadcast_timing_info_t pbt = { .broadcast_channel_function = WS_DH1CF, .broadcast_dwell_interval = 255,
+                                    .broadcast_interval = 1020, .bt_rx_timestamp = ts() };
+    CHECK(ns_fhss_ws_set_parent(api, parent_mac, &pbt, true) == 0);
+    // The parent's UFSI at our time t (µs): its ms since an origin, 256 per dwell
+    const uint64_t T0 = now_us;
+    #define UFSI(t_) ((uint32_t)fmod(floor(((double)(t_) - (double)T0) / k / 1000.0 * 256.0 / dwell_ms) + 123456.0, 16777216.0))
+    const uint64_t at[3] = { 10000000ull, 1800000000ull, 7200000000ull };
+    for (int i = 0; i < 3; i++) {
+        while (step(T0 + at[i])) {
+        }
+        now_us = T0 + at[i];
+        u->utt_rx_timestamp = ts();
+        u->ufsi = UFSI(now_us);
+        // the next timer event sees it (the LFN hops every 2^29 µs at most)
+    }
+    while (step(T0 + 6ull * 3600000000ull)) {
+    }
+    // The reference as the LFN left it, against the parent's UFSI then
+    uint64_t ref_t = now_us - (uint32_t)(ts() - u->utt_rx_timestamp);
+    int32_t err = (int32_t)((u->ufsi - UFSI(ref_t)) << 8) >> 8;
+    if (err < -6 || err > 6) {
+        fprintf(stderr, "parent FFN reference %d UFSI units off at 6 h\n", err);
+    }
+    CHECK(err >= -6 && err <= 6);
+    CHECK((uint32_t)(ts() - u->utt_rx_timestamp) < 0x40000000u);     // kept recent
+    #undef UFSI
+    parent_neighbor_known = false;
+    CHECK(ns_fhss_delete(api) == 0);
+}
+
+#ifndef OLD_STACK
+/* The time to an LFN frame's next TX opportunity (lfn_tx_delay), used by
+ * the MAC to hold an asynchronous sweep: the LFN's next slot start + the TX
+ * offset, at least tx_min_prep_us away; 0 during a frame-pending burst;
+ * false for an FFN destination or without the parent role */
+static void test_tx_delay(void)
+{
+    const uint32_t interval_ms = 2000;
+    fhss_ws_lfn_parent_t pcfg;
+    fhss_api_t *api;
+    uint32_t d = 1;
+
+    reset_fakes();
+    api = create_fhss(parent_mac, 255, 1020, 255);
+    ns_fhss_set_neighbor_info_fp(api, get_neighbor);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    CHECK(api->lfn_tx_delay != NULL);
+    memset(&lfn_neighbor, 0, sizeof(lfn_neighbor));
+    lfn_neighbor_known = true;
+    lfn_neighbor.uc_timing_info.unicast_channel_function = WS_DH1CF;
+    lfn_neighbor.lfn_uc_timing_info.listen_interval_ms = interval_ms;
+    lfn_neighbor.lfn_uc_timing_info.slot_number = 7;
+    lfn_neighbor.lfn_uc_timing_info.interval_offset_ms = 500;     // slot 7 started 500 ms ago
+    lfn_neighbor.lfn_uc_timing_info.lutt_rx_timestamp = ts();
+    CHECK(!api->lfn_tx_delay(api, lfn_mac, &d));                    // no parent role yet
+    ns_fhss_ws_lfn_parent_defaults(&pcfg);
+    CHECK(ns_fhss_ws_lfn_parent_set(api, &pcfg) == 0);
+    CHECK(api->lfn_tx_delay(api, lfn_mac, &d));
+    CHECK(d == 1500000u + pcfg.tx_offset_us);                       // slot 8
+    now_us += 1500000u - pcfg.tx_min_prep_us / 2;                   // too close to slot 8: slot 9
+    CHECK(api->lfn_tx_delay(api, lfn_mac, &d));
+    CHECK(d == interval_ms * 1000u + pcfg.tx_min_prep_us / 2 + pcfg.tx_offset_us);
+    CHECK(!api->lfn_tx_delay(api, parent_mac, &d));                 // not an LFN
+    CHECK(!api->lfn_tx_delay(api, NULL, &d));                       // no LFN broadcast schedule
+    // A burst (the LFN acknowledged a frame with the pending bit): now
+    api->lfn_pending(api, lfn_mac);
+    CHECK(api->lfn_tx_delay(api, lfn_mac, &d) && d == 0);
+    lfn_neighbor_known = false;
+    CHECK(ns_fhss_delete(api) == 0);
+}
+#endif
+
 int main(void)
 {
     test_sched();
@@ -1192,6 +1387,11 @@ int main(void)
     test_bc_lfn(false);
     test_bc_lfn(true);
     test_discovery();
+    test_own_ref();
+    test_ffn_rate();
+#ifndef OLD_STACK
+    test_tx_delay();
+#endif
     printf("fhss_lfn: %u checks, %u failed\n", checks, failures);
     return failures ? 1 : 0;
 }
