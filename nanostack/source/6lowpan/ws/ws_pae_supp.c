@@ -416,8 +416,15 @@ int8_t ws_pae_supp_ffn_lgtk_hash_update(protocol_interface_info_entry_t *interfa
  * retries are those of an FFN's key update */
 static int8_t ws_pae_supp_key_request_now(pae_supp_t *pae_supp)
 {
-    if (pae_supp->auth_requested || ws_pae_lib_kmp_list_count(&pae_supp->entry.kmp_list) > 0 ||
-            pae_supp->initial_key_retry_timer) {
+    if (pae_supp->auth_requested || ws_pae_lib_kmp_list_count(&pae_supp->entry.kmp_list) > 0) {
+        return 0;
+    }
+    /* A request on its way waits for its retry timer (180-420 s), unless it
+       was not acknowledged at the MAC: then the next mismatch sends it again.
+       A request lost in a dead link during a router's join waited the whole
+       retry time (emulator: LGTK 417 s after it; on the kits up to 521 s
+       after the router's reset) [I] */
+    if (pae_supp->initial_key_retry_timer && !pae_supp->tx_failure_on_initial_key) {
         return 0;
     }
     /* A GTK update waiting on its trickle (minutes): this request replaces
@@ -1287,6 +1294,18 @@ static kmp_api_t *ws_pae_supp_kmp_incoming_ind(kmp_service_t *service, uint8_t i
         return NULL;
     }
 
+    /* An exchange the authenticator starts in answer to our key request (an
+       EAP-TLS when it no longer holds our PMK) may come after the end of
+       our bootstrap removed the EAPOL target (ws_pae_controller_bootstrap_
+       done()): the request is still on its way, so the sender, our parent,
+       is the target again. Before, the supplicant refused it and the key
+       came with a request minutes later (FG25 kits: LGTK 521 s after a
+       router's reset) [I] */
+    if (!pae_supp->entry_address_active && ws_pae_supp_authentication_ongoing(pae_supp) && addr) {
+        kmp_address_copy(&pae_supp->target_addr, addr);
+        ws_pae_supp_address_set(pae_supp, &pae_supp->target_addr);
+        tr_info("Incoming KMP for our key request: EAPOL target %s", trace_array(kmp_address_eui_64_get(addr), 8));
+    }
     // If target address is not set or authentication is not ongoing
     if (!pae_supp->entry_address_active || !ws_pae_supp_authentication_ongoing(pae_supp)) {
         tr_info("Incoming KMP rejected, auth not ongoing, type: %i ", type);
