@@ -1007,6 +1007,10 @@ static int8_t ws_bootstrap_down(protocol_interface_info_entry_t *cur)
     ws_bootstrap_candidate_table_reset(cur);
     blacklist_clear();
     cur->if_common_forwarding_out_cb = NULL;
+    // An LFN's group keys left the MAC with the controller: it authenticates
+    // again when the interface comes up (its stored keys allow a key request
+    // without EAP-TLS), as after a reset
+    cur->ws_info->lfn.keys_valid = false;
 
     return nwk_6lowpan_down(cur);
 }

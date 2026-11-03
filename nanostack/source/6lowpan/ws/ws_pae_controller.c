@@ -80,7 +80,14 @@ typedef struct {
     sec_prot_certs_t certs;                                          /**< Certificates */
     nw_key_t nw_key[GTK_NUM];                                        /**< Currently active network keys (on MAC) */
     sec_prot_gtk_keys_t lgtks;                                       /**< FAN 1.1 LGTKs (border router) */
-    nw_key_t nw_lkey[LGTK_NUM];                                      /**< LGTKs on the MAC (border router) */
+    nw_key_t nw_lkey[LGTK_NUM];                                      /**< LGTKs on the MAC (border router, FFN router) */
+    struct {
+        uint8_t lgtk[GTK_LEN];                                       /**< LGTK the counter belongs to */
+        uint32_t frame_counter;                                      /**< Highest MAC frame counter known */
+        uint32_t stored_frame_counter;                               /**< Value in storage */
+        bool set;
+    } lgtk_fc[LGTK_NUM];                                             /**< FFN router: its LGTKs' frame counters (stored) */
+    bool lgtk_fc_used : 1;                                           /**< FFN router: lgtk_fc kept and stored */
     uint16_t frame_cnt_store_timer;                                  /**< Timer to check if storing of frame counter value is needed */
     uint32_t frame_cnt_store_force_timer;                            /**< Timer to force storing of frame counter, if no other updates */
     frame_counters_t frame_counters;                                 /**< Frame counters */
@@ -132,6 +139,7 @@ static int8_t  ws_pae_controller_auth_nw_frame_counter_read(protocol_interface_i
 static pae_controller_t *ws_pae_controller_get(protocol_interface_info_entry_t *interface_ptr);
 static void ws_pae_controller_frame_counter_timer(uint16_t seconds, pae_controller_t *entry);
 static void ws_pae_controller_frame_counter_store(pae_controller_t *entry, bool use_threshold);
+static void ws_pae_controller_lgtk_fc_store(pae_controller_t *entry, bool use_threshold);
 static void ws_pae_controller_nvm_frame_counter_write(frame_cnt_nvm_tlv_t *tlv_entry);
 static int8_t ws_pae_controller_nvm_frame_counter_read(uint32_t *restart_cnt, uint64_t *stored_time, uint16_t *pan_version, frame_counters_t *counters);
 static pae_controller_t *ws_pae_controller_get_or_create(int8_t interface_id);
@@ -648,6 +656,13 @@ static void ws_pae_controller_frame_counter_store_and_nw_keys_remove(protocol_in
 {
     /* Checks if frame counters needs to be stored when keys are removed */
     ws_pae_controller_frame_counter_store(controller, use_threshold);
+    ws_pae_controller_lgtk_fc_store(controller, use_threshold);
+    for (uint8_t i = 0; controller->lgtk_fc_used && i < LGTK_NUM; i++) {
+        if (controller->lgtk_fc[i].set) {
+            tr_info("LGTK frame counter at stop: index %i value %"PRIu32" (stored %"PRIu32")", i,
+                    controller->lgtk_fc[i].frame_counter, controller->lgtk_fc[i].stored_frame_counter);
+        }
+    }
 
     tr_info("NW keys remove");
 
@@ -820,6 +835,8 @@ static void ws_pae_controller_data_init(pae_controller_t *controller)
     sec_prot_certs_ext_certificate_validation_set(&controller->certs, pae_controller_config.ext_cert_valid_enabled);
     sec_prot_keys_gtks_init(&controller->lgtks);
     memset(controller->nw_lkey, 0, sizeof(controller->nw_lkey));
+    memset(controller->lgtk_fc, 0, sizeof(controller->lgtk_fc));
+    controller->lgtk_fc_used = false;
     ws_pae_controller_keys_nw_info_init(&controller->sec_keys_nw_info, &controller->gtks);
     controller->sec_keys_nw_info.lgtks = &controller->lgtks;
 }
@@ -1779,6 +1796,7 @@ static void ws_pae_controller_frame_counter_timer(uint16_t seconds, pae_controll
     } else {
         entry->frame_cnt_store_timer = FRAME_COUNTER_STORE_INTERVAL;
         ws_pae_controller_frame_counter_store(entry, true);
+        ws_pae_controller_lgtk_fc_store(entry, true);
     }
 
     if (entry->frame_cnt_store_force_timer > seconds) {
@@ -1957,6 +1975,99 @@ int8_t ws_pae_controller_first_installed_key_index_get(protocol_interface_info_e
 /* FAN 1.1, an LFN parent (border router or FFN router): its LGTKs go to MAC
  * key slots WS_LGTK_MAC_SLOT_FIRST..+2, key indexes 5-7, as GAKs derived like
  * those of the GTKs. Returns -1 if the MAC key table is too small. */
+/* FFN router parenting LFNs: the MAC frame counters of its LGTKs are stored
+ * and restored as those of the GTKs are (ws_pae_controller_frame_counter_*),
+ * in a file of their own (LGTK_FC_FILE_NAME): a router that restarts and
+ * gets the same LGTK again starts its counter FRAME_COUNTER_INCREMENT above
+ * the stored one, so its LFN children do not drop its frames as replays and
+ * no CCM* nonce is used twice. The border router stores its LGTKs and their
+ * counters itself (ws_pae_auth.c). */
+typedef struct {
+    nvm_tlv_t tlv;
+    struct {
+        uint8_t lgtk[GTK_LEN];
+        uint32_t frame_counter;
+        uint8_t set;
+    } e[LGTK_NUM];
+} lgtk_fc_nvm_tlv_t;
+
+static void ws_pae_controller_lgtk_fc_write(pae_controller_t *controller)
+{
+    lgtk_fc_nvm_tlv_t t;
+
+    memset(&t, 0, sizeof(t));
+    ws_pae_nvm_store_generic_tlv_create(&t.tlv, PAE_NVM_LGTK_FC_TAG, sizeof(t) - sizeof(nvm_tlv_t));
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        if (controller->lgtk_fc[i].set) {
+            memcpy(t.e[i].lgtk, controller->lgtk_fc[i].lgtk, GTK_LEN);
+            t.e[i].frame_counter = controller->lgtk_fc[i].stored_frame_counter;
+            t.e[i].set = 1;
+        }
+    }
+    ws_pae_nvm_store_tlv_file_write(LGTK_FC_FILE_NAME, &t.tlv);
+}
+
+/* The first time: the stored counters, FRAME_COUNTER_INCREMENT higher, and
+ * that floor stored at once (a second reset before the next store) */
+static void ws_pae_controller_lgtk_fc_read(pae_controller_t *controller)
+{
+    lgtk_fc_nvm_tlv_t t;
+
+    if (controller->lgtk_fc_used) {
+        return;
+    }
+    controller->lgtk_fc_used = true;
+    memset(&t, 0, sizeof(t));
+    ws_pae_nvm_store_generic_tlv_create(&t.tlv, PAE_NVM_LGTK_FC_TAG, sizeof(t) - sizeof(nvm_tlv_t));
+    if (ws_pae_nvm_store_tlv_file_read(LGTK_FC_FILE_NAME, &t.tlv) < 0 || t.tlv.tag != PAE_NVM_LGTK_FC_TAG ||
+            t.tlv.len != sizeof(t) - sizeof(nvm_tlv_t)) {
+        return;
+    }
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        if (!t.e[i].set) {
+            continue;
+        }
+        uint32_t fc = t.e[i].frame_counter < UINT32_MAX - FRAME_COUNTER_INCREMENT * 2 ? t.e[i].frame_counter + FRAME_COUNTER_INCREMENT : UINT32_MAX;
+        memcpy(controller->lgtk_fc[i].lgtk, t.e[i].lgtk, GTK_LEN);
+        controller->lgtk_fc[i].frame_counter = fc;
+        controller->lgtk_fc[i].stored_frame_counter = fc;
+        controller->lgtk_fc[i].set = true;
+        tr_info("Read LGTK frame counter: index %i value %"PRIu32, i, fc);
+    }
+    ws_pae_controller_lgtk_fc_write(controller);
+}
+
+/* The MAC counters of the installed LGTKs into lgtk_fc; stored when one has
+ * advanced by FRAME_COUNTER_STORE_THRESHOLD (or always, without threshold) */
+static void ws_pae_controller_lgtk_fc_store(pae_controller_t *controller, bool use_threshold)
+{
+    bool update = false;
+
+    if (!controller->lgtk_fc_used) {
+        return;
+    }
+    for (uint8_t i = 0; i < LGTK_NUM; i++) {
+        if (!controller->nw_lkey[i].installed || !controller->lgtk_fc[i].set ||
+                memcmp(controller->lgtk_fc[i].lgtk, controller->nw_lkey[i].gtk, GTK_LEN)) {
+            continue;
+        }
+        uint32_t fc = 0;
+        controller->nw_frame_counter_read(controller->interface_ptr, &fc, WS_LGTK_MAC_SLOT_FIRST + i);
+        if (fc > controller->lgtk_fc[i].frame_counter) {
+            controller->lgtk_fc[i].frame_counter = fc;
+        }
+        fc = controller->lgtk_fc[i].frame_counter;
+        if (fc != controller->lgtk_fc[i].stored_frame_counter &&
+                (!use_threshold || fc > controller->lgtk_fc[i].stored_frame_counter + FRAME_COUNTER_STORE_THRESHOLD)) {
+            controller->lgtk_fc[i].stored_frame_counter = fc;
+            update = true;
+        }
+    }
+    if (update) {
+        ws_pae_controller_lgtk_fc_write(controller);
+    }
+}
+
 static int8_t ws_pae_controller_lgtk_mac_install(pae_controller_t *controller, protocol_interface_info_entry_t *interface_ptr, sec_prot_gtk_keys_t *lgtks)
 {
     mac_description_storage_size_t sizes;
@@ -1972,6 +2083,8 @@ static int8_t ws_pae_controller_lgtk_mac_install(pae_controller_t *controller, p
         uint8_t *lgtk = sec_prot_keys_gtk_get(lgtks, i);
         if (k->set && (!lgtk || memcmp(k->gtk, lgtk, GTK_LEN) != 0)) {
             if (k->installed) {
+                // Its counter, in case this LGTK comes back
+                ws_pae_controller_lgtk_fc_store(controller, true);
                 controller->nw_key_clear(interface_ptr, slot);
             }
             k->set = false;
@@ -1994,6 +2107,25 @@ static int8_t ws_pae_controller_lgtk_mac_install(pae_controller_t *controller, p
         k->installed = true;
         memcpy(k->gtk, lgtk, GTK_LEN);
         tr_info("LGTK set: %i, key index %i, hash: %s", i, slot + 1, trace_array(hash, GTK_HASH_LEN));
+        if (controller->lgtk_fc_used) {
+            uint32_t fc = 0;
+            controller->nw_frame_counter_read(interface_ptr, &fc, slot);
+            if (controller->lgtk_fc[i].set && !memcmp(controller->lgtk_fc[i].lgtk, lgtk, GTK_LEN)) {
+                // The same LGTK again (after a reset, or removed and back)
+                if (controller->lgtk_fc[i].frame_counter > fc) {
+                    fc = controller->lgtk_fc[i].frame_counter;
+                    controller->nw_frame_counter_set(interface_ptr, fc, slot);
+                }
+                tr_info("LGTK frame counter: index %i from %"PRIu32, i, fc);
+            } else {
+                // A new LGTK: stored, so that a reset knows it
+                memcpy(controller->lgtk_fc[i].lgtk, lgtk, GTK_LEN);
+                controller->lgtk_fc[i].frame_counter = fc;
+                controller->lgtk_fc[i].stored_frame_counter = fc;
+                controller->lgtk_fc[i].set = true;
+                ws_pae_controller_lgtk_fc_write(controller);
+            }
+        }
     }
     return 0;
 }
@@ -2027,6 +2159,7 @@ int8_t ws_pae_controller_ffn_lgtk_install(protocol_interface_info_entry_t *inter
     if (!controller) {
         return -1;
     }
+    ws_pae_controller_lgtk_fc_read(controller);
     return ws_pae_controller_lgtk_mac_install(controller, interface_ptr, &controller->lgtks);
 }
 
