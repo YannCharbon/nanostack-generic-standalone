@@ -136,6 +136,8 @@ typedef struct ws_lfn_state_s {
     struct ws_lfn_lpa_candidate *lpa[4]; /**< LPAs heard in the discovery window (GS8 stage 5) */
     uint8_t disc_slots;             /**< LND-IE discovery slots of the current sweep (0: lnd_slots) */
     uint8_t earo_tid;               /**< RFC 8505 TID of our multicast registrations (EARO) */
+    uint8_t addr_tid;               /**< RFC 8505 TID of our address registrations (EARO; RFC 9010 path sequence) */
+    bool addr_tid_valid: 1;
     bool check: 1;                  /**< The current search is a background check for a better parent */
     uint32_t check_next_s;          /**< Uptime of the next background check (0: not scheduled) */
     uint16_t parent_cost;           /**< Routing cost of the parent (PAN-IE of its LPA) */

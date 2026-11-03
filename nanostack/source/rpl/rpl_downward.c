@@ -170,7 +170,8 @@ void rpl_downward_convert_dodag_preferences_to_dao_path_control(rpl_dodag_t *dod
 
 static void rpl_downward_target_refresh(rpl_dao_target_t *target)
 {
-    target->need_seq_inc = true;
+    // A host's EARO TID is its path sequence: it changes with the host's registrations only
+    target->need_seq_inc = !target->tid_set;
     target->info.non_root.pc_assigned = 0;
     target->info.non_root.pc_assigning = 0;
     target->info.non_root.pc_to_retry = 0;
@@ -355,6 +356,34 @@ void rpl_instance_delete_published_dao_target(rpl_instance_t *instance, const ui
     if (target) {
         rpl_delete_dao_target(instance, target);
     }
+}
+
+/* A host registered with an RFC 8505 EARO (FAN 1.1 LFN): its TID is the
+ * target's path sequence (RFC 9010 §6.1), so that the root orders the DAOs
+ * of the routers that publish it by the host's registrations */
+void rpl_instance_publish_dao_target_tid(rpl_instance_t *instance, const uint8_t *prefix, uint8_t prefix_len, uint32_t valid_lifetime, bool want_descriptor, uint32_t descriptor, uint8_t tid)
+{
+    rpl_dao_target_t *target = rpl_instance_lookup_published_dao_target(instance, prefix, prefix_len);
+    if (!target) {
+        rpl_instance_publish_dao_target(instance, prefix, prefix_len, valid_lifetime, false, want_descriptor, descriptor);
+        target = rpl_instance_lookup_published_dao_target(instance, prefix, prefix_len);
+        if (!target) {
+            return;
+        }
+        target->tid_set = true;
+        target->need_seq_inc = false;
+        target->path_sequence = tid;
+        return;
+    }
+    if (!target->tid_set || target->path_sequence != tid) {
+        target->tid_set = true;
+        target->path_sequence = tid;
+        target->lifetime = valid_lifetime;
+        rpl_downward_target_refresh(target);
+        rpl_instance_dao_trigger(instance, 0);
+        return;
+    }
+    rpl_instance_publish_dao_target(instance, prefix, prefix_len, valid_lifetime, false, want_descriptor, descriptor);
 }
 
 void rpl_instance_publish_dao_target(rpl_instance_t *instance, const uint8_t *prefix, uint8_t prefix_len, uint32_t valid_lifetime, bool own, bool want_descriptor, uint32_t descriptor)
@@ -1122,7 +1151,15 @@ static bool rpl_downward_process_targets_for_transit(rpl_dodag_t *dodag, bool st
                          * the actual target owner sending the info. We don't have to worry about the
                          * network storing stale data. So we're more flexible.
                          */
-                        if (path_sequence >= 128) {
+                        if (external && src && target->root && !addr_ipv6_equal(target->info.root.originator, src) &&
+                                (seq_cmp & RPL_CMP_LESS)) {
+                            /* Another router publishes the host with an older
+                             * path sequence: with RFC 8505 hosts it is the
+                             * host's TID (RFC 9010 §6.1; RFC 8505 §5.2.1
+                             * lollipop order), so this is the router the host
+                             * left, refreshing a stale registration [I] */
+                            accept = false;
+                        } else if (path_sequence >= 128) {
                             /* Always accept anything with sequence in the lollipop counter restart region */
                             accept = true;
                             /* Also, we always refresh lifetime, even if sequence number is the same as stored */

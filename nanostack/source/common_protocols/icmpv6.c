@@ -518,8 +518,21 @@ static buffer_t *icmpv6_ns_handler(buffer_t *buf)
                 // ARO_FULL (2, Neighbor Cache Full) when it does not fit
                 aro_out.status = ws_lfn_parent_mc_register(cur, aro_out.eui64, target, aro_out.lifetime);
             }
-        } else if (addr_is_ipv6_multicast(target) || !nd_ns_aro_handler(cur, aro, sllao, target, &aro_out)) {
-            goto drop;
+        } else {
+            if (addr_is_ipv6_multicast(target)) {
+                goto drop;
+            }
+            // The host's TID: its DAO path sequence (RFC 9010)
+            nd_ns_earo_tid_set(earo_tid);
+            bool ok = nd_ns_aro_handler(cur, aro, sllao, target, &aro_out);
+            nd_ns_earo_tid_set(-1);
+            if (!ok) {
+                goto drop;
+            }
+            /* FAN 1.1: an LFN child that moved to another parent deregisters */
+            if (aro_out.present && aro_out.status == ARO_SUCCESS && aro_out.lifetime == 0) {
+                ws_lfn_parent_child_release(cur, aro_out.eui64);
+            }
         }
         buffer_t *na_earo = icmpv6_build_na_earo(cur, true, true, false, target, aro_out.present ? &aro_out : NULL, buf->src_sa.address, earo_flags, earo_tid);
         buffer_free(buf);
@@ -1597,6 +1610,20 @@ buffer_t *icmpv6_build_ns_earo_mc(protocol_interface_info_entry_t *cur, const ui
     if (!cur || !addr_is_ipv6_multicast(group)) {
         return NULL;
     }
+    return icmpv6_build_ns_earo(cur, dst_ll, group, ICMPV6_EARO_T | (ICMPV6_EARO_P_MULTICAST << 4), lifetime, tid);
+}
+
+/* FAN 1.1 LFN: an RFC 8505 registration of Target with the parent: NS from
+ * our link-local address to the parent's, an EARO with the flags given (T and
+ * R for an address: the TID is valid, and the parent makes the address
+ * reachable, RFC 8505 §4.1), the TID and the EUI-64 as ROVR, and an SLLAO
+ * [S: RFC 8505; M: Silicon Labs' LFN, black-box item 19]. */
+buffer_t *icmpv6_build_ns_earo(protocol_interface_info_entry_t *cur, const uint8_t dst_ll[16], const uint8_t target[16], uint8_t flags, uint16_t lifetime, uint8_t tid)
+{
+    const uint8_t *group = target;
+    if (!cur) {
+        return NULL;
+    }
     buffer_t *buf = buffer_get(127);
     if (!buf) {
         return buf;
@@ -1613,7 +1640,7 @@ buffer_t *icmpv6_build_ns_earo_mc(protocol_interface_info_entry_t *cur, const ui
     *ptr++ = 2;
     *ptr++ = ARO_SUCCESS;
     *ptr++ = 0;                                         // Opaque
-    *ptr++ = ICMPV6_EARO_T | (ICMPV6_EARO_P_MULTICAST << 4);
+    *ptr++ = flags;
     *ptr++ = tid;
     ptr = common_write_16_bit(lifetime, ptr);
     memcpy(ptr, cur->mac, 8);                           // ROVR: the EUI-64

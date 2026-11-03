@@ -1091,6 +1091,8 @@ void ws_management_lfn_settings_defaults(ws_lfn_settings_t *s)
     s->parent_check_sweeps = WS_LFN_PARENT_CHECK_SWEEPS_DEFAULT;
     s->parent_switch_cost = WS_LFN_PARENT_SWITCH_COST_DEFAULT;
     s->parent_release_s = WS_LFN_PARENT_RELEASE_S_DEFAULT;
+    s->mc_reg_per_child = WS_LFN_MC_REG_PER_CHILD_DEFAULT;
+    s->mc_reg_max = WS_LFN_MC_REG_MAX_DEFAULT;
     s->lpcs_retry_intervals = WS_LFN_LPCS_RETRY_INTERVALS_DEFAULT;
     s->maintain_parent_time = WS_LFN_MAINTAIN_PARENT_TIME_DEFAULT;
     s->lgtk_max_mismatch_s = WS_LFN_LGTK_MAX_MISMATCH_S_DEFAULT;
@@ -1098,6 +1100,7 @@ void ws_management_lfn_settings_defaults(ws_lfn_settings_t *s)
     s->drift_ppm = FHSS_LFN_DRIFT_PPM_DEFAULT;
     s->widening_max_us = FHSS_LFN_WIDENING_MAX_US_DEFAULT;
     s->bc_widening_max_us = 0;
+    s->drift_floor_ppb = FHSS_LFN_DRIFT_FLOOR_PPB_DEFAULT;
     s->bc_rx_window_us = FHSS_LFN_BC_RX_WINDOW_US_DEFAULT;
     s->bc_sync_only = false;
     s->bc_interval_ms = WS_LFN_BC_INTERVAL_MS_DEFAULT;

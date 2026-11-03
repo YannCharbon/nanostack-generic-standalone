@@ -55,6 +55,11 @@
 #define TRACE_GROUP "wllc"
 
 #define LLC_MESSAGE_QUEUE_LIST_SIZE_MAX   16 //Do not config over 30 never
+/* FAN 1.1 LFN parent: data frames to LFN children wait in the MAC for the
+ * LFN's windows (minutes). They do not count against the queue above (which
+ * would stop all the parent's TX with 16 waiting) and have a bound of their
+ * own; the 8-bit MAC handles leave room for both */
+#define LLC_LFN_MESSAGE_MAX               128
 #define MPX_USER_SIZE 2
 
 typedef struct {
@@ -98,6 +103,7 @@ typedef struct {
     uint8_t         msg_handle;         /**< LLC genetaed unique MAC handle */
     uint8_t         mpx_user_handle;    /**< This MPX user defined handle */
     bool            lto_sent;           /**< FAN 1.1: an LTO-IE to an LFN, applied to its schedule on the ACK */
+    bool            to_lfn;             /**< FAN 1.1: data to an LFN child, counted in llc_lfn_message_count */
     ws_lto_ie_t     lto;
     ns_ie_iovec_t   ie_vector_list[3];  /**< IE vectors: 1 for Header's, 1 for Payload and for MPX payload */
     mcps_data_req_ie_list_t ie_ext;
@@ -150,6 +156,7 @@ typedef struct {
 
     uint8_t                         mac_handle_base;                /**< Mac handle id base this will be updated by 1 after use */
     uint8_t                         llc_message_list_size;          /**< llc_message_list list size */
+    uint8_t                         llc_lfn_message_count;          /**< of which to LFN children (not in llc_message_list_size) */
     uint16_t                        edfe_rx_wait_timer;
     mpx_class_t                     mpx_data_base;                  /**< MPX data be including USER API Class and user call backs */
 
@@ -246,7 +253,7 @@ static llc_message_t *llc_message_discover_by_mac_handle(uint8_t handle, llc_mes
 static llc_message_t *llc_message_discover_by_mpx_id(uint8_t handle, llc_message_list_t *list)
 {
     ns_list_foreach(llc_message_t, message, list) {
-        if ((message->messsage_type == WS_FT_DATA || message->messsage_type == WS_FT_EAPOL) && message->mpx_id == handle) {
+        if ((message->messsage_type == WS_FT_DATA || message->messsage_type == WS_FT_EAPOL) && !message->to_lfn && message->mpx_id == handle) {
             return message;
         }
     }
@@ -278,6 +285,11 @@ static llc_message_t *llc_message_discover_mpx_user_id(uint8_t handle, uint16_t 
 static void llc_message_free(llc_message_t *message, llc_data_base_t *llc_base)
 {
     ns_list_remove(&llc_base->llc_message_list, message);
+    if (message->to_lfn) {
+        llc_base->llc_lfn_message_count--;
+        free(message);
+        return;
+    }
     free(message);
     llc_base->llc_message_list_size--;
     random_early_detection_aq_calc(llc_base->interface_ptr->llc_random_early_detection, llc_base->llc_message_list_size);
@@ -323,6 +335,7 @@ static llc_message_t *llc_message_allocate(uint16_t ie_buffer_size, llc_data_bas
     message->ack_requested = false;
     message->eapol_temporary = false;
     message->lto_sent = false;
+    message->to_lfn = false;
     message->priority = MAC_DATA_NORMAL_PRIORITY;
     return message;
 }
@@ -1309,7 +1322,19 @@ static void ws_llc_lowpan_mpx_data_request(llc_data_base_t *base, mpx_user_t *us
     over_head_size += 5; //MPX FuLL frame 3 bytes + IE header 2 bytes
 
     //Allocate Message
-    llc_message_t *message = llc_message_allocate(over_head_size, base);
+    bool to_lfn = ie_header_mask.lbt_ie;    // a unicast to an LFN child (above)
+    llc_message_t *message = NULL;
+    if (!to_lfn) {
+        message = llc_message_allocate(over_head_size, base);
+    } else if (base->llc_lfn_message_count < LLC_LFN_MESSAGE_MAX) {
+        message = malloc(sizeof(llc_message_t) + over_head_size);
+        if (message) {
+            message->ack_requested = false;
+            message->eapol_temporary = false;
+            message->lto_sent = false;
+            message->priority = MAC_DATA_NORMAL_PRIORITY;
+        }
+    }
     if (!message) {
         mcps_data_conf_t data_conf;
         memset(&data_conf, 0, sizeof(mcps_data_conf_t));
@@ -1320,10 +1345,24 @@ static void ws_llc_lowpan_mpx_data_request(llc_data_base_t *base, mpx_user_t *us
     }
 
     //Add To active list
-    llc_message_id_allocate(message, base, true);
-    base->llc_message_list_size++;
+    message->to_lfn = to_lfn;
+    if (to_lfn) {
+        /* The MPX transaction ID (5 bits on the air, a 4-bit counter here)
+           is unique among the other messages only: up to LLC_LFN_MESSAGE_MAX
+           wait for LFN windows. It matters for MPX fragment reassembly at
+           the receiver, which never mixes two of our frames to one LFN */
+        llc_message_id_allocate(message, base, false);
+        message->mpx_id = base->mpx_data_base.mpx_id++;
+    } else {
+        llc_message_id_allocate(message, base, true);
+    }
     message->priority = priority;
-    random_early_detection_aq_calc(base->interface_ptr->llc_random_early_detection, base->llc_message_list_size);
+    if (to_lfn) {
+        base->llc_lfn_message_count++;
+    } else {
+        base->llc_message_list_size++;
+        random_early_detection_aq_calc(base->interface_ptr->llc_random_early_detection, base->llc_message_list_size);
+    }
     ns_list_add_to_end(&base->llc_message_list, message);
 
     mcps_data_req_t data_req;

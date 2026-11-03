@@ -113,6 +113,7 @@ typedef struct mac_pre_build_frame {
     bool ExtendedFrameExchange: 1;
     bool WaitResponse: 1;
     bool lfn_dst: 1;                // FAN 1.1: the destination is an LFN (fhss_api->lfn_tx_check)
+    bool lfn_more_upper: 1;         // FAN 1.1: the upper layer has more for this LFN (PendingBit of the request)
     bool lfn_tx_time_set: 1;        // released for an LFN window: send at lfn_tx_time
     bool lfn_expired: 1;            // waited past its TTL for an LFN window
     bool lfn_bc: 1;                 // FAN 1.1 parent: for the next LFN broadcast slot (LfnBroadcast)

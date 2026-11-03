@@ -321,6 +321,7 @@ void mcps_sap_data_req_handler_ext(protocol_interface_rf_mac_setup_s *rf_mac_set
     buffer->SrcPANId = mac_mlme_get_panid(rf_mac_setup);
     buffer->fcf_dsn.SrcAddrMode = data_req->SrcAddrMode;
     buffer->fcf_dsn.framePending = data_req->PendingBit;
+    buffer->lfn_more_upper = data_req->PendingBit;
 
     if (buffer->fcf_dsn.SrcAddrMode == MAC_ADDR_MODE_NONE && !rf_mac_setup->mac_extension_enabled) {
         if (buffer->fcf_dsn.DstAddrMode == MAC_ADDR_MODE_NONE) {
@@ -887,6 +888,21 @@ static fhss_lfn_tx_e mcps_lfn_tx_check(protocol_interface_rf_mac_setup_s *rf_mac
     if (ret == FHSS_LFN_TX_NOW) {
         buffer->lfn_tx_time_set = true;
         buffer->lfn_tx_time = tx_time;
+        if (!buffer->lfn_bc) {
+            /* FAN 1.1: another frame queued for this LFN, here or in the
+               upper layer: the frame-pending bit (IEEE 802.15.4) tells it to
+               keep its window open, and the next frame follows the ACK
+               (docs/LFN_MAC.md §4) */
+            bool more = false;
+            for (mac_pre_build_frame_t *b = rf_mac_setup->pd_data_request_queue_to_go; b && !more; b = b->next) {
+                more = b != buffer && !b->asynch_request && !b->lfn_bc && b->fcf_dsn.ackRequested &&
+                       b->fcf_dsn.DstAddrMode == MAC_ADDR_MODE_64_BIT && !memcmp(b->DstAddr, buffer->DstAddr, 8);
+            }
+            buffer->fcf_dsn.framePending = more || buffer->lfn_more_upper;
+            if (buffer->fcf_dsn.framePending) {
+                tr_debug("LFN frame with pending bit (%s)", more ? "MAC queue" : "upper layer");
+            }
+        }
     } else if (ret == FHSS_LFN_TX_EXPIRED) {
         buffer->lfn_expired = true;
     }

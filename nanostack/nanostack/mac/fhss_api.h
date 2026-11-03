@@ -209,6 +209,15 @@ typedef fhss_lfn_tx_e fhss_lfn_tx_check(const fhss_api_t *api, const uint8_t *de
 typedef fhss_lfn_tx_e fhss_lfn_tx_at(const fhss_api_t *api, const uint8_t *destination_address, uint32_t requested_us, int32_t slot, uint32_t *tx_time);
 
 /**
+ * @brief A frame with the frame-pending bit (IEEE 802.15.4 frame control)
+ * was exchanged with an LFN (FAN 1.1). LFN role (peer NULL): it received
+ * one in a window, which stays open for the next frame. Parent role: the
+ * LFN acknowledged one, so its next queued frame may follow at once
+ * (fhss_lfn_tx_check gives NOW). Optional.
+ */
+typedef void fhss_lfn_pending(const fhss_api_t *api, const uint8_t *peer);
+
+/**
  * \brief Struct fhss_api defines interface between software MAC and FHSS.
  * Application creates fhss_api_s object by calling FHSS creator function.
  * Then object is passed to software MAC which then initialises it's own callback functions.
@@ -228,6 +237,7 @@ struct fhss_api {
     fhss_init_callbacks *init_callbacks;                /**< Initialize MAC functions. */
     fhss_lfn_tx_check *lfn_tx_check;                    /**< LFN destination check (FAN 1.1 parent). Optional, may be NULL. */
     fhss_lfn_tx_at *lfn_tx_at;                          /**< Frame to an LFN at a requested time (FAN 1.1 parent). Optional, may be NULL. */
+    fhss_lfn_pending *lfn_pending;                      /**< Frame-pending bit exchanged with an LFN (FAN 1.1). Optional, may be NULL. */
 };
 
 /**

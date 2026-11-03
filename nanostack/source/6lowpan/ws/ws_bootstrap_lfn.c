@@ -130,6 +130,7 @@ static void ws_lfn_listen_apply(protocol_interface_info_entry_t *cur, uint32_t i
     l.drift_ppm = c->drift_ppm;
     l.widening_max_us = c->widening_max_us;
     l.bc_widening_max_us = c->bc_widening_max_us;
+    l.drift_floor_ppb = c->drift_floor_ppb;
     l.bc_rx_window_us = c->bc_rx_window_us;
     l.bc_sync_only = c->bc_sync_only;
     cur->ws_info->lfn.listen_interval_ms = interval_ms;
@@ -892,6 +893,21 @@ static bool ws_lfn_group_registrable(const uint8_t *group)
            !addr_ipv6_equal(group, ADDR_REALM_LOCAL_ALL_ROUTERS) && !addr_ipv6_equal(group, ADDR_SITE_LOCAL_ALL_ROUTERS);
 }
 
+/* Our address registrations' TID (RFC 8505 §5.2.1): from 240, a lollipop
+ * counter incremented with each registration */
+static void ws_lfn_addr_tid_next(protocol_interface_info_entry_t *cur)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+    if (!lfn->addr_tid_valid) {
+        lfn->addr_tid_valid = true;
+        lfn->addr_tid = 240;
+    } else if (lfn->addr_tid >= 128) {
+        lfn->addr_tid = lfn->addr_tid == 255 ? 0 : lfn->addr_tid + 1;
+    } else {
+        lfn->addr_tid = (lfn->addr_tid + 1) & 127;
+    }
+}
+
 /* A release NS reached the old parent (MAC ACK) */
 static void ws_lfn_release_ack_cb(buffer_t *buf, uint8_t status)
 {
@@ -943,7 +959,6 @@ static void ws_lfn_old_parent_release(protocol_interface_info_entry_t *cur)
 {
     ws_lfn_state_t *lfn = &cur->ws_info->lfn;
     uint8_t ll[16];
-    aro_t aro;
 
     lfn->release_at_s = 0;
     if (lfn->release_tries && lfn->release_acked >= lfn->release_sent) {
@@ -966,17 +981,9 @@ static void ws_lfn_old_parent_release(protocol_interface_info_entry_t *cur)
         if (addr_is_ipv6_link_local(addr->address)) {
             continue;
         }
-        memset(&aro, 0, sizeof(aro));
-        aro.status = ARO_SUCCESS;
-        aro.present = true;
-        memcpy(aro.eui64, cur->mac, 8);
-        aro.lifetime = 0;
-        buffer_t *buf = icmpv6_build_ns(cur, ll, addr->address, true, false, &aro);
+        // EARO lifetime 0 with our current TID (RFC 8505 §5.1)
+        buffer_t *buf = icmpv6_build_ns_earo(cur, ll, addr->address, ICMPV6_EARO_T | ICMPV6_EARO_R, 0, lfn->addr_tid);
         if (buf) {
-            // icmpv6_build_ns() routes before it sets the interface, so a
-            // link-local destination would take our default route (the new
-            // parent): on-link to the old parent
-            ipv6_buffer_route_to(buf, ll, cur);
             buf->ack_receive_cb = ws_lfn_release_ack_cb;
             protocol_push(buf);
             lfn->release_sent++;
@@ -997,25 +1004,23 @@ static void ws_lfn_old_parent_release(protocol_interface_info_entry_t *cur)
 void ws_bootstrap_lfn_address_register(protocol_interface_info_entry_t *cur)
 {
     uint8_t ll_parent[16];
-    aro_t aro;
     bool sent = false;
 
     if (!wisun_mode_host(cur) || !cur->ws_info->lfn.parent_known) {
         return;
     }
     ws_common_create_ll_address(ll_parent, cur->ws_info->lfn.parent_eui64);
+    // A new TID for each registration (RFC 8505 §5.2): the root orders the
+    // routers that publish our address by it (RFC 9010)
+    ws_lfn_addr_tid_next(cur);
     ns_list_foreach(if_address_entry_t, addr, &cur->ip_addresses) {
         if (addr_is_ipv6_link_local(addr->address)) {
             continue;
         }
-        memset(&aro, 0, sizeof(aro));
-        aro.status = ARO_SUCCESS;
-        aro.present = true;
-        memcpy(aro.eui64, cur->mac, 8);
-        aro.lifetime = cur->ws_info->lfn_cfg.registration_lifetime_min;
-        buffer_t *buf = icmpv6_build_ns(cur, ll_parent, addr->address, true, false, &aro);
+        uint16_t lifetime = cur->ws_info->lfn_cfg.registration_lifetime_min;
+        buffer_t *buf = icmpv6_build_ns_earo(cur, ll_parent, addr->address, ICMPV6_EARO_T | ICMPV6_EARO_R, lifetime, cur->ws_info->lfn.addr_tid);
         if (buf) {
-            tr_info("LFN: ARO %s to %s, %u min", trace_ipv6(addr->address), trace_ipv6(ll_parent), aro.lifetime);
+            tr_info("LFN: ARO %s to %s, %u min (EARO, TID %u)", trace_ipv6(addr->address), trace_ipv6(ll_parent), lifetime, cur->ws_info->lfn.addr_tid);
             protocol_push(buf);
             sent = true;
         }

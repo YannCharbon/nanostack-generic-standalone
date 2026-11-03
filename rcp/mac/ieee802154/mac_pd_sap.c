@@ -721,6 +721,11 @@ static int8_t mac_data_interface_tx_done_by_ack_cb(protocol_interface_rf_mac_set
     } else {
         rf_ptr->mac_tx_result = MAC_TX_DONE;
     }
+    // FAN 1.1 LFN parent: the LFN acknowledged a frame with the pending bit
+    if (rf_ptr->active_pd_data_request && rf_ptr->active_pd_data_request->lfn_dst &&
+            rf_ptr->active_pd_data_request->fcf_dsn.framePending && rf_ptr->fhss_api && rf_ptr->fhss_api->lfn_pending) {
+        rf_ptr->fhss_api->lfn_pending(rf_ptr->fhss_api, rf_ptr->active_pd_data_request->DstAddr);
+    }
     rf_ptr->macRfRadioTxActive = false;
     rf_ptr->macTxProcessActive = false;
     if (mcps_sap_pd_ack(rf_ptr, buf) != 0) {
@@ -1128,6 +1133,12 @@ int8_t mac_pd_sap_data_cb(void *identifier, arm_phy_sap_msg_t *message)
         if (!mac_pd_sap_rx_filter(pd_data_ind->data_ptr, &fcf_read, rf_ptr->mac_frame_filters, rf_ptr->mac64, rf_ptr->mac_short_address, rf_ptr->pan_id)) {
             pd_data_ind->data_len = 0; // Do not update RX drop in that case
             goto ERROR_HANDLER;
+        }
+        // FAN 1.1 LFN: a frame for us with the pending bit: the window stays
+        // open for the next one (the FHSS ignores it in other roles)
+        if (fcf_read.framePending && fcf_read.frametype == FC_DATA_FRAME && fcf_read.ackRequested &&
+                rf_ptr->mac_rx_windows && rf_ptr->fhss_api && rf_ptr->fhss_api->lfn_pending) {
+            rf_ptr->fhss_api->lfn_pending(rf_ptr->fhss_api, NULL);
         }
         //Ack can be send even buffer allocate fail
         if (mac_pd_sap_generate_ack(rf_ptr, &fcf_read, pd_data_ind)) {

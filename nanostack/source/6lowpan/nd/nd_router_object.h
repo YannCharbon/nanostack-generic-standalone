@@ -69,6 +69,8 @@ void nd_ra_build_by_abro(const uint8_t *abro, const uint8_t *dest, protocol_inte
 void nd_trigger_ras_from_rs(const uint8_t *unicast_adr, protocol_interface_info_entry_t *cur_interface);
 /** 6LoWPAN specific ICMP message Handler */
 bool nd_ns_aro_handler(protocol_interface_info_entry_t *cur_interface, const uint8_t *aro_opt, const uint8_t *slaa_opt, const uint8_t *target, struct aro *aro_out);
+/** The TID of the RFC 8505 EARO handled next (-1: an ARO): a host's DAO path sequence (RFC 9010) */
+void nd_ns_earo_tid_set(int16_t tid);
 void nd_remove_registration(protocol_interface_info_entry_t *cur_interface, addrtype_t ll_type, const uint8_t *ll_address);
 
 nd_router_t *nd_get_pana_address(void);

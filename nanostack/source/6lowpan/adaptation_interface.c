@@ -76,6 +76,7 @@ typedef struct {
     bool first_fragment: 1;
     bool indirect_data: 1;
     bool indirect_data_cached: 1; /*!< Data cached for delayed transmission as mac request is already active */
+    bool lfn: 1; /*!< FAN 1.1: to an LFN child (waits in the MAC for its windows) */
     buffer_t *buf;
     uint8_t *fragmenter_buf;
     ns_list_link_t      link; /*!< List link entry */
@@ -97,6 +98,7 @@ typedef struct {
     uint16_t directTxQueue_size;
     uint16_t directTxQueue_level;
     uint16_t activeTxList_size;
+    uint16_t lfn_active;      /*!< FAN 1.1: unicast packets to LFN children in the MAC (not in activeTxList_size) */
     uint16_t indirect_big_packet_threshold;
     uint16_t max_indirect_big_packets_total;
     uint16_t max_indirect_small_packets_per_child;
@@ -109,6 +111,16 @@ typedef struct {
 } fragmenter_interface_t;
 
 #define LOWPAN_ACTIVE_UNICAST_ONGOING_MAX 10
+/* FAN 1.1 LFN parent: a packet to an LFN child waits in the MAC for the
+ * LFN's next window (up to a listen interval: minutes). Such packets do not
+ * count against LOWPAN_ACTIVE_UNICAST_ONGOING_MAX, which would otherwise stop
+ * all unicast TX of a parent with ten waiting LFN children; up to
+ * LOWPAN_LFN_ACTIVE_PER_DST go to the MAC at once for one LFN (the MAC sends
+ * them in one window with the frame-pending bit), LOWPAN_LFN_ACTIVE_MAX in
+ * all. A fragmented one has its own fragment buffer, so it does not block
+ * other transmissions while it waits (docs/LFN_STACK.md §4) */
+#define LOWPAN_LFN_ACTIVE_PER_DST 4
+#define LOWPAN_LFN_ACTIVE_MAX 64
 #define LOWPAN_HIGH_PRIORITY_STATE_LENGTH 50 //5 seconds 100us ticks
 
 #define LOWPAN_TX_BUFFER_AGE_LIMIT_LOW_PRIORITY     30 // Remove low priority packets older than limit (seconds)
@@ -134,7 +146,7 @@ static bool lowpan_adaptation_request_longer_than_mtu(protocol_interface_info_en
 static void lowpan_active_buffer_state_reset(fragmenter_tx_entry_t *tx_buffer);
 static uint8_t lowpan_data_request_unique_handle_get(fragmenter_interface_t *interface_ptr);
 static fragmenter_tx_entry_t *lowpan_indirect_entry_allocate(uint16_t fragment_buffer_size);
-static fragmenter_tx_entry_t *lowpan_adaptation_tx_process_init(fragmenter_interface_t *interface_ptr, bool indirect, bool fragmented, bool is_unicast);
+static fragmenter_tx_entry_t *lowpan_adaptation_tx_process_init(fragmenter_interface_t *interface_ptr, bool indirect, bool fragmented, bool is_unicast, bool lfn);
 static void lowpan_adaptation_data_request_primitiv_set(const buffer_t *buf, mcps_data_req_t *dataReq, protocol_interface_info_entry_t *cur);
 static void lowpan_data_request_to_mac(protocol_interface_info_entry_t *cur, buffer_t *buf, fragmenter_tx_entry_t *tx_ptr, fragmenter_interface_t *interface_ptr);
 
@@ -351,7 +363,7 @@ static void lowpan_list_free(fragmenter_tx_list_t *list, bool fragment_buf_free)
 {
     while (!ns_list_is_empty(list)) {
         fragmenter_tx_entry_t *entry = ns_list_get_first(list);
-        if (!fragment_buf_free) {
+        if (!fragment_buf_free && !entry->lfn) {
             //We can't free this pointer becuase it must be until interface is deleted
             entry->fragmenter_buf = NULL;
         }
@@ -405,6 +417,7 @@ int8_t lowpan_adaptation_interface_free(int8_t interface_id)
     //free active tx process
     lowpan_list_free(&interface_ptr->activeUnicastList, false);
     interface_ptr->activeTxList_size = 0;
+    interface_ptr->lfn_active = 0;
     lowpan_active_buffer_state_reset(&interface_ptr->active_broadcast_tx_buf);
 
     //Free Indirect entry
@@ -432,6 +445,7 @@ int8_t lowpan_adaptation_interface_reset(int8_t interface_id)
     //free active tx process
     lowpan_list_free(&interface_ptr->activeUnicastList, false);
     interface_ptr->activeTxList_size  = 0;
+    interface_ptr->lfn_active = 0;
     lowpan_active_buffer_state_reset(&interface_ptr->active_broadcast_tx_buf);
     //Clean fragmented message flag
     interface_ptr->fragmenter_active = false;
@@ -519,6 +533,7 @@ static fragmenter_tx_entry_t *lowpan_indirect_entry_allocate(uint16_t fragment_b
     indirec_entry->fragmented_data = false;
     indirec_entry->first_fragment = true;
     indirec_entry->indirect_data_cached = false;
+    indirec_entry->lfn = false;
 
     return indirec_entry;
 }
@@ -611,10 +626,23 @@ static bool lowpan_message_fragmentation_message_write(const fragmenter_tx_entry
     return frag_entry->offset * 8 + frag_entry->frag_len < frag_entry->size;
 }
 
-static fragmenter_tx_entry_t *lowpan_adaptation_tx_process_init(fragmenter_interface_t *interface_ptr, bool indirect, bool fragmented, bool is_unicast)
+static fragmenter_tx_entry_t *lowpan_adaptation_tx_process_init(fragmenter_interface_t *interface_ptr, bool indirect, bool fragmented, bool is_unicast, bool lfn)
 {
     // For broadcast, the active TX queue is only 1 entry. For unicast, using a list.
     fragmenter_tx_entry_t *tx_entry;
+    if (lfn) {
+        // FAN 1.1: to an LFN child, with a fragment buffer of its own
+        tx_entry = lowpan_indirect_entry_allocate(fragmented ? interface_ptr->mtu_size : 0);
+        if (!tx_entry) {
+            return NULL;
+        }
+        ns_list_add_to_end(&interface_ptr->activeUnicastList, tx_entry);
+        interface_ptr->lfn_active++;
+        lowpan_active_buffer_state_reset(tx_entry);
+        tx_entry->indirect_data = false;
+        tx_entry->lfn = true;
+        return tx_entry;
+    }
     if (!indirect) {
         if (is_unicast) {
             tx_entry = lowpan_indirect_entry_allocate(0);
@@ -939,6 +967,20 @@ static void lowpan_data_request_to_mac(protocol_interface_info_entry_t *cur, buf
         dataReq.msduLength = buffer_data_length(buf);
         dataReq.msdu = buffer_data_pointer(buf);
     }
+    /* FAN 1.1 LFN parent: more for this LFN (the next fragment, or another
+       packet waiting for this one to finish): the frame-pending bit, so that
+       the LFN keeps its window open and the next frame follows at once
+       (docs/LFN_MAC.md §4) instead of a listen interval later */
+    if (dataReq.TxAckReq && dataReq.DstAddrMode == MAC_ADDR_MODE_64_BIT && ws_lfn_parent_dst_is_lfn(cur, dataReq.DstAddr)) {
+        bool more = tx_ptr->fragmented_data && tx_ptr->offset * 8 + tx_ptr->frag_len < tx_ptr->size;
+        ns_list_foreach(buffer_t, q, &interface_ptr->directTxQueue) {
+            if (more) {
+                break;
+            }
+            more = q->dst_sa.addr_type == ADDR_802_15_4_LONG && !memcmp(&q->dst_sa.address[2], dataReq.DstAddr, 8);
+        }
+        dataReq.PendingBit |= more;
+    }
     if (buf->link_specific.ieee802_15_4.rf_channel_switch) {
         //Switch channel if selected channel is different
         if (cur->mac_parameters.mac_channel != buf->link_specific.ieee802_15_4.selected_channel) {
@@ -992,12 +1034,52 @@ static bool lowpan_adaptation_is_destination_tx_active(fragmenter_tx_list_t *lis
     return false;
 }
 
+static bool lowpan_buffer_to_lfn(fragmenter_interface_t *interface_ptr, const buffer_t *buf)
+{
+    protocol_interface_info_entry_t *cur;
+
+    if (!buf->link_specific.ieee802_15_4.requestAck || buf->link_specific.ieee802_15_4.indirectTxProcess ||
+            buf->dst_sa.addr_type != ADDR_802_15_4_LONG) {
+        return false;
+    }
+    cur = protocol_stack_interface_info_get_by_id(interface_ptr->interface_id);
+    return cur && cur->ws_info && ws_lfn_parent_dst_is_lfn(cur, buf->dst_sa.address + 2);
+}
+
+static unsigned lowpan_adaptation_destination_tx_count(fragmenter_tx_list_t *list, const buffer_t *buf)
+{
+    unsigned n = 0;
+    ns_list_foreach(fragmenter_tx_entry_t, entry, list) {
+        if (entry->buf && !memcmp(&entry->buf->dst_sa.address[2], &buf->dst_sa.address[2], 8)) {
+            n++;
+        }
+    }
+    return n;
+}
+
+static void lowpan_active_unicast_free(fragmenter_interface_t *interface_ptr, fragmenter_tx_entry_t *tx_ptr)
+{
+    ns_list_remove(&interface_ptr->activeUnicastList, tx_ptr);
+    if (tx_ptr->lfn) {
+        free(tx_ptr->fragmenter_buf);
+        interface_ptr->lfn_active--;
+    } else {
+        interface_ptr->activeTxList_size--;
+    }
+    free(tx_ptr);
+}
+
 static bool lowpan_buffer_tx_allowed(fragmenter_interface_t *interface_ptr, buffer_t *buf)
 {
     bool is_unicast = buf->link_specific.ieee802_15_4.requestAck;
     // Indirect allowed always
     if (buf->link_specific.ieee802_15_4.indirectTxProcess) {
         return true;
+    }
+    if (lowpan_buffer_to_lfn(interface_ptr, buf)) {
+        return interface_ptr->lfn_active < LOWPAN_LFN_ACTIVE_MAX &&
+               lowpan_adaptation_destination_tx_count(&interface_ptr->activeUnicastList, buf) < LOWPAN_LFN_ACTIVE_PER_DST &&
+               !(interface_ptr->last_rx_high_priority && buf->priority < QOS_EXPEDITE_FORWARD);
     }
     // Do not accept any other TX when fragmented TX active. Prevents other frames to be sent in between two fragments.
     if (interface_ptr->fragmenter_active) {
@@ -1068,9 +1150,7 @@ static void lowpan_adaptation_high_priority_state_enable(protocol_interface_info
 
                 if (lowpan_adaptation_purge_from_mac(cur, interface_ptr, entry->buf->seq)) {
                     buffer_t *buf = entry->buf;
-                    ns_list_remove(&interface_ptr->activeUnicastList, entry);
-                    interface_ptr->activeTxList_size--;
-                    free(entry);
+                    lowpan_active_unicast_free(interface_ptr, entry);
                     //Add message to tx queue front based on priority. Now same priority at buf is prioritised at order
                     lowpan_adaptation_tx_queue_write_to_front(cur, interface_ptr, buf);
                 }
@@ -1252,7 +1332,8 @@ int8_t lowpan_adaptation_interface_tx(protocol_interface_info_entry_t *cur, buff
         buf->options.ll_security_bypass_tx = false;
     }
 
-    fragmenter_tx_entry_t *tx_ptr = lowpan_adaptation_tx_process_init(interface_ptr, indirect, fragmented_needed, is_unicast);
+    bool to_lfn = lowpan_buffer_to_lfn(interface_ptr, buf);
+    fragmenter_tx_entry_t *tx_ptr = lowpan_adaptation_tx_process_init(interface_ptr, indirect, fragmented_needed, is_unicast, to_lfn);
     if (!tx_ptr) {
         goto tx_error_handler;
     }
@@ -1263,7 +1344,9 @@ int8_t lowpan_adaptation_interface_tx(protocol_interface_info_entry_t *cur, buff
         //Fragmentation init
         if (lowpan_message_fragmentation_init(buf, tx_ptr, cur, interface_ptr)) {
             tr_error("Fragment init fail");
-            if (indirect) {
+            if (to_lfn) {
+                lowpan_active_unicast_free(interface_ptr, tx_ptr);
+            } else if (indirect) {
                 free(tx_ptr->fragmenter_buf);
                 free(tx_ptr);
             } else {
@@ -1273,7 +1356,7 @@ int8_t lowpan_adaptation_interface_tx(protocol_interface_info_entry_t *cur, buff
         }
 
         tx_ptr->tag = interface_ptr->local_frag_tag++;
-        if (!indirect) {
+        if (!indirect && !to_lfn) {
             interface_ptr->fragmenter_active = true;
         }
     }
@@ -1394,9 +1477,7 @@ static void lowpan_adaptation_data_process_clean(fragmenter_interface_t *interfa
         //release from list and free entry
         lowpan_list_entry_free(&interface_ptr->indirect_tx_queue, tx_ptr);
     } else if (buf->link_specific.ieee802_15_4.requestAck) {
-        ns_list_remove(&interface_ptr->activeUnicastList, tx_ptr);
-        free(tx_ptr);
-        interface_ptr->activeTxList_size--;
+        lowpan_active_unicast_free(interface_ptr, tx_ptr);
     }
 
     socket_tx_buffer_event_and_free(buf, socket_event);
@@ -1467,7 +1548,7 @@ int8_t lowpan_adaptation_interface_tx_confirm(protocol_interface_info_entry_t *c
         //Check is there more packets
         if (lowpan_adaptation_tx_process_ready(tx_ptr)) {
             bool triggered_from_indirect_cache = false;
-            if (tx_ptr->fragmented_data && active_direct_confirm) {
+            if (tx_ptr->fragmented_data && active_direct_confirm && !tx_ptr->lfn) {
                 interface_ptr->fragmenter_active = false;
             }
 
@@ -1487,9 +1568,7 @@ int8_t lowpan_adaptation_interface_tx_confirm(protocol_interface_info_entry_t *c
         tr_error("unexpected: !ws_info(cur)");
     } else if ((buf->link_specific.ieee802_15_4.requestAck) && (confirm->status == MLME_TRANSACTION_EXPIRED)) {
         lowpan_adaptation_tx_queue_write_to_front(cur, interface_ptr, buf);
-        ns_list_remove(&interface_ptr->activeUnicastList, tx_ptr);
-        free(tx_ptr);
-        interface_ptr->activeTxList_size--;
+        lowpan_active_unicast_free(interface_ptr, tx_ptr);
     } else {
 
 
@@ -1512,7 +1591,7 @@ int8_t lowpan_adaptation_interface_tx_confirm(protocol_interface_info_entry_t *c
         if (tx_ptr->fragmented_data) {
             tx_ptr->buf->buf_ptr = tx_ptr->buf->buf_end;
             tx_ptr->buf->buf_ptr -= tx_ptr->orig_size;
-            if (active_direct_confirm) {
+            if (active_direct_confirm && !tx_ptr->lfn) {
                 interface_ptr->fragmenter_active = false;
             }
         }

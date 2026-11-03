@@ -37,6 +37,7 @@ void rpl_downward_process_dao_parent_changes(struct rpl_instance *instance);
 void rpl_downward_neighbour_gone(struct rpl_instance *instance, struct rpl_neighbour *neighbour);
 
 void rpl_instance_publish_dao_target(struct rpl_instance *instance, const uint8_t *prefix, uint8_t prefix_len, uint32_t valid_lifetime, bool own, bool want_descriptor, uint32_t descriptor);
+void rpl_instance_publish_dao_target_tid(struct rpl_instance *instance, const uint8_t *prefix, uint8_t prefix_len, uint32_t valid_lifetime, bool want_descriptor, uint32_t descriptor, uint8_t tid);
 void rpl_delete_dao_target(struct rpl_instance *instance, struct rpl_dao_target *target);
 void rpl_instance_delete_published_dao_target(struct rpl_instance *instance, const uint8_t *prefix, uint8_t prefix_len);
 struct rpl_dao_target *rpl_instance_match_dao_target(struct rpl_instance *instance, const uint8_t *prefix, uint8_t prefix_len);

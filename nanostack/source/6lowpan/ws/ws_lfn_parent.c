@@ -35,6 +35,7 @@
 
 #include <string.h>
 #include "nsconfig.h"
+#include <stdlib.h>
 #include <stdint.h>
 #include "ns_rand.h"
 #include "mbed-client-libservice/ns_trace.h"
@@ -578,71 +579,87 @@ void ws_lfn_parent_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t 
 }
 
 /* RFC 9685 multicast registrations of LFN children (EARO with P = 1,
- * icmpv6.c): the group, the LFN, and the end of the registration */
-/* Sized for about 4 groups for each of 8 LFN children; an application with
- * more children or groups raises it at build time. A registration that does
- * not fit is refused with EARO status 2 (Neighbor Cache Full, RFC 8505 §4.1)
- * so that the LFN knows; entries of LFNs that are no longer our neighbours
- * are free. */
-#ifndef WS_LFN_MC_REG_MAX
-#define WS_LFN_MC_REG_MAX 32
-#endif
-static struct {
+ * icmpv6.c): the group, the LFN, and the end of the registration. Allocated
+ * per registration, so the storage follows the number of children; bounded
+ * by mc_reg_per_child for one LFN and mc_reg_max for this parent
+ * (ws_lfn_settings_t). A registration beyond either is refused with EARO
+ * status 2 (Neighbor Cache Full, RFC 8505 §4.1), which the LFN reports;
+ * an LFN's registrations go with its neighbour entry. */
+typedef struct ws_lfn_mc_reg {
     uint8_t eui64[8];
     uint8_t group[16];
     uint32_t until_s;
-} ws_lfn_mc_reg[WS_LFN_MC_REG_MAX];
+    ns_list_link_t link;
+} ws_lfn_mc_reg_t;
+static NS_LIST_DEFINE(ws_lfn_mc_regs, ws_lfn_mc_reg_t, link);
+static uint16_t ws_lfn_mc_reg_count;
+
+static void ws_lfn_mc_reg_free(ws_lfn_mc_reg_t *r)
+{
+    ns_list_remove(&ws_lfn_mc_regs, r);
+    ws_lfn_mc_reg_count--;
+    free(r);
+}
 
 uint8_t ws_lfn_parent_mc_register(protocol_interface_info_entry_t *cur, const uint8_t eui64[8], const uint8_t group[16], uint16_t lifetime_min)
 {
+    const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
     uint32_t now = cur->ws_info->uptime;
-    int slot = -1;
+    ws_lfn_mc_reg_t *found = NULL;
+    unsigned of_lfn = 0;
 
-    for (int i = 0; i < WS_LFN_MC_REG_MAX; i++) {
-        bool live = (int32_t)(ws_lfn_mc_reg[i].until_s - now) > 0;
-        if (live && !memcmp(ws_lfn_mc_reg[i].eui64, eui64, 8) && !memcmp(ws_lfn_mc_reg[i].group, group, 16)) {
-            slot = i;
-            break;
+    ns_list_foreach_safe(ws_lfn_mc_reg_t, r, &ws_lfn_mc_regs) {
+        bool same_lfn = !memcmp(r->eui64, eui64, 8);
+        // Expired, or of an LFN that left us: free
+        if ((int32_t)(r->until_s - now) <= 0 ||
+                (!same_lfn && !mac_neighbor_table_address_discover(mac_neighbor_info(cur), r->eui64, MAC_ADDR_MODE_64_BIT))) {
+            ws_lfn_mc_reg_free(r);
+            continue;
         }
-        if (live && memcmp(ws_lfn_mc_reg[i].eui64, eui64, 8) &&
-                !mac_neighbor_table_address_discover(mac_neighbor_info(cur), ws_lfn_mc_reg[i].eui64, MAC_ADDR_MODE_64_BIT)) {
-            // The LFN left us (its neighbour entry was removed): free
-            ws_lfn_mc_reg[i].until_s = now;
-            live = false;
-        }
-        if (!live && slot < 0) {
-            slot = i;
+        if (same_lfn) {
+            of_lfn++;
+            if (!memcmp(r->group, group, 16)) {
+                found = r;
+            }
         }
     }
-    if (slot < 0) {
-        if (!lifetime_min) {
-            return ARO_SUCCESS;     // nothing to remove
+    if (!lifetime_min) {
+        if (found) {
+            ws_lfn_mc_reg_free(found);
         }
-        tr_warn("LFN multicast registrations full: %s from %s refused (status 2)", trace_ipv6(group), trace_array(eui64, 8));
-        return ARO_FULL;
+        return ARO_SUCCESS;
     }
-    memcpy(ws_lfn_mc_reg[slot].eui64, eui64, 8);
-    memcpy(ws_lfn_mc_reg[slot].group, group, 16);
-    ws_lfn_mc_reg[slot].until_s = lifetime_min ? now + (uint32_t)lifetime_min * 60 : now;
+    if (!found) {
+        if ((c->mc_reg_per_child && of_lfn >= c->mc_reg_per_child) || (c->mc_reg_max && ws_lfn_mc_reg_count >= c->mc_reg_max) ||
+                !(found = malloc(sizeof(*found)))) {
+            tr_warn("LFN multicast registrations full: %s from %s refused (status 2)", trace_ipv6(group), trace_array(eui64, 8));
+            return ARO_FULL;
+        }
+        memcpy(found->eui64, eui64, 8);
+        memcpy(found->group, group, 16);
+        ns_list_add_to_end(&ws_lfn_mc_regs, found);
+        ws_lfn_mc_reg_count++;
+    }
+    found->until_s = now + (uint32_t)lifetime_min * 60;
     return ARO_SUCCESS;
 }
 
-/* A child removed (neighbour table): its registrations are freed */
+/* A child removed (neighbour table), or released: its registrations end */
 void ws_lfn_parent_child_removed(protocol_interface_info_entry_t *cur, const uint8_t eui64[8])
 {
-    for (int i = 0; i < WS_LFN_MC_REG_MAX; i++) {
-        if (!memcmp(ws_lfn_mc_reg[i].eui64, eui64, 8)) {
-            ws_lfn_mc_reg[i].until_s = cur->ws_info->uptime;
-            memset(ws_lfn_mc_reg[i].eui64, 0, 8);
+    (void)cur;
+    ns_list_foreach_safe(ws_lfn_mc_reg_t, r, &ws_lfn_mc_regs) {
+        if (!memcmp(r->eui64, eui64, 8)) {
+            ws_lfn_mc_reg_free(r);
         }
     }
 }
 
 static bool ws_lfn_mc_registered(protocol_interface_info_entry_t *cur, const uint8_t eui64[8], const uint8_t *group)
 {
-    for (int i = 0; i < WS_LFN_MC_REG_MAX; i++) {
-        if ((int32_t)(ws_lfn_mc_reg[i].until_s - cur->ws_info->uptime) > 0 &&
-                !memcmp(ws_lfn_mc_reg[i].eui64, eui64, 8) && !memcmp(ws_lfn_mc_reg[i].group, group, 16)) {
+    ns_list_foreach(ws_lfn_mc_reg_t, r, &ws_lfn_mc_regs) {
+        if ((int32_t)(r->until_s - cur->ws_info->uptime) > 0 &&
+                !memcmp(r->eui64, eui64, 8) && !memcmp(r->group, group, 16)) {
             return true;
         }
     }
@@ -815,11 +832,7 @@ void ws_lfn_parent_child_release(protocol_interface_info_entry_t *cur, const uin
             return;
         }
     }
-    for (int i = 0; i < WS_LFN_MC_REG_MAX; i++) {
-        if (!memcmp(ws_lfn_mc_reg[i].eui64, eui64, 8)) {
-            ws_lfn_mc_reg[i].until_s = cur->ws_info->uptime;
-        }
-    }
+    ws_lfn_parent_child_removed(cur, eui64);
     /* Kept WS_LFN_RELEASED_LIFETIME_S, and at least two of its listen
        intervals, to deliver the frames still queued for it (the LFN listens
        in the same slots, which its last frames gave us) */

@@ -84,6 +84,11 @@ struct fhss_ws_lfn {
     uint32_t rate_ref_us;           // its slot start on our clock
     uint16_t rate_ref_slot;
     int32_t rate_ppb;               // our clock against the parent's
+    bool rate_known;                // rate_ppb was measured (against the current schedule)
+    uint16_t last_sync_slot;        // slot of the last sync (residual drift span)
+    uint32_t own_frac_step;         // own interval's fraction of a µs, in 1e-9 µs (the rate correction is not a whole number of µs)
+    uint32_t own_frac_acc;          // its accumulation since the last whole µs
+    uint32_t residual_ppb;          // drift left after the rate correction, measured at the syncs (decays by half per sync)
     bool bc_window_open;
     uint16_t bc_slot;               // current (open) or next broadcast slot
     uint32_t bc_slot_start;
@@ -110,6 +115,11 @@ struct fhss_ws_lfn {
     bool tx_dst_valid;              // the last frame released for an LFN window: destination, TX time
     uint8_t tx_dst[8];
     uint32_t tx_dst_time;
+    bool burst_valid;               // parent: the LFN burst_dst acknowledged a frame with the pending bit
+    uint8_t burst_dst[8];
+    uint32_t burst_until;
+    bool pending_valid;             // LFN: a frame with the pending bit: the window stays open until pending_until
+    uint32_t pending_until;
     bool lto_cache_valid;           // the LTO offset written in the last frame with an LTO-IE
     uint8_t lto_eui64[8];
     uint32_t lto_phase_ms;          // as the upper layer gave it

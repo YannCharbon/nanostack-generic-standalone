@@ -991,6 +991,7 @@ typedef struct ws_lfn_settings {
     uint32_t drift_ppm;                 /**< Windows widened by this many µs per second since the last sync with the parent, each side (GS8 stage 4) */
     uint32_t widening_max_us;           /**< Upper bound of that widening, each side (µs) */
     uint32_t bc_widening_max_us;        /**< Upper bound of the widening of the broadcast windows, each side (µs); 0: widening_max_us */
+    uint32_t drift_floor_ppb;           /**< Once the clock rate against the parent is measured: widening of twice the drift left, at least this (ppb); 0: drift_ppm always */
     uint32_t bc_rx_window_us;           /**< Receive window in the parent's LFN broadcast slots (µs) */
     bool bc_sync_only;                  /**< Listen only in the LFN broadcast slots that carry sync frames (every sync period) */
     uint16_t restart_min_ms;            /**< A failed uplink (no ACK after the MAC retries) restarts after min x 2^n .. 2 x min x 2^n ms, n = 0, 1, ... */
@@ -1003,6 +1004,9 @@ typedef struct ws_lfn_settings {
     uint8_t parent_check_sweeps;        /**< LPAS sweeps of a background check, back to back before its window (1..4; 0: 1) */
     uint16_t parent_switch_cost;        /**< A parent of the same RSL class is better only if its routing cost is lower by at least this */
     uint16_t parent_release_s;          /**< The old parent is released (ARO lifetime 0) this long after the registration with the new one (s) */
+    /* Parent: RFC 9685 multicast registrations of its LFN children */
+    uint8_t mc_reg_per_child;           /**< At most this many groups per LFN child (0: no limit) */
+    uint16_t mc_reg_max;                /**< At most this many registrations in all (0: no limit but memory) */
     /* Parent (border router) */
     uint32_t bc_interval_ms;            /**< LFN broadcast interval (LBS-IE); the sync period is a multiple of it (ms) */
     uint8_t bc_sync_period;             /**< LFN broadcast sync period, in LFN broadcast intervals */
@@ -1049,6 +1053,11 @@ typedef struct ws_lfn_settings {
  * router (RPL DAO delay 1-7 s) and the old parent has delivered what it held */
 /* DHCPv6 address lifetime of a border router that parents LFNs: infinite */
 #define WS_LFN_DHCP_ADDRESS_LIFETIME             0xffffffffUL
+/* RFC 9685 registrations kept by a parent: 16 groups per LFN child (an LFN
+ * registers ff03::1 and the groups its application joins), 2048 in all
+ * (about 80 kB of heap) */
+#define WS_LFN_MC_REG_PER_CHILD_DEFAULT          16
+#define WS_LFN_MC_REG_MAX_DEFAULT                2048
 #define WS_LFN_PARENT_CHECK_S_DEFAULT            21600
 #define WS_LFN_PARENT_CHECK_WEAK_S_DEFAULT       3600
 #define WS_LFN_PARENT_CHECK_LND_SLOTS_DEFAULT    10

@@ -147,6 +147,7 @@ struct rpl_dao_target {
     bool own: 1;                        /* Is this our own address, or are we publishing for an attached host? (non-root) */
     bool descriptor_present: 1;         /* Target descriptor specified */
     bool need_seq_inc: 1;
+    bool tid_set: 1;                    /* Path sequence = the host's EARO TID (RFC 9010), not our counter */
     bool connected: 1;                  /* We know this target has a path to the root */
     bool trig_confirmation_state: 1;         /* Enable confirmation to parent's */
     bool active_confirmation_state: 1;

@@ -144,8 +144,10 @@ void ns_fhss_ws_lfn_listen_defaults(fhss_ws_lfn_listen_t *cfg)
     cfg->drift_ppm = FHSS_LFN_DRIFT_PPM_DEFAULT;
     cfg->widening_max_us = FHSS_LFN_WIDENING_MAX_US_DEFAULT;
     cfg->bc_widening_max_us = 0;
+    cfg->drift_floor_ppb = FHSS_LFN_DRIFT_FLOOR_PPB_DEFAULT;
     cfg->bc_rx_window_us = FHSS_LFN_BC_RX_WINDOW_US_DEFAULT;
     cfg->bc_sync_only = false;
+    cfg->pending_hold_us = FHSS_LFN_PENDING_HOLD_US_DEFAULT;
 }
 
 void ns_fhss_ws_lfn_parent_defaults(fhss_ws_lfn_parent_t *cfg)
@@ -154,6 +156,7 @@ void ns_fhss_ws_lfn_parent_defaults(fhss_ws_lfn_parent_t *cfg)
     cfg->tx_lead_us = FHSS_LFN_TX_LEAD_US_DEFAULT;
     cfg->tx_min_prep_us = FHSS_LFN_TX_MIN_PREP_US_DEFAULT;
     cfg->tx_ttl_intervals = FHSS_LFN_TX_TTL_INTERVALS_DEFAULT;
+    cfg->burst_us = FHSS_LFN_BURST_US_DEFAULT;
 }
 
 int ns_fhss_ws_lfn_listen_set(const fhss_api_t *fhss_api, const fhss_ws_lfn_listen_t *cfg)

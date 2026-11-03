@@ -878,7 +878,8 @@ static void test_bc_lfn(bool sync_only)
     reset_fakes();
     api = create_fhss(lfn_mac, 255, 0, 0);
     ns_fhss_ws_lfn_listen_defaults(&cfg);
-    CHECK(cfg.drift_ppm == FHSS_LFN_DRIFT_PPM_DEFAULT && cfg.bc_rx_window_us == FHSS_LFN_BC_RX_WINDOW_US_DEFAULT);
+    CHECK(cfg.drift_ppm == FHSS_LFN_DRIFT_PPM_DEFAULT && cfg.bc_rx_window_us == FHSS_LFN_BC_RX_WINDOW_US_DEFAULT &&
+          cfg.drift_floor_ppb == FHSS_LFN_DRIFT_FLOOR_PPB_DEFAULT);
     cfg.listen_interval_ms = uc_ms;
     cfg.rx_guard_us = guard;
     cfg.bc_rx_window_us = bc_window;
@@ -918,7 +919,8 @@ static void test_bc_lfn(bool sync_only)
     CHECK(err[1] > 1400 && err[1] < 1600);           // 5 slots at 30 ppm, no rate yet
     CHECK(err[2] > -50 && err[2] < 50);
     // From now on: broadcast windows at the predicted slot starts, widened
-    // by drift_ppm per second since the last sync, on the parent's channel
+    // by drift_floor_ppb per second since the last sync (the rate is known),
+    // on the parent's channel
     uint64_t t_sync = now_us - 500;      // the slot start, our clock
     nevs = 0;
     while (step(PSTART(26))) {
@@ -934,7 +936,9 @@ static void test_bc_lfn(bool sync_only)
         int k = (int)((e->t - L0 + 5000000) / (bc_ms * 1000ull));
         int64_t d = (int64_t)PSTART(k) + 500 - (int64_t)e->t;   // slot start (as received) - open time
         if (d > 0 && d < 10000) {
-            uint64_t widening = (PSTART(k) - t_sync) * cfg.drift_ppm / 1000000;
+            // the rate is measured: the floor (the drift left after the
+            // correction, under 1 ppm here, doubled, is below it)
+            uint64_t widening = (PSTART(k) - t_sync) * cfg.drift_floor_ppb / 1000000000;
             CHECK(d > (int64_t)(guard + widening) - 100 && d < (int64_t)(guard + widening) + 100);
             CHECK(e->channel == bc_channel((uint16_t)k, 0x77));
             CHECK(!sync_only || k % 5 == 0);

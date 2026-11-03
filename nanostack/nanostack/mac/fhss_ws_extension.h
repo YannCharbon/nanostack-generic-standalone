@@ -183,6 +183,7 @@ extern int ns_fhss_ws_set_tx_allowance_level(const fhss_api_t *fhss_api, const f
 #define FHSS_LFN_FIRST_SLOT_DELAY_US_DEFAULT    10000u  /**< Start of slot 0 after the schedule starts */
 #define FHSS_LFN_UPLINK_GUARD_US_DEFAULT        5000u   /**< Time kept clear of the parent's broadcast dwell after an uplink frame starts (frame, ACK) beyond the frame's airtime */
 #define FHSS_LFN_DRIFT_PPM_DEFAULT              50u     /**< Window widening per side, µs per second since the last sync with the parent (GS8 stage 4) */
+#define FHSS_LFN_DRIFT_FLOOR_PPB_DEFAULT        5000u   /**< Widening per side once the rate is measured: at least 5 ppm (32 kHz crystal over a few °C of temperature change) */
 #define FHSS_LFN_BC_RX_WINDOW_US_DEFAULT        5000u   /**< Receive window length in the parent's LFN broadcast slots */
 #define FHSS_LFN_WIDENING_MAX_US_DEFAULT        100000u /**< Upper bound of the widening, per side */
 
@@ -204,8 +205,10 @@ typedef struct fhss_ws_lfn_listen {
     uint32_t drift_ppm;             /**< Both kinds of window open earlier and close later by drift_ppm µs per second since the last sync with the parent (each side); 0: no widening */
     uint32_t widening_max_us;       /**< Upper bound of that widening, per side (µs) */
     uint32_t bc_widening_max_us;    /**< Upper bound of the widening of the broadcast windows, per side (µs); 0: widening_max_us. A sync period longer than widening_max_us / drift_ppm (Eco profile: 10 h) needs it */
+    uint32_t drift_floor_ppb;       /**< Once the LFN has measured its clock rate against the parent's, the windows widen by twice the drift left after the correction (measured at each sync), and at least this (ppb, per side), instead of drift_ppm; 0: always drift_ppm (docs/LFN_MAC.md §2.3) */
     uint32_t bc_rx_window_us;       /**< Window length in the parent's LFN broadcast slots (µs), opened rx_guard_us before the slot start */
     bool bc_sync_only;              /**< Listen only in the broadcast slots that carry the parent's sync frames (slot number a multiple of the sync period) */
+    uint32_t pending_hold_us;       /**< A frame received in a window with the frame-pending bit set keeps the window open this long more (µs): the parent sends its next frame then (docs/LFN_MAC.md §4); 0: no */
 } fhss_ws_lfn_listen_t;
 
 /** Defaults of fhss_ws_lfn_parent_t (ns_fhss_ws_lfn_parent_defaults()). */
@@ -213,6 +216,8 @@ typedef struct fhss_ws_lfn_listen {
 #define FHSS_LFN_TX_LEAD_US_DEFAULT             20000u  /**< Frame released to the MAC this long before its TX time */
 #define FHSS_LFN_TX_MIN_PREP_US_DEFAULT         2000u   /**< Shortest time from release to TX; a closer window is skipped */
 #define FHSS_LFN_TX_TTL_INTERVALS_DEFAULT       20u     /**< Frame dropped after waiting this many listen intervals */
+#define FHSS_LFN_BURST_US_DEFAULT               10000u  /**< Next frame of a burst at most this long after the ACK of the previous one */
+#define FHSS_LFN_PENDING_HOLD_US_DEFAULT        30000u  /**< LFN: window kept open this long after a frame with the frame-pending bit (covers its ACK, the parent's turnaround and CCA) */
 
 /**
  * @brief LFN parent role: unicast frames to a neighbour with an LFN unicast
@@ -227,6 +232,7 @@ typedef struct fhss_ws_lfn_parent {
     uint32_t tx_lead_us;            /**< Release this long before the TX time (µs), <= 60000 (PHY TX time limit) */
     uint32_t tx_min_prep_us;        /**< Shortest release-to-TX time (µs), <= tx_lead_us */
     uint16_t tx_ttl_intervals;      /**< Frame TTL in the LFN's listen intervals, >= 1 */
+    uint32_t burst_us;              /**< After a frame with the frame-pending bit that the LFN acknowledged, its next queued frame goes at once if this long has not passed (µs); 0: one frame per window */
 } fhss_ws_lfn_parent_t;
 
 /**
@@ -266,6 +272,7 @@ typedef struct fhss_ws_lfn_bc_sync {
 typedef struct fhss_ws_lfn_stats {
     uint32_t windows_opened;        /**< LFN: receive windows opened */
     uint32_t windows_skipped;       /**< LFN: slots skipped because the FHSS timer fired late */
+    uint32_t windows_extended;      /**< LFN: windows kept open for a frame announced by the frame-pending bit */
     uint32_t closes_deferred;       /**< LFN: window closes the MAC deferred (receiving, sending an ACK) */
     uint32_t tx_released;           /**< Parent: frames released for an LFN window */
     uint32_t tx_held;               /**< Parent: checks that held a frame for a later window */

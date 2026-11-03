@@ -796,6 +796,14 @@ drop:
     return buffer_free(buf);
 }
 
+/* The TID of the RFC 8505 EARO being handled (icmpv6.c), -1 for an RFC 6775
+ * ARO: a host's TID becomes its DAO path sequence (RFC 9010) */
+static int16_t nd_earo_tid = -1;
+void nd_ns_earo_tid_set(int16_t tid)
+{
+    nd_earo_tid = tid;
+}
+
 static void nd_update_registration(protocol_interface_info_entry_t *cur_interface, ipv6_neighbour_t *neigh, const aro_t *aro)
 {
     /* We are about to send an ARO response - update our Neighbour Cache accordingly */
@@ -815,7 +823,11 @@ static void nd_update_registration(protocol_interface_info_entry_t *cur_interfac
         if (entry) {
 
             if (!entry->ffd_device) {
-                rpl_control_publish_host_address(protocol_6lowpan_rpl_domain, neigh->ip_address, neigh->lifetime);
+                if (nd_earo_tid >= 0) {
+                    rpl_control_publish_host_address_tid(protocol_6lowpan_rpl_domain, neigh->ip_address, neigh->lifetime, (uint8_t)nd_earo_tid);
+                } else {
+                    rpl_control_publish_host_address(protocol_6lowpan_rpl_domain, neigh->ip_address, neigh->lifetime);
+                }
             }
         }
         protocol_6lowpan_neighbor_address_state_synch(cur_interface, aro->eui64, neigh->ip_address + 8);

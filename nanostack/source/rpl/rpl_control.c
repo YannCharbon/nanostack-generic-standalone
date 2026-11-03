@@ -165,6 +165,17 @@ void rpl_control_publish_host_address(rpl_domain_t *domain, const uint8_t addr[1
     }
 }
 
+void rpl_control_publish_host_address_tid(rpl_domain_t *domain, const uint8_t addr[16], uint32_t lifetime, uint8_t tid)
+{
+    ns_list_foreach(rpl_instance_t, instance, &domain->instances) {
+        if (!rpl_instance_am_root(instance)) {
+            uint32_t descriptor = 0;
+            bool want_descriptor = rpl_policy_target_descriptor_for_host_address(domain, addr, &descriptor);
+            rpl_instance_publish_dao_target_tid(instance, addr, 128, lifetime, want_descriptor, descriptor, tid);
+        }
+    }
+}
+
 /* Is unpublish a word? */
 void rpl_control_unpublish_address(rpl_domain_t *domain, const uint8_t addr[16])
 {
