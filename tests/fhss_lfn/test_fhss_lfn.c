@@ -1272,6 +1272,116 @@ static void test_own_ref(void)
     CHECK(ns_fhss_delete(api) == 0);
 }
 
+/* Our slots against the parent's view of them after a long silence, with
+ * the timing of real syncs (the kits, 2026-11-04 overnight run): 5 s listen
+ * interval, the parent's LFN broadcast every 10 s with a sync frame every
+ * 5th slot, the parent's clock 31 ppm off ours, each sync's time off by up
+ * to +-40 µs (the parent's TX timing on a 32 kHz tick, our RX timestamp).
+ * One uplink (LUTT-IE), then 6 h of silence: in every window the parent's
+ * TX at the start of our slot (as its view puts it) must fall inside the
+ * window with 1 ms to spare. Before the fix the rate was measured again
+ * from a new reference every 2^30 µs, over spans down to one sync period
+ * (50 s): 80 µs of jitter there is 1.6 ppm, 6 ms after 4000 s of silence,
+ * and the kit LFN missed 20 downlink windows in a row (dl16). */
+static uint32_t jit_state = 12345;
+static int32_t jitter_us(int32_t max)
+{
+    jit_state = jit_state * 1103515245u + 12345u;
+    return (int32_t)((jit_state >> 8) % (uint32_t)(2 * max + 1)) - max;
+}
+
+static void test_own_ref_jitter(void)
+{
+    const uint32_t iv_ms = 5000, bc_ms = 10000, guard = 1000;
+    const double k = 1.0 - 31124e-9;          // our µs per parent µs
+    const uint64_t silence_us = 6ull * 3600000000ull;
+    fhss_ws_lfn_listen_t cfg;
+    fhss_api_t *api;
+
+    reset_fakes();
+    api = create_fhss(lfn_mac, 255, 0, 0);
+    ns_fhss_ws_lfn_listen_defaults(&cfg);
+    cfg.listen_interval_ms = iv_ms;
+    cfg.rx_guard_us = guard;
+    CHECK(ns_fhss_ws_lfn_listen_set(api, &cfg) == 0);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    uint64_t L0 = now_us + 3000000;
+    #define PS(k_) (L0 + (uint64_t)((double)(k_) * bc_ms * 1000 * k))
+    fhss_ws_lfn_bc_sync_t sy = { .interval_ms = bc_ms, .bsi = 0x77, .sync_period = 5, .channel_function = WS_DH1CF };
+    // an LPA within broadcast slot 1
+    now_us = PS(1) + 4321000;
+    sy.slot = 1;
+    sy.offset_ms = 4321;
+    sy.rx_timestamp_us = ts();
+    CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+    uint8_t ie[16];
+    int len = write_lutt_ie(ie);
+    uint64_t lutt_t = 0;
+    uint32_t lutt_off = 0;
+    uint64_t t_lutt = L0 + 600000000ull;      // the uplink, 10 min in
+    uint64_t t_end = t_lutt + silence_us;
+    bool lutt_done = false;
+    nevs = 0;
+    int seen = 0, bad = 0;
+    double worst = 1e9;
+    for (uint32_t s = 5; PS(s) < t_end; s += 5) {
+        uint64_t t_sync = PS(s) + 500 + jitter_us(40);
+        if (!lutt_done && t_lutt < t_sync) {
+            while (step(t_lutt)) {
+            }
+            now_us = t_lutt;
+            api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, ts());
+            lutt_t = now_us;
+            lutt_off = ie[6] | ie[7] << 8 | ie[8] << 16;
+            lutt_done = true;
+            nevs = 0;
+        }
+        while (step(t_sync)) {
+        }
+        now_us = t_sync;
+        sy.slot = (uint16_t)s;
+        sy.offset_ms = 0;
+        sy.rx_timestamp_us = ts();
+        CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+        if (!lutt_done) {
+            continue;
+        }
+        // the unicast windows since the previous sync: open, close pairs
+        for (int i = 0; i + 1 < nevs; i++) {
+            if (evs[i].e != FHSS_RX_WINDOW_OPEN || evs[i + 1].e != FHSS_RX_WINDOW_CLOSE) {
+                continue;
+            }
+            double open = (double)evs[i].t, close = (double)evs[i + 1].t;
+            double r = fmod(open - (double)L0, bc_ms * 1000 * k);
+            if (r < 0.5e6 || r > bc_ms * 1000 * k - 0.5e6) {
+                continue;       // a broadcast window (near a parent slot start)
+            }
+            double s0 = (double)lutt_t - (double)lutt_off * 1000 * k;
+            long n = lround((open + guard - s0) / ((double)iv_ms * 1000 * k));
+            double view = s0 + (double)n * iv_ms * 1000 * k;
+            double margin = fmin(view - open, close - (view + 1000));
+            if (margin < worst) {
+                worst = margin;
+            }
+            if (margin < 0 && bad++ < 5) {
+                fprintf(stderr, "own window %ld, %.0f s after the uplink: parent TX %.0f us from the window's opening, window %.0f us\n",
+                        n, (view - (double)lutt_t) / 1e6, view - open, close - open);
+            }
+            seen++;
+        }
+        nevs = 0;
+    }
+    if (bad || worst < 700 || getenv("FHSS_LFN_VERBOSE")) {
+        fprintf(stderr, "own_ref_jitter: %d of %d windows missed, worst margin %.0f us\n", bad, seen, worst);
+    }
+    CHECK(seen > 4000);
+    CHECK(bad == 0);
+    // our slot start within 300 µs of the parent's view (the guard is 1 ms)
+    CHECK(worst >= 700);
+    #undef PS
+    CHECK(ns_fhss_delete(api) == 0);
+}
+
 /* The rate of the parent's FFN unicast schedule, measured from its UTT-IEs
  * apart from the rate against its LFN broadcast schedule (a router's FFN
  * hopping follows the border router's time base). The parent's schedule
@@ -1388,6 +1498,7 @@ int main(void)
     test_bc_lfn(true);
     test_discovery();
     test_own_ref();
+    test_own_ref_jitter();
     test_ffn_rate();
 #ifndef OLD_STACK
     test_tx_delay();

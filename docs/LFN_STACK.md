@@ -371,7 +371,7 @@ From the emulator's root (`mesh-emulator-orchestrator/`), with its virtual-time 
 | What | Command |
 | --- | --- |
 | FAN 1.0 non-regression (10 seeds, byte for byte) | `sim_utils/migration/nonreg_dag_simple.sh build-vt $(pwd) <reference-runs>/dag_simple_b1b9cc5` |
-| The LFN suite (quick: 49 runs, about 70 s; full: 145 runs, about 6 min, with 12 jobs on a 24-core PC) | `sim_utils/vtime/lfn_suite.sh quick build-vt $(pwd) <out>` |
+| The LFN suite (quick: 50 runs, about 70 s; full: 148 runs, about 7 min, with 12 jobs on a 24-core PC) | `sim_utils/vtime/lfn_suite.sh quick build-vt $(pwd) <out>` |
 | A 4 h listen interval over 72 h (Eco, 10 h sync period) | `BR_PERIOD=18500 LFN_PERIOD=27000 DUR=259200 STEADY_FROM=86400 LFN_EXTRA="-o lfn_listen_interval_ms=14400000 -o lfn_listen_interval_max_ms=16777215" sim_utils/vtime/test_lfn_profiles.sh build-vt $(pwd) <out> eco` (about 1.5 min) |
 | A router's key request answered by a full EAP-TLS (`CASE=race` or `txfail`) | `sim_utils/vtime/test_lfn_keyreq.sh build-vt $(pwd) <out>` |
 | Lost NAs, lost releases (tests agent) | `MODE=na\|na2\|release PROF=... sim_utils/vtime/test_lfn_lost.sh build-vt $(pwd) <out>` |

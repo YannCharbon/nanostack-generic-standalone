@@ -91,6 +91,10 @@ struct fhss_ws_lfn {
     uint64_t ref_ext;               //   its time on our extended clock,
     uint16_t ref_slot;              //   the slot then
     uint64_t ref_phase_us;          //   and the time into it, in the parent's µs (as the parent reads it)
+    bool ref_par_valid;             // ref_ext on the parent's clock (ref_par_us): our slots then follow its view
+    uint64_t ref_par_us;            //   whatever the age of the reference
+    bool sync_par_valid;            // the last sync's slot start on the parent's clock: its LFN broadcast
+    uint64_t sync_par_us;           //   slots (nominal interval) counted since this schedule's first sync
     bool rate_ref_valid;            // a reference sync for the rate measurement
     uint32_t rate_ref_us;           // its slot start on our clock
     uint16_t rate_ref_slot;

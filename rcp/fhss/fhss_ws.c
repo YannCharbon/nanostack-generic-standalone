@@ -101,6 +101,7 @@ static void fhss_ws_lfn_own_interval_set(struct fhss_ws_lfn *lfn, uint64_t nomin
 static void fhss_ws_lfn_own_advance(struct fhss_ws_lfn *lfn);
 static uint64_t fhss_ws_lfn_parent_us(const struct fhss_ws_lfn *lfn, uint64_t local_us);
 static void fhss_ws_lfn_ref_from_own(struct fhss_ws_lfn *lfn, uint32_t t);
+static bool fhss_ws_lfn_par_at(const struct fhss_ws_lfn *lfn, uint64_t te, uint64_t *par);
 static void fhss_ws_lfn_age(fhss_structure_t *fhss_structure, uint32_t now);
 static uint64_t fhss_ws_lfn_ext(const struct fhss_ws_lfn *lfn, uint32_t t);
 static void fhss_ws_lfn_ext_update(struct fhss_ws_lfn *lfn, uint32_t now);
@@ -1138,6 +1139,7 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
         lfn->ref_ext = lfn->lutt_ext;
         lfn->ref_slot = slot;
         lfn->ref_phase_us = (uint64_t)offset_ms * 1000u;
+        lfn->ref_par_valid = fhss_ws_lfn_par_at(lfn, lfn->ref_ext, &lfn->ref_par_us);
     }
     if (fhss_structure->ws->lfn.bc_enabled) {
         fhss_ws_lfn_write_lbt_lto(fhss_structure, ptr, length, tx_time);
@@ -1721,6 +1723,7 @@ static void fhss_ws_lfn_listen_start(fhss_structure_t *fhss_structure)
     lfn->own.anchor_slot = 0;
     lfn->own_hop = false;
     lfn->ref_valid = false;
+    lfn->ref_par_valid = false;
     lfn->slot = 0;
     lfn->slot_start = lfn->own.anchor_us;
     lfn->window_open = false;
@@ -2266,6 +2269,10 @@ static uint64_t fhss_ws_lfn_parent_us(const struct fhss_ws_lfn *lfn, uint64_t lo
     return (uint64_t)((int64_t)local_us - corr);
 }
 
+// A reference set before the rate was measured is placed on the parent's
+// clock only if this close to the last sync (2^28 µs: 1.6 ppm, a rate over
+// one 50 s sync period with 80 µs of timing error, is 0.4 ms)
+#define FHSS_LFN_REF_PAR_SPAN_US 0x10000000u
 // The parent's view of our slots from our own schedule at time t
 static void fhss_ws_lfn_ref_from_own(struct fhss_ws_lfn *lfn, uint32_t t)
 {
@@ -2274,6 +2281,24 @@ static void fhss_ws_lfn_ref_from_own(struct fhss_ws_lfn *lfn, uint32_t t)
     lfn->ref_ext = fhss_ws_lfn_ext(lfn, t);
     lfn->ref_phase_us = fhss_ws_lfn_parent_us(lfn, off);
     lfn->ref_valid = true;
+    lfn->ref_par_valid = fhss_ws_lfn_par_at(lfn, lfn->ref_ext, &lfn->ref_par_us);
+}
+
+/* The parent's clock at our extended time te, from the last sync at the
+ * measured rate (sync_par_us: that sync's slot start on its clock). The
+ * conversion spans only the time from the last sync, not the age of a
+ * reference. False before the rate is measured. */
+static bool fhss_ws_lfn_par_at(const struct fhss_ws_lfn *lfn, uint64_t te, uint64_t *par)
+{
+    if (!lfn->sync_par_valid || !lfn->rate_known) {
+        return false;
+    }
+    if (te >= lfn->sync_ext) {
+        *par = lfn->sync_par_us + fhss_ws_lfn_parent_us(lfn, te - lfn->sync_ext);
+    } else {
+        *par = lfn->sync_par_us - fhss_ws_lfn_parent_us(lfn, lfn->sync_ext - te);
+    }
+    return true;
 }
 
 /* Our slots where the parent expects them, once the rate is measured: from
@@ -2290,10 +2315,36 @@ static void fhss_ws_lfn_own_from_ref(struct fhss_ws_lfn *lfn, uint32_t now)
     const int64_t r = lfn->rate_ppb;
     uint64_t iv_p_us = (uint64_t)lfn->listen_cfg.listen_interval_ms * 1000u;
     int64_t iv_ns = (int64_t)iv_p_us * 1000 + (int64_t)iv_p_us * r / 1000000;
-    int64_t phase_ns = (int64_t)lfn->ref_phase_us * 1000 + (int64_t)lfn->ref_phase_us * r / 1000000;
-    int64_t pos_ns = ((int64_t)fhss_ws_lfn_ext(lfn, now) - (int64_t)lfn->ref_ext) * 1000 + phase_ns;
-    int64_t n = pos_ns >= 0 ? pos_ns / iv_ns : -((-pos_ns + iv_ns - 1) / iv_ns);
-    int64_t rem_ns = pos_ns - n * iv_ns;
+    uint64_t now_ext = fhss_ws_lfn_ext(lfn, now), par_now;
+    int64_t n, rem_ns;
+
+    if (!lfn->ref_par_valid && lfn->sync_par_valid && lfn->rate_known) {
+        // A reference set before the rate was measured: placed on the
+        // parent's clock now, if close enough to the last sync for the rate
+        // just measured
+        uint64_t d = lfn->ref_ext > lfn->sync_ext ? lfn->ref_ext - lfn->sync_ext : lfn->sync_ext - lfn->ref_ext;
+        if (d < FHSS_LFN_REF_PAR_SPAN_US) {
+            lfn->ref_par_valid = fhss_ws_lfn_par_at(lfn, lfn->ref_ext, &lfn->ref_par_us);
+        }
+    }
+    if (lfn->ref_par_valid && fhss_ws_lfn_par_at(lfn, now_ext, &par_now)) {
+        /* On the parent's clock: the time since its view was set is counted
+           in its LFN broadcast slots, exact however old the view is. At the
+           measured rate over that whole time, a rate measured over a short
+           span (one sync period, 50 s, after each new rate reference) left
+           our slots 6 ms off after 4000 s of silence and the parent's
+           frames missed every window until the next syncs (kits,
+           2026-11-04 overnight run) */
+        int64_t pos_p = (int64_t)(par_now - lfn->ref_par_us) + (int64_t)lfn->ref_phase_us;
+        n = pos_p >= 0 ? pos_p / (int64_t)iv_p_us : -((-pos_p + (int64_t)iv_p_us - 1) / (int64_t)iv_p_us);
+        int64_t rem_p = pos_p - n * (int64_t)iv_p_us;
+        rem_ns = rem_p * 1000 + rem_p * r / 1000000;
+    } else {
+        int64_t phase_ns = (int64_t)lfn->ref_phase_us * 1000 + (int64_t)lfn->ref_phase_us * r / 1000000;
+        int64_t pos_ns = ((int64_t)now_ext - (int64_t)lfn->ref_ext) * 1000 + phase_ns;
+        n = pos_ns >= 0 ? pos_ns / iv_ns : -((-pos_ns + iv_ns - 1) / iv_ns);
+        rem_ns = pos_ns - n * iv_ns;
+    }
 
     fhss_ws_lfn_own_interval_set(lfn, iv_p_us);
     lfn->own.anchor_us = now;
@@ -2866,6 +2917,15 @@ int fhss_ws_lfn_bc_sync(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_s
         uint64_t since_lutt = start_ext > lfn->lutt_ext ? start_ext - lfn->lutt_ext : 0;
         own_delta = (int32_t)((int64_t)delta * (int64_t)since_lutt / (int64_t)(start_ext - lfn->sync_ext));
     }
+    if (same && lfn->sync_par_valid) {
+        lfn->sync_par_us += (uint64_t)(uint16_t)(sync->slot - lfn->last_sync_slot) * nominal_us;
+    } else {
+        // A new schedule: a new origin of the parent's clock, our references
+        // no longer on it
+        lfn->sync_par_us = (uint64_t)1 << 40;
+        lfn->ref_par_valid = false;
+    }
+    lfn->sync_par_valid = true;
     lfn->sync_ext = start_ext;
     lfn->lutt_after_sync = false;
     lfn->sync_us = start;
@@ -2902,6 +2962,8 @@ int fhss_ws_lfn_bc_stop(fhss_structure_t *fhss_structure)
     lfn->rate_known = false;
     lfn->residual_ppb = 0;
     lfn->resched_after_bc = false;
+    lfn->sync_par_valid = false;
+    lfn->ref_par_valid = false;
     if (lfn->listen_running) {
         // Our own slots back on our clock's interval
         fhss_ws_lfn_own_interval_set(lfn, (uint64_t)lfn->listen_cfg.listen_interval_ms * 1000u);
