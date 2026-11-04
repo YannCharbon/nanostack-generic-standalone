@@ -29,6 +29,9 @@
 #include "ns_rand.h"
 #include "mbed-client-libservice/ns_trace.h"
 #include "ns_port/critical.h"
+#ifdef NS_FHSS_POLL_SKIP_IDLE
+#include "ns_port/timer.h"
+#endif
 #include <string.h>
 
 #define TRACE_GROUP "fhss"
@@ -492,6 +495,48 @@ static int own_ceil(float value)
     return ivalue + 1;
 }
 
+#ifdef NS_FHSS_POLL_SKIP_IDLE
+/* Idle-poll skipping (docs/PORTING.md, "Idle-poll skipping of the FHSS TX
+ * queue"). Before its schedules start, the FHSS polls the MAC's TX queue
+ * every DEFAULT_POLL_PERIOD (10 ms); a poll that finds the queue empty does
+ * nothing but re-arm itself. Such a poll is skipped: the poll timer is left
+ * unarmed and the poll it would have made is remembered. Whatever could make
+ * that poll act differently first re-arms the timer for the poll of the
+ * 10 ms grid at or after now, as the periodic poll would have fired: a frame
+ * put in the unicast queue (fhss_api->tx_queued), and every change of the
+ * FHSS state, made before the change (which may re-arm or stop the timer as
+ * it would have the periodic one). */
+static void fhss_ws_idle_poll_resume(fhss_structure_t *fhss_structure)
+{
+    const uint32_t period_us = DEFAULT_POLL_PERIOD * 50;
+    uint32_t now, at;
+
+    if (!fhss_structure->ws->idle_poll_skipped) {
+        return;
+    }
+    fhss_structure->ws->idle_poll_skipped = false;
+    now = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
+    at = fhss_structure->ws->idle_poll_at_us;
+    if ((int32_t)(now - at) > 0) {
+        at += (now - at + period_us - 1) / period_us * period_us;
+    }
+#ifdef NS_PORT_TIMER_USEC
+    // At least 1 µs: a zero length disarms
+    eventOS_callback_timer_start_usec(fhss_structure->fhss_event_timer, at != now ? (int)(at - now) : 1);
+#else
+    eventOS_callback_timer_start(fhss_structure->fhss_event_timer, at != now ? (uint16_t)((at - now + 49) / 50) : 1);
+#endif
+}
+
+static void fhss_ws_tx_queued_callback(const fhss_api_t *api)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(api);
+    if (fhss_structure && fhss_structure->ws) {
+        fhss_ws_idle_poll_resume(fhss_structure);
+    }
+}
+#endif
+
 static void fhss_event_timer_cb(int timer_id, uint16_t slots)
 {
     (void) slots;
@@ -528,9 +573,24 @@ static void fhss_event_timer_cb(int timer_id, uint16_t slots)
             queue_size = fhss_structure->callbacks.read_tx_queue_size(fhss_structure->fhss_api, false);
         }
     } else if ((fhss_structure->ws->unicast_timer_running == false) && (fhss_structure->ws->broadcast_timer_running == false)) {
+#ifdef NS_FHSS_POLL_SKIP_IDLE
+        // No one would poll TX queue if schedule timers were not started:
+        // poll every DEFAULT_POLL_PERIOD while the queue holds frames. With
+        // the queue empty, the next poll is skipped and resumed on its grid
+        // when a frame is queued or the FHSS state changes
+        // (fhss_ws_idle_poll_resume()).
+        queue_size = fhss_structure->callbacks.read_tx_queue_size(fhss_structure->fhss_api, false);
+        if (queue_size) {
+            eventOS_callback_timer_start(fhss_structure->fhss_event_timer, DEFAULT_POLL_PERIOD);
+        } else {
+            fhss_structure->ws->idle_poll_skipped = true;
+            fhss_structure->ws->idle_poll_at_us = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api) + DEFAULT_POLL_PERIOD * 50;
+        }
+#else
         // No one would poll TX queue if schedule timers were not started. Start poll timer with default interval.
         eventOS_callback_timer_start(fhss_structure->fhss_event_timer, DEFAULT_POLL_PERIOD);
         queue_size = fhss_structure->callbacks.read_tx_queue_size(fhss_structure->fhss_api, false);
+#endif
     } else {
         if (fhss_structure->ws->is_on_bc_channel == true) {
             queue_size = fhss_structure->callbacks.read_tx_queue_size(fhss_structure->fhss_api, true);
@@ -648,6 +708,9 @@ static int16_t fhss_ws_synch_state_set_callback(const fhss_api_t *api, fhss_stat
     if (!fhss_structure) {
         return -1;
     }
+#ifdef NS_FHSS_POLL_SKIP_IDLE
+    fhss_ws_idle_poll_resume(fhss_structure);
+#endif
     if (fhss_state == FHSS_EXPEDITED_FORWARDING) {
         if (!fhss_structure->ws->expedited_forwarding_enabled_us) {
             eventOS_callback_timer_start(fhss_structure->fhss_event_timer, EXPEDITED_FORWARDING_POLL_PERIOD);
@@ -1298,6 +1361,11 @@ int fhss_ws_set_callbacks(fhss_structure_t *fhss_structure)
     fhss_structure->fhss_api->lfn_tx_at = &fhss_ws_lfn_tx_at_callback;
     fhss_structure->fhss_api->lfn_pending = &fhss_ws_lfn_pending_callback;
     fhss_structure->fhss_api->lfn_tx_delay = &fhss_ws_lfn_tx_delay_callback;
+#ifdef NS_FHSS_POLL_SKIP_IDLE
+    fhss_structure->fhss_api->tx_queued = &fhss_ws_tx_queued_callback;
+#else
+    fhss_structure->fhss_api->tx_queued = NULL;
+#endif
     return 0;
 }
 
@@ -1306,6 +1374,9 @@ int fhss_ws_set_parent(fhss_structure_t *fhss_structure, const uint8_t eui64[8],
     if (!fhss_structure->ws) {
         return -1;
     }
+#ifdef NS_FHSS_POLL_SKIP_IDLE
+    fhss_ws_idle_poll_resume(fhss_structure);
+#endif
     // LFN: it does not follow an FFN broadcast schedule; it keeps the
     // parent's, so that its uplinks avoid the parent's broadcast dwell
     if (fhss_structure->ws->lfn.listen_enabled) {
@@ -1433,6 +1504,9 @@ int fhss_ws_configuration_set(fhss_structure_t *fhss_structure, const fhss_ws_co
             return -1;
         }
     }
+#ifdef NS_FHSS_POLL_SKIP_IDLE
+    fhss_ws_idle_poll_resume(fhss_structure);
+#endif
     platform_enter_critical();
     if (fhss_configuration->ws_uc_channel_function == WS_FIXED_CHANNEL || fhss_configuration->fhss_uc_dwell_interval == 0) {
         fhss_stop_timer(fhss_structure, fhss_unicast_handler);
@@ -2075,6 +2149,9 @@ int fhss_ws_lfn_neighbor_lto(fhss_structure_t *fhss_structure, const uint8_t eui
 int fhss_ws_lfn_listen_set(fhss_structure_t *fhss_structure, const fhss_ws_lfn_listen_t *cfg)
 {
     struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+#ifdef NS_FHSS_POLL_SKIP_IDLE
+    fhss_ws_idle_poll_resume(fhss_structure);
+#endif
 
     if (!cfg) {
         fhss_ws_lfn_listen_stop(fhss_structure);

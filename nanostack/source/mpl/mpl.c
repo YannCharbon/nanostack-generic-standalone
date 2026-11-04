@@ -962,18 +962,41 @@ static void mpl_fast_timer(uint16_t ticks)
 }
 
 #ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
-/* Seconds until a seed expires; every second while a seed holds messages
- * (their deletion depends on the core time) */
+/* Seconds until a seed expires or its oldest message may be deleted.
+ *
+ * A message is deleted by the first slow timer at which its data trickle has
+ * stopped and it is old enough, on the core time (100 ms ticks). While the
+ * trickle runs, nothing is due here: it stops in an MPL timer run, after
+ * which the core timer asks again. Otherwise the message is due at
+ * timestamp + message_age_limit; the core timer may hand several seconds in
+ * one call, with the core time of the last grid point, so it must not pass a
+ * second at which the message is still too young and reach that due time in
+ * the same call: whole seconds left, rounded down, give a second boundary at
+ * or before the due time (an early wake does nothing). */
 uint32_t mpl_slow_timer_next(void)
 {
     uint32_t next = UINT32_MAX;
 
     ns_list_foreach(mpl_domain_t, domain, &mpl_domains) {
+        uint32_t message_age_limit = (domain->seed_set_entry_lifetime * UINT32_C(10)) / 4;
+        if (message_age_limit > MAX_BUFFERED_MESSAGE_LIFETIME) {
+            message_age_limit = MAX_BUFFERED_MESSAGE_LIFETIME;
+        }
         ns_list_foreach(mpl_seed_t, seed, &domain->seeds) {
-            if (!ns_list_is_empty(&seed->messages)) {
-                return 1;
-            }
             uint32_t t = seed->lifetime ? seed->lifetime : 1;
+            if (t < next) {
+                next = t;
+            }
+            // Messages are deleted oldest first, up to the first one kept
+            mpl_buffered_message_t *message = ns_list_get_first(&seed->messages);
+            if (!message || trickle_running(&message->trickle, &domain->data_trickle_params)) {
+                continue;
+            }
+            uint32_t age = protocol_core_monotonic_time - message->timestamp;
+            t = age >= message_age_limit ? 1 : (message_age_limit - age) / 10;
+            if (t < 1) {
+                t = 1;
+            }
             if (t < next) {
                 next = t;
             }

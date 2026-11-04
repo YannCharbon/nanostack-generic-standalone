@@ -48,6 +48,7 @@ the fire-alarm protocol stack, which takes no code from it.
 | `tests/eventloop/` | — | Event loop timers: periodic tick against idle-tick skipping |
 | `tests/protocol_timers/` | — | Protocol and core timers: periodic against idle-tick skipping ([docs/PORTING.md](docs/PORTING.md)) |
 | `tests/fhss_lfn/` | — | FAN 1.1 LFN unicast mechanics in the FHSS ([docs/LFN_MAC.md](docs/LFN_MAC.md)) |
+| `tests/fhss_poll/` | — | FHSS TX queue poll: periodic against idle-poll skipping ([docs/PORTING.md](docs/PORTING.md)) |
 
 `rcp/` keeps its own `mac/rf_driver_storage.h`, which differs slightly from
 `nanostack/source/mac/rf_driver_storage.h`, exactly as before.
@@ -123,6 +124,10 @@ Options:
   and the core timer (the modules' 100 ms and 1 s timers) run only on the grid
   points at which a module has work (`docs/PORTING.md`, "Idle-tick skipping of
   the protocol timers"). `OFF` gives the periodic timers of the reference.
+- `NANOSTACK_FHSS_POLL_SKIP_IDLE` (default ON): before its schedules start,
+  the FHSS polls its TX queue every 10 ms only while the queue holds frames
+  (`docs/PORTING.md`, "Idle-poll skipping of the FHSS TX queue"). `OFF` gives
+  the periodic poll of the reference.
 - `nanostack_add_rcp_library(<name> INPROCESS)` builds the MAC for an image
   that also holds the upper layers: it leaves out `rcp/`'s copy of
   `rf_driver_storage.c`.
@@ -220,6 +225,15 @@ timers"):
 
 ```bash
 tests/protocol_timers/run.sh [build dir]
+```
+
+The FHSS's TX queue poll before its schedules start, periodic against
+idle-poll skipping, the real FHSS on a fake port and MAC
+([docs/PORTING.md](docs/PORTING.md), "Idle-poll skipping of the FHSS TX
+queue"):
+
+```bash
+tests/fhss_poll/run.sh [build dir]
 ```
 
 The FAN 1.1 LFN unicast mechanics in the FHSS (listen windows, the parent's

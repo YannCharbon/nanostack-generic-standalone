@@ -93,6 +93,9 @@ bool rpl_instance_address_is_candidate(rpl_instance_t *instance, const uint8_t *
 uint16_t rpl_instance_address_candidate_count(const rpl_instance_t *instance, bool selected_parents);
 void rpl_instance_neighbor_delete(rpl_instance_t *instance, const uint8_t *ipv6_addr);
 void rpl_instance_slow_timer(rpl_instance_t *instance, uint16_t seconds);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t rpl_instance_slow_timer_next(const rpl_instance_t *instance);
+#endif
 
 rpl_dodag_t *rpl_lookup_dodag(const rpl_instance_t *instance, const uint8_t *dodagid);
 rpl_dodag_t *rpl_create_dodag(rpl_instance_t *instance, const uint8_t *dodagid, uint8_t g_mop_prf);

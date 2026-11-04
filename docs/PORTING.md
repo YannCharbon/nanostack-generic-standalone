@@ -208,24 +208,56 @@ for Wi-SUN), since that callback runs every second for every neighbour.
 `CORE_TIMER_MAX_TICKS` (2500, 250 s) keeps the seconds handed over in one
 call below 256: some slow timers take them as `uint8_t`.
 
-**Covered.** Fast: the bootstrap state machine counter, ND router objects
-(every tick while one exists), the Wi-SUN trickles (PAS, PCS every tick, PA,
-PC), Wi-SUN NUD, EDFE, 6LoWPAN contexts, the IPv6 neighbour cache, address
-state timers, MLD reports, RPL DIO trickle and DAO timers, router
-advertisements, the PAE supplicant (every tick while its timer runs). Slow:
-the Wi-SUN seconds timers (FFN, LFN, uptime and MDR analysis, EAPOL temporary
-entries, the blacklist), the MAC neighbour table and its NUD callback, ETX,
-address lifetimes, the IPv6 neighbour cache
-and its GC, `ReachableTime`, MLD's query timer, MPL seeds, routes, the
-destination cache GC, both reassembly timers, DNS, the PAE supplicant and the
+**Covered.** Fast: the bootstrap state machine counter (every tick while it
+runs), ND router objects (every tick while one exists), the Wi-SUN trickles
+(PAS, PCS every tick, PA, PC), Wi-SUN NUD, EDFE, 6LoWPAN contexts, the IPv6
+neighbour cache, address state timers, MLD reports, RPL DIO trickle and DAO
+timers, router advertisements, the PAE supplicant (every tick while its timer
+runs), the PAE authenticator (every tick while its timer runs, and the key
+storage's scatter timer). Slow: the Wi-SUN seconds timers (FFN, LFN, uptime
+and MDR analysis, EAPOL temporary entries, the blacklist), the MAC neighbour
+table and its NUD callback, ETX, address lifetimes, the IPv6 neighbour cache
+and its GC, `ReachableTime`, MLD's query timer, MPL seeds and the messages
+they hold, RPL (below), routes, the destination cache GC, both reassembly
+timers, DNS, the 6LoWPAN high-priority state, the PAE supplicant and the
 frame-counter store.
 
-**Not covered** (every tick or second while active, as before): the RPL slow
-timers (`rpl_control_slow_timer()`, every second while an RPL instance
-exists: on an FFN about 0.9 wake per second once joined), the border router's
-own timers (`ws_bbr_seconds_timer()`, the 6LBR and LFN-parent timers, the PAE
-authenticator), the IPv6 backhaul interface's ND timers (`IF_IPV6`), MPL
-seeds that hold messages, and the 6LoWPAN high-priority state.
+**RPL's slow timer** (`rpl_control_slow_timer_next()`) is due at the earliest
+of: a DIO route or a published, unheld DIO prefix whose lifetime ends; the
+parent selection timer; the repair DIS timer while there is no preferred
+parent; a DAO target that expires or a published target to refresh; every
+second while an address registration to the parents is pending or RPL's
+memory is above its soft limit (one item purged a second); and the next
+second when an own address has no DAO target yet. All are countdowns linear
+in the seconds. Two details make a call for several seconds give what the
+periodic timer would have:
+- the statistics counter of seconds without a next hop counts the seconds
+  given, not the calls;
+- `rpl_control_publish_own_addresses()` copies each own address's lifetime
+  into its DAO target every second, after the address timer has aged it and
+  before the target is aged: called for n seconds it copies the lifetime plus
+  n - 1, which the target's ageing takes off again. A target whose address
+  exists therefore expires when the address's lifetime reaches 1, whatever
+  its own value (which may be stale after the address was renewed).
+
+**Deadlines on the core time.** MPL's buffered messages and the 6LoWPAN
+high-priority state end at a core time (100 ms ticks), checked by a slow
+timer. A call for several seconds runs with the core time of its last grid
+point, so a wake for "the second at which the deadline has passed" could act
+in the first part of the call, one grid point early. Their `..._next()`
+round the whole seconds left down instead (at least 1): the wake comes at or
+before the first second that sees the deadline passed, and an early wake does
+nothing.
+
+**Not covered** (every tick or second while active, as before): the border
+router's own timers (`ws_bbr_seconds_timer()`, the 6LBR and LFN-parent
+timers), the PAE authenticator's slow timer (GTK and LGTK lifetimes,
+supplicant entries, key storage: every second), and the IPv6 backhaul
+interface's ND timers (`IF_IPV6`). The bootstrap state machine counter counts
+calls, not ticks: counting it in ticks would let it run during a long-delayed
+core event (in the emulator, a node frozen during boot by `run.sh RESTART`),
+which changes the timing of the bootstrap. It stays at every tick while it
+runs: about 10 wakes a second on an FFN that searches for a network.
 
 **What a port must change: nothing.** No porting API changes and no new
 callback timer. Its run loop must dispatch events through
@@ -248,7 +280,10 @@ Effect in the emulator (FG25 profile, EU mode 3; emulator
 `docs/POWER_MODEL.md` §15): an idle LFN (3 seeds, 3600 s) from 41.6–42.4 µA and
 20.6 wakes/s to 16.6–17.3 µA and 0.66 wakes/s; Wi-SUN FFN routers once joined
 (`dag_simple`, 10 seeds) from 37.7 to 19.3 wakes/s (protocol timer 20.0 to
-1.17).
+1.17). With RPL's slow timer and the authenticator's fast timer covered
+(`dag_simple`, 3 seeds, 300–600 s): routers' protocol timer from 1.17 to 0.29
+wakes/s (RPL's slow timer from about 0.9 to 0.02), the border router's from
+10.0 to 1.8.
 
 Checks: `tests/protocol_timers/run.sh` runs the stack's `protocol_timer.c`,
 `protocol_core.c` and event loop on a fake port with fake modules (countdowns
@@ -256,9 +291,55 @@ in ticks and in seconds, a module counting calls, a period that keeps its
 phase, TCP and MPL style users), one schedule of events that start work and
 read the modules' state at arbitrary instants, long idle gaps and the 32-bit
 clock wrap. It requires the same actions and observations with the periodic
-timers, with skipping on µs timers and with 50 µs slots. `OFF` gives the
+timers, with skipping on µs timers and with 50 µs slots. It also has a
+lifetime copied every second from another module and aged (RPL's own DAO
+targets) and a deadline on the core time (MPL's messages). `OFF` gives the
 periodic timers of the reference; with `ON`, `dag_simple` and the LFN tests
 give the same logs as `OFF` (emulator `docs/POWER_MODEL.md` §15).
+
+### Idle-poll skipping of the FHSS TX queue
+
+`NANOSTACK_FHSS_POLL_SKIP_IDLE` (CMake, default ON; it defines
+`NS_FHSS_POLL_SKIP_IDLE` for `nanostack_eventloop` and its consumers, the RCP
+library among them) removes the FHSS's 10 ms TX queue poll while there is
+nothing to send (GS9). Until its schedules start (no unicast or broadcast
+schedule timer: a router that searches for a network, on a fixed channel),
+the FHSS polls the MAC's TX queue every 10 ms (`DEFAULT_POLL_PERIOD`,
+`fhss_event_timer_cb()` in `rcp/fhss/fhss_ws.c`), whether or not a frame
+waits: about 100 wakes a second. LFNs never had it.
+
+- A poll that finds the unicast queue empty does nothing but re-arm itself.
+  With the option it is skipped: the poll timer is left unarmed and the time
+  of that poll is kept (`idle_poll_skipped`, `idle_poll_at_us`).
+- Whatever could make that poll act differently first restarts it on its
+  10 ms grid (`fhss_ws_idle_poll_resume()`): the first poll at or after now,
+  at the µs the periodic poll would have run. That is a frame put in the
+  unicast queue (the MAC calls `fhss_api->tx_queued`, a new optional member
+  of the FHSS API, from `mcps_sap_pd_req_queue_write()`), and every change
+  of the FHSS state, before the change (`synch_state_set`, expedited
+  forwarding included, `ns_fhss_ws_set_parent()`,
+  `ns_fhss_ws_configuration_set()`, `ns_fhss_ws_lfn_listen_set()`), which may
+  then re-arm or stop the timer as it would have the periodic one.
+- While the queue holds frames, the poll runs every 10 ms as before; frames
+  sent from the MAC's TX confirm are not affected.
+
+What a port must change: nothing. A port without `NS_PORT_TIMER_USEC` arms
+the restarted poll in 50 µs slots, rounded up: it may come up to 49 µs after
+the periodic one.
+
+Effect in the emulator (FG25 profile, EU mode 3; emulator
+`docs/POWER_MODEL.md` §15): two routers searching for a network, 300–600 s,
+from 103.7 to 13.8 wakes/s (FHSS 100.0 to 0.13), 8.36 to 8.29 mA (listening
+dominates).
+
+Checks: `tests/fhss_poll/run.sh` runs the stack's FHSS on a fake port and a
+fake MAC through its states (fixed channel, unicast hopping, synchronized with
+a broadcast schedule and a parent, expedited forwarding, unsynchronized) with
+frames queued at arbitrary instants, some of which cannot go at the first
+poll, and requires the same polls at the same µs with the periodic poll and
+with skipping. With `ON`, `dag_simple` and the LFN tests give the same logs as
+`OFF`; with `OFF`, the emulator's power ledger is identical to the previous
+stack's.
 
 ### `sched.h`: scheduler signal and run loop
 

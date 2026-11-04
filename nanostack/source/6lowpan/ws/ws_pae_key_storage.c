@@ -891,6 +891,13 @@ void ws_pae_key_storage_timer(uint16_t seconds)
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+uint32_t ws_pae_key_storage_fast_timer_next(void)
+{
+    return key_storage_params.scatter_timer ? (uint32_t) key_storage_params.scatter_timer : UINT32_MAX;
+}
+
+#endif
 void ws_pae_key_storage_fast_timer(uint16_t ticks)
 {
     if (key_storage_params.scatter_timer == 0) {

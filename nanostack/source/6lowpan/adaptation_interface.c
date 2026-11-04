@@ -1193,12 +1193,25 @@ bool lowpan_adaptation_expedite_forward_state_get(protocol_interface_info_entry_
 }
 
 #ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
-/* Every second while in the high-priority state */
+/* Seconds until the high-priority state may end: LOWPAN_HIGH_PRIORITY_STATE_LENGTH
+ * after the last high-priority frame (core time, 100 ms ticks), then every
+ * second while expedited-forwarding frames are still queued. As for MPL's
+ * messages (mpl_slow_timer_next()), whole seconds left are rounded down, so
+ * that a call for several seconds never reaches the end of the state past a
+ * second at which it had not ended. */
 uint32_t lowpan_adaptation_interface_slow_timer_next(protocol_interface_info_entry_t *cur)
 {
     fragmenter_interface_t *interface_ptr = lowpan_adaptation_interface_discover(cur->id);
 
-    return interface_ptr && interface_ptr->last_rx_high_priority ? 1 : UINT32_MAX;
+    if (!interface_ptr || !interface_ptr->last_rx_high_priority) {
+        return UINT32_MAX;
+    }
+    uint32_t age = protocol_core_monotonic_time - interface_ptr->last_rx_high_priority;
+    if (age >= LOWPAN_HIGH_PRIORITY_STATE_LENGTH) {
+        return 1;
+    }
+    uint32_t next = (LOWPAN_HIGH_PRIORITY_STATE_LENGTH - age) / 10;
+    return next ? next : 1;
 }
 
 #endif

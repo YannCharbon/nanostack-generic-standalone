@@ -2250,6 +2250,12 @@ push_to_queue:
     }
     if (use_bc_queue == false) {
         rf_mac_setup->unicast_queue_size++;
+#ifdef NS_FHSS_POLL_SKIP_IDLE
+        // The FHSS may have skipped its TX queue poll while the queue was empty
+        if (rf_mac_setup->fhss_api && rf_mac_setup->fhss_api->tx_queued) {
+            rf_mac_setup->fhss_api->tx_queued(rf_mac_setup->fhss_api);
+        }
+#endif
     }
     sw_mac_stats_update(rf_mac_setup, STAT_MAC_TX_QUEUE, rf_mac_setup->unicast_queue_size + rf_mac_setup->broadcast_queue_size);
 

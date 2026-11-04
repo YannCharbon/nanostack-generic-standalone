@@ -20,6 +20,16 @@
  *   P  ipv6_destination_cache_timer() a 20 s period that keeps its phase,
  *                                     acting only while switched on (and
  *                                     due only then)
+ *   Y  mpl_slow_timer()               a lifetime in seconds (an address's)
+ *   A  rpl_control_slow_timer()       a lifetime copied from Y every second
+ *                                     while Y exists, then aged: RPL's own DAO
+ *                                     targets, which take their address's
+ *                                     lifetime; created at the next second
+ *                                     when missing, ends one second before Y
+ *   D  net_dns_timer_seconds()        acts at the first second at which the
+ *                                     core time has reached a deadline: an
+ *                                     MPL message's age limit, the 6LoWPAN
+ *                                     high-priority state
  * plus two users of protocol_timer_start() as MPL and TCP are (a 50 ms and a
  * 200 ms tick while they run). A countdown that runs out acts: it prints, and
  * may start another one (random values, drawn in the order of the actions).
@@ -300,12 +310,96 @@ uint32_t ipv6_destination_cache_timer_next(void) { return mod_p_on ? 20 - mod_p_
 #define SLOW_IDLE(name, type) \
     void name(type seconds) { CHECK(seconds >= 1 && seconds <= 255); } \
     uint32_t name##_next(void) { return NONE; }
-SLOW_IDLE(mpl_slow_timer, uint16_t)
-SLOW_IDLE(rpl_control_slow_timer, uint16_t)
+
+// Y: a lifetime in seconds, as an address's valid lifetime
+static uint32_t mod_y;              // 0: none
+void mpl_slow_timer(uint16_t seconds)
+{
+    CHECK(seconds >= 1 && seconds <= 255);
+    if (!mod_y) {
+        return;
+    }
+    if (mod_y > seconds) {
+        mod_y -= seconds;
+    } else {
+        mod_y = 0;
+        act("Y ends");
+    }
+}
+uint32_t mpl_slow_timer_next(void) { return mod_y ? mod_y : NONE; }
+
+// A: as rpl_control_publish_own_addresses() and rpl_downward_dao_slow_timer()
+// on an own target: created at the first second Y exists, then its lifetime
+// is Y's every second and aged by the seconds. Called for several seconds,
+// it takes Y's lifetime of the last second plus the other seconds, which the
+// ageing takes off again.
+static bool mod_a_exists;
+static uint32_t mod_a;
+void rpl_control_slow_timer(uint16_t seconds)
+{
+    CHECK(seconds >= 1 && seconds <= 255);
+    if (mod_y) {
+        if (!mod_a_exists) {
+            mod_a_exists = true;
+            act("A created");
+        }
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+        mod_a = mod_y + (seconds - 1);
+#else
+        mod_a = mod_y;
+#endif
+    }
+    if (mod_a_exists) {
+        if (mod_a > seconds) {
+            mod_a -= seconds;
+        } else {
+            mod_a = 0;
+            mod_a_exists = false;
+            act("A expires");
+        }
+    }
+}
+uint32_t rpl_control_slow_timer_next(void)
+{
+    uint32_t next;
+
+    if (mod_y && !mod_a_exists) {
+        return 1;
+    }
+    next = mod_a_exists ? (mod_a ? mod_a : 1) : NONE;
+    // While Y exists, A is overwritten before it is aged: it ends when Y
+    // reaches 1, whatever its own (stale) value
+    if (mod_y && mod_a_exists) {
+        uint32_t t = mod_y >= 2 ? mod_y - 1 : 1;
+        next = t < next ? t : next;
+    }
+    return next;
+}
+
+// D: acts at the first second at which the core time (100 ms ticks) has
+// reached the deadline. Whole seconds left, rounded down: a call for several
+// seconds, made with the core time of its last grid point, must not pass a
+// second at which the deadline was not reached and then reach it.
+static uint32_t mod_d;              // core time of the deadline; 0: none
+void net_dns_timer_seconds(uint32_t seconds)
+{
+    CHECK(seconds >= 1 && seconds <= 255);
+    if (mod_d && (int32_t)(protocol_core_monotonic_time - mod_d) >= 0) {
+        act("D fires mono=%" PRIu32, protocol_core_monotonic_time);
+        mod_d = 0;
+    }
+}
+uint32_t net_dns_timer_seconds_next(void)
+{
+    if (!mod_d) {
+        return NONE;
+    }
+    int32_t left = (int32_t)(mod_d - protocol_core_monotonic_time);
+    return left >= 20 ? (uint32_t)left / 10 : 1;
+}
 SLOW_IDLE(ipv6_route_table_ttl_update, uint16_t)
 SLOW_IDLE(ipv6_frag_timer, uint8_t)
 SLOW_IDLE(cipv6_frag_timer, uint16_t)
-SLOW_IDLE(net_dns_timer_seconds, uint32_t)
 uint32_t rpl_control_fast_timer_next(void);
 uint32_t mld_slow_timer_next(unsigned calls) { CHECK(calls == 0); return NONE; }
 
@@ -328,7 +422,7 @@ static void tcp_tick(uint16_t ticks)
 
 /* ---------------------------------------------------------- the schedule */
 
-enum { A_READ, A_START_F, A_START_S, A_START_U, A_P, A_MPL, A_TCP, A_COUNT };
+enum { A_READ, A_START_F, A_START_S, A_START_U, A_P, A_MPL, A_TCP, A_Y, A_D, A_COUNT };
 
 static void read_state(void)
 {
@@ -340,7 +434,8 @@ static void read_state(void)
     for (int i = 0; i < SLOTS; i++) {
         printf(" %" PRIu32, mod_s.cd[i]);
     }
-    printf(" U %" PRIu32 " P %u\n", mod_u_calls, mod_p_phase);
+    printf(" U %" PRIu32 " P %u Y %" PRIu32 " A %d %" PRIu32 " D %" PRIu32 "\n", mod_u_calls, mod_p_phase,
+           mod_y, mod_a_exists, mod_a, mod_d);
 }
 
 static void handler(arm_event_t *ev)
@@ -377,6 +472,18 @@ static void handler(arm_event_t *ev)
                 protocol_timer_start(PROTOCOL_TIMER_MULTICAST_TIM, mpl_tick, 50);
                 printf("t%" PRIu64 " mpl start %" PRIu32 "\n", now_us, v);
             }
+            break;
+        case A_Y:
+            // A new lifetime (an address renewed), or none
+            mod_y = v % 4 ? v : 0;
+            printf("t%" PRIu64 " Y set %" PRIu32 "\n", now_us, mod_y);
+            break;
+        case A_D:
+            mod_d = protocol_core_monotonic_time + v;
+            if (!mod_d) {
+                mod_d = 1;
+            }
+            printf("t%" PRIu64 " D at %" PRIu32 "\n", now_us, mod_d);
             break;
         case A_TCP:
             if (!tcp_left) {
@@ -444,6 +551,13 @@ static void schedule_post(void)
             break;
         case A_TCP:
             ev.event_data = 1 + rnd(&rng_sched, 10);
+            break;
+        case A_Y:
+            ev.event_data = 1 + rnd(&rng_sched, rnd(&rng_sched, 4) ? 40 : 1200);
+            break;
+        case A_D:
+            // Core ticks, often within a few seconds
+            ev.event_data = 1 + rnd(&rng_sched, rnd(&rng_sched, 2) ? 40 : 3000);
             break;
     }
     CHECK(eventOS_event_send(&ev) == 0);

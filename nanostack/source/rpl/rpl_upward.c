@@ -42,6 +42,9 @@
 #include "common_protocols/ipv6_resolution.h"
 #include "nwk_interface/protocol_abstract.h"
 #include "nwk_interface/protocol_stats.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 #include "ipv6_stack/ipv6_routing_table.h"
 #include "6lowpan/bootstraps/protocol_6lowpan.h"
 
@@ -1870,10 +1873,67 @@ void rpl_instance_slow_timer(rpl_instance_t *instance, uint16_t seconds)
     rpl_instance_parent_address_reg_timer_update(instance, seconds);
     rpl_instance_parent_selection_timer(instance, seconds);
     if (!rpl_instance_preferred_parent(instance)) {
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+        // Seconds without a next hop: linear in the seconds (skipped seconds)
+        protocol_stats_update(STATS_RPL_TIME_NO_NEXT_HOP, seconds);
+#else
         protocol_stats_update(STATS_RPL_TIME_NO_NEXT_HOP, 1);
+#endif
         rpl_instance_dis_timer(instance, seconds);
     }
 }
+
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until rpl_instance_slow_timer() has something to do: 1 is the next
+ * second; UINT32_MAX if nothing. The countdowns are linear in the seconds, so
+ * between two of these only the state is aged (by the catch-up). */
+uint32_t rpl_instance_slow_timer_next(const rpl_instance_t *instance)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(rpl_dodag_t, dodag, &instance->dodags) {
+        // rpl_dodag_age_routes(): a route is deleted when its lifetime ends
+        // and it is not held
+        ns_list_foreach(rpl_dio_route_t, route, &dodag->routes) {
+            if (!route->age || route->lifetime == 0xFFFFFFFF) {
+                continue;
+            }
+            if (route->lifetime) {
+                // Its lifetime ends then; deleted if not held by then
+                next = protocol_timer_next_min(next, route->lifetime);
+            } else if (route->hold_count == 0) {
+                next = 1;
+            }
+        }
+        // rpl_dodag_age_prefixes(): only a published prefix that is not held
+        // is deleted when its lifetime ends; the rest is ageing state
+        ns_list_foreach(prefix_entry_t, prefix, &dodag->prefixes) {
+            if (!(prefix->options & RPL_PIO_AGE) || prefix->lifetime == 0xFFFFFFFF) {
+                continue;
+            }
+            if ((prefix->options & (RPL_PIO_PUBLISHED | RPL_PIO_HOLD_MASK)) != RPL_PIO_PUBLISHED) {
+                continue;
+            }
+            next = protocol_timer_next_min(next, prefix->lifetime ? prefix->lifetime : 1);
+        }
+    }
+    // rpl_instance_parent_address_reg_timer_update(): every second while
+    // an address registration to the parents is pending
+    if (instance->pending_neighbour_confirmation) {
+        return 1;
+    }
+    // rpl_instance_parent_selection_timer()
+    if (instance->parent_selection_timer) {
+        next = protocol_timer_next_min(next, instance->parent_selection_timer);
+    }
+    // rpl_instance_dis_timer(), without a preferred parent (the statistics
+    // counter takes the seconds)
+    if (instance->repair_dis_timer && !rpl_instance_preferred_parent(instance)) {
+        next = protocol_timer_next_min(next, instance->repair_dis_timer);
+    }
+    return next;
+}
+#endif
 
 
 /* The DODAG whose DIO trickle timer runs, NULL if it does not run now */

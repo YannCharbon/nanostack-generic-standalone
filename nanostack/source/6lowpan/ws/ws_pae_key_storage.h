@@ -160,6 +160,10 @@ void ws_pae_key_storage_timer(uint16_t seconds);
  *
  */
 void ws_pae_key_storage_fast_timer(uint16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Ticks until the scatter timer expires (UINT32_MAX: not running) */
+uint32_t ws_pae_key_storage_fast_timer_next(void);
+#endif
 
 /**
  * ws_pae_key_storage_storing_interval_get gets key storage storing interval

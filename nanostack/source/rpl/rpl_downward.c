@@ -89,6 +89,9 @@
 #include "common_protocols/icmpv6.h"
 #include "nwk_interface/protocol.h"
 #include "ipv6_stack/ipv6_routing_table.h"
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#include "nwk_interface/protocol_timer.h"
+#endif
 
 #include "rpl_protocol.h"
 #include "rpl_policy.h"
@@ -1787,6 +1790,24 @@ void rpl_downward_dao_slow_timer(rpl_instance_t *instance, uint16_t seconds)
 }
 
 #ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until rpl_downward_dao_slow_timer() has something to do: a target
+ * expires or a published target is refreshed. Both countdowns are linear in
+ * the seconds. */
+uint32_t rpl_downward_dao_slow_timer_next(const rpl_instance_t *instance)
+{
+    uint32_t next = UINT32_MAX;
+
+    ns_list_foreach(rpl_dao_target_t, target, &instance->dao_targets) {
+        if (target->lifetime != 0xFFFFFFFF) {
+            next = protocol_timer_next_min(next, target->lifetime ? target->lifetime : 1);
+        }
+        if (target->published && target->info.non_root.refresh_timer != 0xFFFFFFFF && target->info.non_root.refresh_timer != 0) {
+            next = protocol_timer_next_min(next, target->info.non_root.refresh_timer);
+        }
+    }
+    return next;
+}
+
 /* Ticks until the DAO retry or the delayed DAO is due */
 uint32_t rpl_downward_dao_timer_next(const rpl_instance_t *instance)
 {

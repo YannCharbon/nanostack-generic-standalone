@@ -58,6 +58,15 @@ project(nanostack-generic-standalone C)
 #                               the reference. Defines
 #                               NS_PROTOCOL_TIMERS_SKIP_IDLE for
 #                               nanostack_eventloop and its consumers
+#   NANOSTACK_FHSS_POLL_SKIP_IDLE
+#                               idle-poll skipping in the FHSS (docs/PORTING.md,
+#                               "Idle-poll skipping of the FHSS TX queue"):
+#                               before its schedules start, an FFN polls its
+#                               TX queue every 10 ms only while the queue
+#                               holds frames. Default ON; OFF gives the
+#                               periodic poll of the reference. Defines
+#                               NS_FHSS_POLL_SKIP_IDLE for nanostack_eventloop
+#                               and its consumers (the RCP library)
 # mbedTLS: if the consumer already defines MbedTLS::mbedtls,
 # MbedTLS::mbedcrypto and MbedTLS::mbedx509, they are used as they are;
 # otherwise find_package(MbedTLS) looks for v3.0.0.
@@ -69,6 +78,7 @@ option(NANOSTACK_FILE_NO_STDIO "Compile out the stdio fallback of ns_file_system
 option(NANOSTACK_TLS_STRONG_PORT_ENTROPY "The port's random source is a TRNG: strong TLS entropy source" OFF)
 option(NANOSTACK_EVENTLOOP_SKIP_IDLE_TICKS "Idle-tick skipping: the 10 ms tick runs only when an event timer is due" ON)
 option(NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE "Idle-tick skipping of the protocol timers: they run only when a module has work" ON)
+option(NANOSTACK_FHSS_POLL_SKIP_IDLE "Idle-poll skipping: before the FHSS schedules start, the TX queue is polled only while it holds frames" ON)
 
 if(NANOSTACK_PORT MATCHES "^nanostack_port_(posix|sim)$")
     include(CheckIncludeFile)
@@ -130,6 +140,9 @@ if(NANOSTACK_EVENTLOOP_SKIP_IDLE_TICKS)
 endif()
 if(NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE)
     target_compile_definitions(nanostack_eventloop PUBLIC NS_PROTOCOL_TIMERS_SKIP_IDLE)
+endif()
+if(NANOSTACK_FHSS_POLL_SKIP_IDLE)
+    target_compile_definitions(nanostack_eventloop PUBLIC NS_FHSS_POLL_SKIP_IDLE)
 endif()
 
 if(NANOSTACK_PORT STREQUAL "nanostack_port_posix")

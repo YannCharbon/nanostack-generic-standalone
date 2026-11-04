@@ -136,7 +136,17 @@ void rpl_control_event(struct rpl_domain *domain, rpl_event_t event)
 /* When we join a new instance, we need to publish existing addresses.
  * Later addresses additions/removals are handled by rpl_control_addr_notifier.
  */
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Idle-tick skipping: this runs every second only while it has a target to
+ * create (rpl_control_publish_own_addresses_next()); otherwise it only copies
+ * the address lifetimes, which can wait for the next run. Called once for n
+ * seconds, it gives each target the address's lifetime plus n - 1, so that
+ * rpl_downward_dao_slow_timer(), which then ages the target by n, leaves what
+ * the periodic timer would have left: the address's lifetime minus 1. */
+static void rpl_control_publish_own_addresses(rpl_domain_t *domain, rpl_instance_t *instance, uint16_t seconds)
+#else
 static void rpl_control_publish_own_addresses(rpl_domain_t *domain, rpl_instance_t *instance)
+#endif
 {
     int8_t last_id = -1;
     protocol_interface_info_entry_t *cur;
@@ -146,12 +156,51 @@ static void rpl_control_publish_own_addresses(rpl_domain_t *domain, rpl_instance
                 /* TODO - wouldn't need to publish address if within a prefix published by parent */
                 uint32_t descriptor = 0;
                 bool want_descriptor = rpl_policy_target_descriptor_for_own_address(domain, addr->address, addr->source, addr->data, &descriptor);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+                uint32_t lifetime = addr->valid_lifetime;
+                if (lifetime != 0xFFFFFFFF && seconds > 1) {
+                    lifetime = lifetime < 0xFFFFFFFE - (seconds - 1) ? lifetime + (seconds - 1) : 0xFFFFFFFE;
+                }
+                rpl_instance_publish_dao_target(instance, addr->address, 128, lifetime, true, want_descriptor, descriptor);
+#else
                 rpl_instance_publish_dao_target(instance, addr->address, 128, addr->valid_lifetime, true, want_descriptor, descriptor);
+#endif
             }
         }
         last_id = cur->id;
     }
 }
+
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Seconds until rpl_control_publish_own_addresses() and the ageing of the
+ * targets it publishes have something to do: 1 if it would create a target.
+ * A published target of an address takes the address's lifetime every
+ * second before it is aged, so its own value may be stale (the address was
+ * renewed): it expires at the second the address's lifetime reaches 1, one
+ * second before the address (rpl_downward_dao_slow_timer_next() may give an
+ * earlier, harmless wake from the stale value). */
+static uint32_t rpl_control_publish_own_addresses_next(rpl_domain_t *domain, rpl_instance_t *instance)
+{
+    uint32_t next = UINT32_MAX;
+    int8_t last_id = -1;
+    protocol_interface_info_entry_t *cur;
+    while ((cur = protocol_stack_interface_info_get_by_rpl_domain(domain, last_id)) != NULL) {
+        ns_list_foreach(if_address_entry_t, addr, &cur->ip_addresses) {
+            if (addr->tentative || addr_is_ipv6_link_local(addr->address)) {
+                continue;
+            }
+            if (!rpl_instance_lookup_published_dao_target(instance, addr->address, 128)) {
+                return 1;
+            }
+            if (addr->valid_lifetime != 0xFFFFFFFF) {
+                next = protocol_timer_next_min(next, addr->valid_lifetime >= 2 ? addr->valid_lifetime - 1 : 1);
+            }
+        }
+        last_id = cur->id;
+    }
+    return next;
+}
+#endif
 
 void rpl_control_publish_host_address(rpl_domain_t *domain, const uint8_t addr[16], uint32_t lifetime)
 {
@@ -1896,15 +1945,26 @@ static void trace_info_print(const char *fmt, ...)
 }
 #endif
 #ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
-/* Not converted: every second while an instance exists */
+/* Seconds until rpl_control_slow_timer() has something to do: 1 is the next
+ * second; UINT32_MAX if nothing */
 uint32_t rpl_control_slow_timer_next(void)
 {
+    uint32_t next = UINT32_MAX;
+    bool instances = false;
+
     ns_list_foreach(rpl_domain_t, domain, &rpl_domains) {
-        if (!ns_list_is_empty(&domain->instances)) {
-            return 1;
+        ns_list_foreach(rpl_instance_t, instance, &domain->instances) {
+            instances = true;
+            next = protocol_timer_next_min(next, rpl_control_publish_own_addresses_next(domain, instance));
+            next = protocol_timer_next_min(next, rpl_instance_slow_timer_next(instance));
+            next = protocol_timer_next_min(next, rpl_downward_dao_slow_timer_next(instance));
         }
     }
-    return UINT32_MAX;
+    // rpl_instance_purge(): one item a second while above the soft limit
+    if (instances && rpl_alloc_total > rpl_purge_threshold) {
+        return 1;
+    }
+    return next;
 }
 
 #endif
@@ -1914,7 +1974,11 @@ void rpl_control_slow_timer(uint16_t seconds)
 
     ns_list_foreach(rpl_domain_t, domain, &rpl_domains) {
         ns_list_foreach_safe(rpl_instance_t, instance, &domain->instances) {
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+            rpl_control_publish_own_addresses(domain, instance, seconds);
+#else
             rpl_control_publish_own_addresses(domain, instance);
+#endif
             rpl_instance_slow_timer(instance, seconds);
             rpl_downward_dao_slow_timer(instance, seconds);
             /* We purge one item from each instance, so as not to favour one domain or instance */

@@ -100,6 +100,10 @@ int8_t ws_pae_auth_delete(protocol_interface_info_entry_t *interface_ptr);
  *
  */
 void ws_pae_auth_fast_timer(uint16_t ticks);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Ticks until ws_pae_auth_fast_timer() has something to do (UINT32_MAX: nothing) */
+uint32_t ws_pae_auth_fast_timer_next(void);
+#endif
 
 /**
  * ws_pae_auth_slow_timer PAE authenticator slow call
@@ -322,6 +326,7 @@ void ws_pae_auth_cb_register(protocol_interface_info_entry_t *interface_ptr, ws_
 #define ws_pae_auth_node_access_revoke_start(interface_ptr) -1
 #define ws_pae_auth_node_limit_set(interface_ptr, limit)
 #define ws_pae_auth_fast_timer NULL
+#define ws_pae_auth_fast_timer_next() UINT32_MAX
 #define ws_pae_auth_slow_timer NULL
 #define ws_pae_auth_radius_address_set(interface_ptr, remote_addr) -1
 

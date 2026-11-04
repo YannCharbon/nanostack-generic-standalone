@@ -161,6 +161,10 @@ struct fhss_ws {
     struct fhss_ws_configuration fhss_configuration;
     fhss_get_neighbor_info *get_neighbor_info;
     struct fhss_ws_lfn lfn;
+#ifdef NS_FHSS_POLL_SKIP_IDLE
+    bool idle_poll_skipped;         // the 10 ms TX queue poll is skipped (queue empty)
+    uint32_t idle_poll_at_us;       // when that poll was due (on the poll's 10 ms grid)
+#endif
 };
 
 fhss_structure_t *fhss_ws_enable(fhss_api_t *fhss_api, const fhss_ws_configuration_t *fhss_configuration, const fhss_timer_t *fhss_timer);

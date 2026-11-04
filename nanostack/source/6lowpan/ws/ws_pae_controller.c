@@ -1736,8 +1736,7 @@ uint32_t ws_pae_controller_fast_timer_next(void)
         if (entry->pae_fast_timer == ws_pae_supp_fast_timer) {
             next = protocol_timer_next_min(next, ws_pae_supp_fast_timer_next());
         } else {
-            // The authenticator: every tick
-            next = 1;
+            next = protocol_timer_next_min(next, ws_pae_auth_fast_timer_next());
         }
     }
     return next;

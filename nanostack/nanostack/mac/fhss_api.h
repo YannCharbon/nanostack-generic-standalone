@@ -227,6 +227,13 @@ typedef void fhss_lfn_pending(const fhss_api_t *api, const uint8_t *peer);
 typedef bool fhss_lfn_tx_delay(const fhss_api_t *api, const uint8_t *destination_address, uint32_t *delay_us);
 
 /**
+ * @brief A frame was put in the MAC's unicast TX queue. The FHSS may then
+ * restart a TX queue poll it had skipped while the queue was empty
+ * (NS_FHSS_POLL_SKIP_IDLE). Optional.
+ */
+typedef void fhss_tx_queued(const fhss_api_t *api);
+
+/**
  * \brief Struct fhss_api defines interface between software MAC and FHSS.
  * Application creates fhss_api_s object by calling FHSS creator function.
  * Then object is passed to software MAC which then initialises it's own callback functions.
@@ -248,6 +255,7 @@ struct fhss_api {
     fhss_lfn_tx_at *lfn_tx_at;                          /**< Frame to an LFN at a requested time (FAN 1.1 parent). Optional, may be NULL. */
     fhss_lfn_pending *lfn_pending;                      /**< Frame-pending bit exchanged with an LFN (FAN 1.1). Optional, may be NULL. */
     fhss_lfn_tx_delay *lfn_tx_delay;                    /**< Time to an LFN frame's next TX opportunity (FAN 1.1 parent). Optional, may be NULL. */
+    fhss_tx_queued *tx_queued;                          /**< A frame was queued for unicast TX. Optional, may be NULL. */
 };
 
 /**

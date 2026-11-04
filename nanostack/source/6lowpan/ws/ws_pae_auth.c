@@ -734,6 +734,21 @@ static void ws_pae_auth_tasklet_handler(arm_event_s *event)
     }
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+/* Every tick while an authenticator's timer runs (KMPs of the supplicants
+ * being authenticated or waiting), and when the key storage scatter timer
+ * expires */
+uint32_t ws_pae_auth_fast_timer_next(void)
+{
+    ns_list_foreach(pae_auth_t, pae_auth, &pae_auth_list) {
+        if (ws_pae_auth_timer_running(pae_auth)) {
+            return 1;
+        }
+    }
+    return ws_pae_key_storage_fast_timer_next();
+}
+
+#endif
 void ws_pae_auth_fast_timer(uint16_t ticks)
 {
     ns_list_foreach(pae_auth_t, pae_auth, &pae_auth_list) {
