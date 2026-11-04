@@ -1,4 +1,4 @@
-# Wi-SUN FAN 1.1 LFN in the upper layers: one LFN under the border router
+# Wi-SUN FAN 1.1 LFN in the upper layers
 
 GS8 stages 3–5 (root repo: `documents/pre-study/investigation/LFN_FAN11_Study.md` §5, items U2–U13, U15). The MAC and FHSS mechanics are in `LFN_MAC.md`. This note describes what the LLC, the LFN bootstrap and the border router do, the settings, the sources each rule comes from, the deviations from Silicon Labs' implementation, and the tests.
 
@@ -83,6 +83,7 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | `rx_window_us`, `rx_guard_us`, `close_retry_us`, `uplink_guard_us` | 5000, 1000, 2000, 5000 | LFN | `LFN_MAC.md` §5 |
 | `lpas_interval_s` | 10 | LFN | Between LPAS sweeps [M item 8] |
 | `lnd_slot_time_ms`, `lnd_slots` | 60, 40 | LFN | LND-IE values [M item 4] |
+| `lnd_response_delay_ms` | 1550 | LFN | The discovery window opens this long after the sweep starts, and never before 20 ms per channel plus 300 ms [M item 4] |
 | `lpcs_retry_intervals` | 2 | LFN | LPCS again after this many intervals [I] |
 | `maintain_parent_time` | 5 | LFN | Sync periods; loss after 1.5 × [M item 46] |
 | `lgtk_max_mismatch_s` | 120 | LFN | Key request this long after the first LPC whose LGTK hash lists an LGTK it lacks (Silicon Labs Test profile `lgtk_max_mismatch_m` = 2 min [M item 49]) |
@@ -90,6 +91,7 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | `drift_ppm` | 50 | LFN | Window widening per side, µs per second since the last sync (Silicon Labs' LFN: about 55 [M item 23]) |
 | `drift_floor_ppb` | 5000 | LFN | Once the clock rate against the parent is measured, the widening is twice the drift left after the correction, at least this (ppb, per side); 0: `drift_ppm` always (§11) |
 | `widening_max_us` | 0 | LFN | Upper bound of the widening, per side; 0: automatic, `drift_ppm` over two sync periods and one interval (one sync missed), at least 100 ms (the former fixed value), at most half the interval (Eco with a 4 h interval: 4.3 s). A 4 h interval with a 10 h sync period needed 1.8 s set by hand |
+| `bc_widening_max_us` | 0 | LFN | Upper bound of the widening of the broadcast windows, per side; 0: `widening_max_us` (automatic: from the LFN broadcast interval, `LFN_MAC.md` §5) |
 | `bc_rx_window_us` | 5000 | LFN | Window in the parent's LFN broadcast slots |
 | `bc_sync_only` | false | LFN | Listen only in the broadcast slots of the sync frames (Silicon Labs' LFN listens in every slot [M items 21, 55]) |
 | `restart_min_ms`, `restart_max_ms` | 250, 2000 | LFN | Restart of a failed uplink after its MAC retries: min × 2^n to 2 × min × 2^n ms, capped at max; long enough to outlast a parent's PAN configuration sweep at 50 kbit/s |
@@ -111,8 +113,6 @@ Tags as in `LFN_MAC.md`: **[S]** a public source (`LFN_MAC.md` §7: the Arm code
 | `lgtk_new_install_required` | 90 | parent | The next LGTK is installed when the active one has used this % of its lifetime [S: `wsbrd` default] |
 | `lgtk_new_activation_time` | 180 | parent | The next LGTK is activated `lgtk_lifetime_s` / this before the active one expires (12 h with the defaults) [S: `wsbrd` default] |
 | `lgtk_activation_guard_s` | 300 | parent | The next LGTK is activated no sooner than this after its installation [I] (§8) |
-
-| `lnd_response_delay_ms` | 1550 | LFN | The discovery window opens this long after the sweep starts, and never before 20 ms per channel plus 300 ms [M item 4] |
 
 **DHCPv6 lease** [S: `wisun-br-linux` `examples/wsbrd.conf`, infinite by default]: `ws_management_lfn_parent_set(id, true)` on a border router sets the DHCPv6 address lifetime to infinite (`WS_LFN_DHCP_ADDRESS_LIFETIME`); an application sets a finite one with `ws_cfg_bbr_set()` after that call (emulator: `dhcp_lifetime_s`). With the network-size lifetime (2 h in a small network) every node renewed every 30 min, and an LFN registered its address again after each renewal (emulator, border router – router – LFN, 3 h: 5 renewals each for the router and the LFN, 6 AROs from the LFN); with the infinite lease none, 1 ARO, traffic both ways through the router intact (3 seeds). FAN 1.0 border routers keep the network-size lifetime.
 
@@ -275,7 +275,7 @@ The firmware (`nanostack-efr32fg25-freertos`) builds the router program as an LF
 
 With both fixed, the LFN tests (one LFN with an LGTK rotation through a router, the six-LFN mesh, one LFN under the border router) and FAN 1.0 `dag_simple` (600 s) run clean under AddressSanitizer, and FAN 1.0 `dag_simple` logs are byte-identical to `b1b9cc5`.
 
-**An LFN under a router on the kits** (the firmware README, "An LFN under a router on the kits"). Border router – router (`FW_RN_LFN_PARENT`) – LFN, with a test-only MAC filter in the LFN so that it hears only the router: the router gets its LGTK, the LFN joins through it (EAPOL and DHCPv6 relayed, address registered, routed by the border router) and answers the border router's pings, as in the emulator's `MESH=1`. Its idle current is 23.8–24.8 µA (24.9–26.9 µA under the border router).
+**An LFN under a router on the kits** (the firmware README, "An LFN under a router on the kits"). Border router – router (`FW_RN_LFN_PARENT`) – LFN, with a test-only MAC filter in the LFN so that it hears only the router: the router gets its LGTK, the LFN joins through it (EAPOL and DHCPv6 relayed, address registered, routed by the border router) and answers the border router's pings, as in the emulator's `MESH=1`. Its idle current is 23.7–25.4 µA (AEM, 16 windows of 60 s in 8 boots; 24.9–26.9 µA under the border router, 18 windows in 3 boots).
 
 **Rejoin after the network restarted.** An LFN that loses its parent rejoins without EAPOL while its keys are valid (black-box item 47). After a restart of the border router (new PAN ID, new GTKs and LGTKs) it kept rejoining with its old keys: its LPCS, secured with the old LGTK, got no LPC, and it lost the parent again after 375 s, without end. Two rules now end this [I]:
 - keys belong to a PAN, as for an FFN (`ws_pae_supp_nw_keys_valid_check()`): an LPA from another PAN ID drops them, and the LFN starts its discovery again, with EAPOL;
@@ -362,7 +362,7 @@ The 7.0 µA floor adds 2.4 µA everywhere (Balanced was 9.1–10.0 µA, Eco 10.8
 - After a search for lost NAs that kept the parent ("no parent heard, parent kept"), the LFN never registered again: it does now.
 - That search sent one LPAS sweep, which the border router missed while it hopped from a channel already passed to another (a 36-channel sweep takes about 0.35 s, a dwell 255 ms). A search while the parent is kept now sends `parent_check_sweeps` sweeps, as a better-parent check.
 
-The release test with all four tries lost (`lost_release_all`) passes in seed 2 and fails in seed 1 on the test's timing: the link comes back at 728.5 s, 9.5 s after the fourth try, while that try's MAC retries and restarts still run (the last at 728.6 s), so the fourth try is acknowledged. In these runs the border router's "Ignoring stale path" path is not reached: the old parent sends one DAO after the move, for its own address; it re-advertises the LFN's address only at that target's refresh, hours later with the 36 h registration lifetime. A run with a registration lifetime of a few minutes would exercise it.
+The release test with all four tries lost (`lost_release_all`) first failed in seed 1 on the test's timing: the link came back at 728.5 s, 9.5 s after the fourth try, while that try's MAC retries and restarts still ran (the last at 728.6 s), so the fourth try was acknowledged. The test now keeps the link dead past the fourth try's check (emulator `9f3d8cb`). With the default 36 h registration lifetime the old parent re-advertises the LFN's address only at that target's refresh, hours later, so the border router's "Ignoring stale path" rule is not reached; the variant `REG_MIN=30` (30 min registrations, the link dead for 120 s from the first try) reaches it and checks that the border router ignores the old parent's DAOs. Both pass in the full LFN suite.
 
 ## 12. Test commands
 
@@ -371,7 +371,7 @@ From the emulator's root (`mesh-emulator-orchestrator/`), with its virtual-time 
 | What | Command |
 | --- | --- |
 | FAN 1.0 non-regression (10 seeds, byte for byte) | `sim_utils/migration/nonreg_dag_simple.sh build-vt $(pwd) <reference-runs>/dag_simple_b1b9cc5` |
-| The LFN suite (quick: 45 runs, about 1 min; full: 136 runs, about 5 min) | `sim_utils/vtime/lfn_suite.sh quick build-vt $(pwd) <out>` |
+| The LFN suite (quick: 49 runs, about 70 s; full: 145 runs, about 6 min, with 12 jobs on a 24-core PC) | `sim_utils/vtime/lfn_suite.sh quick build-vt $(pwd) <out>` |
 | A 4 h listen interval over 72 h (Eco, 10 h sync period) | `BR_PERIOD=18500 LFN_PERIOD=27000 DUR=259200 STEADY_FROM=86400 LFN_EXTRA="-o lfn_listen_interval_ms=14400000 -o lfn_listen_interval_max_ms=16777215" sim_utils/vtime/test_lfn_profiles.sh build-vt $(pwd) <out> eco` (about 1.5 min) |
 | A router's key request answered by a full EAP-TLS (`CASE=race` or `txfail`) | `sim_utils/vtime/test_lfn_keyreq.sh build-vt $(pwd) <out>` |
 | Lost NAs, lost releases (tests agent) | `MODE=na\|na2\|release PROF=... sim_utils/vtime/test_lfn_lost.sh build-vt $(pwd) <out>` |

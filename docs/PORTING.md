@@ -322,8 +322,9 @@ extern const struct fhss_timer ns_port_fhss_timer;   /* Nanostack's fhss_timer_t
 - Fill in `fhss_timer_start(us, cb, api)`, `fhss_timer_stop(cb, api)`,
   `fhss_get_remaining_slots(cb, api)` (in µs), `fhss_get_timestamp(api)`
   (= `ns_port_time_us()`), `fhss_resolution_divider = 1`.
-- One pending timeout **per distinct callback**: the FHSS uses up to 3
-  (unicast, broadcast, and the FAN 1.1 LFN timer of `docs/LFN_MAC.md`).
+- One pending timeout **per distinct callback**: the FHSS uses up to 4
+  (the FFN unicast and broadcast schedules, and the FAN 1.1 LFN's listen
+  timer and LFN broadcast-slot timer of `docs/LFN_MAC.md`).
   Starting one that is already armed replaces it. Callbacks run in the stack
   context.
 - The application passes it to `ws_management_node_init()`.
@@ -384,6 +385,13 @@ GENERICITY_PLAN.md §3.2. The essentials:
   MAC then closes an LFN receive window only after that frame. Without it
   (return -1) the window closes on time and a frame arriving at its end is
   lost.
+- **Optional, for an LFN:** `PHY_EXTENSION_SET_BACKOFF_RX_OFF` takes one
+  byte, set before each CSMA-CA transmission of a node whose receiver is off
+  when idle (an LFN outside its windows): 1 means the receiver need not
+  listen during the coming backoff (it is on for the CCA, the TX and the
+  ACK), 0 means it listens as usual. A node whose receiver is on when idle
+  never sends it. Without it (return -1) the radio listens during the
+  backoff: 20–45 ms of RX per MAC retry of an LFN.
 - The EFR32 driver also documents the RAIL specifics: scheduled-TX lead time,
   `CCA_OK` reporting, radio config (firmware README, "Design notes").
 
