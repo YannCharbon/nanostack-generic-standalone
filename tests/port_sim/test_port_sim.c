@@ -278,6 +278,8 @@ static void node_arm(int fd)
 
     eventOS_callback_timer_start(id, 20);
     node_attach(fd, 1);
+    NODE_CHECK(!ns_port_sim_power());
+    NODE_CHECK(!ns_port_sim_medium());
     ns_port_run();
 }
 
@@ -711,6 +713,7 @@ static void node_power(int fd)
     ns_port_posix_add_fd(fd, false, frame_signal_cb, NULL);
     node_attach(fd, 1);
     NODE_CHECK(ns_port_sim_power());
+    NODE_CHECK(!ns_port_sim_medium());
     ns_port_run();
 }
 
@@ -1047,6 +1050,49 @@ static void cond_drift_slow(void)
     c_quit();
 }
 
+// Central medium: NSIM_WELCOME_MEDIUM sets ns_port_sim_medium() and nothing
+// else: no "xc" (c_idle() keeps any message before "xi" as a report).
+static void node_medium(int fd)
+{
+    int id = eventOS_callback_timer_register(timer_cb);
+
+    eventOS_callback_timer_start(id, 20);
+    node_attach(fd, 1);
+    NODE_CHECK(ns_port_sim_medium());
+    NODE_CHECK(!ns_port_sim_power());
+    ns_port_run();
+}
+
+static void cond_medium(void)
+{
+    struct nsim_welcome w = { .magic = { 'x', 'w' }, .version = NSIM_PROTO_VERSION,
+                              .flags = NSIM_WELCOME_MEDIUM, .seed = 1 };
+
+    c_send(&w, sizeof(w));
+    CHECK_U64(c_idle(), 1000);
+    EXPECT_NONE();
+    c_advance(1000, 0, NULL);
+    CHECK_U64(c_idle(), NEVER);
+    EXPECT("timer 0 1000");
+    c_quit();
+}
+
+// A welcome of another protocol version is fatal.
+static void node_version(int fd)
+{
+    close(2);
+    node_attach(fd, 1);
+    _exit(0);
+}
+
+static void cond_version(void)
+{
+    struct nsim_welcome w = { .magic = { 'x', 'w' }, .version = NSIM_PROTO_VERSION - 1, .seed = 1 };
+
+    c_send(&w, sizeof(w));
+    cond_fatal();
+}
+
 static void node_drift_fast(int fd)
 {
     g_drift_ppb = 100000;
@@ -1073,6 +1119,8 @@ int main(void)
     run_test("event loop until idle by default", node_until_idle, cond_until_idle);
     run_test("idle reports", node_idle, cond_idle);
     run_test("power: \"xc\" before each \"xi\"", node_power, cond_power);
+    run_test("central medium flag", node_medium, cond_medium);
+    run_test("other protocol version is fatal", node_version, cond_version);
     test_random();
     run_test("random before attach is fatal", node_random_early, cond_fatal);
     run_test("set_busy is fatal", node_busy, cond_fatal);

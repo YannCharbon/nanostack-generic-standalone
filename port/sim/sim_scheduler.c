@@ -29,6 +29,7 @@ static struct {
     int node_id;
     uint64_t seed;
     int32_t drift_ppb;
+    bool medium;                // NSIM_WELCOME_MEDIUM
     uint64_t now_us;
     volatile bool signalled;
 
@@ -143,6 +144,11 @@ uint64_t ns_port_sim_seed(void)
     return sim.seed;
 }
 
+bool ns_port_sim_medium(void)
+{
+    return sim.medium;
+}
+
 unsigned long ns_port_sim_zero_starts(void)
 {
     return g_sim_zero_starts_timer + g_sim_zero_starts_fhss;
@@ -216,6 +222,7 @@ void ns_port_sim_attach(int fd, int node_id)
     if (sim.drift_ppb)
         INFO("ns_port_sim: clock drift %+.3f ppm", sim.drift_ppb / 1000.0);
     g_sim_power = msg.welcome.flags & NSIM_WELCOME_POWER;
+    sim.medium = msg.welcome.flags & NSIM_WELCOME_MEDIUM;
     sim_random_seed(sim.seed, node_id);
     atexit(sim_report);
 }

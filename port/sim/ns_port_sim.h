@@ -47,10 +47,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define NSIM_PROTO_VERSION 2
+#define NSIM_PROTO_VERSION 3
 #define NSIM_NEVER UINT64_MAX   // "xi": no timer armed
 
 #define NSIM_WELCOME_POWER 0x0001 // the conductor records power: send "xc"
+#define NSIM_WELCOME_MEDIUM 0x0002 // central medium: the server decides reception (emulator docs/MEDIUM.md)
 
 struct nsim_welcome {
     char magic[2];              // "xw"
@@ -139,5 +140,11 @@ unsigned long ns_port_sim_zero_starts(void);
 // ns_port_sim_attach(); programs then report what the conductor's power
 // ledger needs (the emulated radio's state changes).
 bool ns_port_sim_power(void);
+
+// True when the conductor's central medium decides reception
+// (NSIM_WELCOME_MEDIUM; mesh-emulator-orchestrator docs/MEDIUM.md). Valid
+// after ns_port_sim_attach(): the program's radio then takes its received
+// frames' outcome from the conductor's verdicts and asks it for CCA energy.
+bool ns_port_sim_medium(void);
 
 #endif
