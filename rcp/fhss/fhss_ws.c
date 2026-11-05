@@ -1134,24 +1134,23 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
         }
         common_write_16_bit_inverse(slot, header_ie.content_ptr + 1);
         common_write_24_bit_inverse(offset_ms, header_ie.content_ptr + 3);
-        /* The parent's view of our slots dates from this frame, unless it is
-           our Enh-ACK: parents take an LFN's timing from its data, EAPOL,
-           LPAS and LPCS frames, not from the LUTT-IE of its ACKs (ours,
-           ws_llc_data_service.c; Silicon Labs' wsbrd v2.10.3, ws_llc.c,
+        /* The parent's view of our slots may date from this frame, unless
+           it is our Enh-ACK: parents take an LFN's timing from its data,
+           EAPOL, LPAS and LPCS frames, not from the LUTT-IE of its ACKs
+           (ours, ws_llc_data_service.c; Silicon Labs' wsbrd v2.10.3, ws_llc.c,
            ws_llc_data_confirm: the ACK's LUTT-IE only refreshes the
            neighbour) [S]. Taken as the view, an ACK sent before the rate
            was measured held our slots where they had drifted to since the
            parent's view (Eco: 0.24 s after 4 h), and every downlink missed
-           the narrow windows once the rate was known */
+           the narrow windows once the rate was known. The view becomes this
+           frame's once the frame is known to have reached the parent
+           (fhss_ws_lfn_view_tx_done()) */
         if (header_ie.content_ptr[0] != FHSS_WS_FT_ACK) {
             fhss_ws_lfn_ext_update(lfn, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api));
-            lfn->lutt_ext = fhss_ws_lfn_ext(lfn, tx_time);
-            lfn->lutt_after_sync = true;
-            lfn->ref_valid = true;
-            lfn->ref_ext = lfn->lutt_ext;
-            lfn->ref_slot = slot;
-            lfn->ref_phase_us = (uint64_t)offset_ms * 1000u;
-            lfn->ref_par_valid = fhss_ws_lfn_par_at(lfn, lfn->ref_ext, &lfn->ref_par_us);
+            lfn->view_pend = true;
+            lfn->view_pend_ext = fhss_ws_lfn_ext(lfn, tx_time);
+            lfn->view_pend_slot = slot;
+            lfn->view_pend_offset_ms = offset_ms;
         }
     }
     if (fhss_structure->ws->lfn.bc_enabled) {
@@ -1168,6 +1167,59 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
     return fhss_structure->rx_channel;
 }
 
+/* The parent's view of our slots: the LUTT-IE of a frame it took. A frame
+ * built is not one received: its CSMA may fail, every attempt may be lost.
+ * Taken as the view at build time (before), such a frame left our slots
+ * where they had drifted to since the parent's real view: before the rate
+ * is measured, 15-20 ppm times the hours between the two (Eco: 0.2-0.7 s)
+ * until a later uplink got through, the same mechanism as an ACK taken as
+ * the view. Parents take the LUTT-IE of every LPAS, of LPCS, data and
+ * EAPOL frames with an LUS-IE (ours carry one), and not that of a repeated
+ * data or EAPOL frame (DSN duplicate) [S: ws_llc_data_service.c; Silicon
+ * Labs' wsbrd v2.10.3, ws_llc.c ws_llc_data_lfn_ind and
+ * ws_llc_eapol_lfn_ind, ws_mngt.c ws_mngt_lpas_analyze and
+ * ws_mngt_lpcs_analyze]. The rule that minimises the expected mismatch [I],
+ * with p the loss rate of a frame or an ACK:
+ *  - acknowledged (or sent without an ACK request, or an asynchronous
+ *    sweep sent): the view; the parent took this attempt or an earlier one
+ *    of the same frame, ms apart;
+ *  - one attempt on the air, unacknowledged: not the view: the parent has
+ *    it with probability (1 - p) / (2 - p), below 1/2;
+ *  - a second attempt of the same frame on the air: the view: the parent
+ *    has one of them with probability over 1/2 for p below 0.6 (frame and
+ *    ACK lost alike); an unacknowledged frame that the parent took leaves
+ *    the same error as a lost frame taken as the view;
+ *  - never on the air (CSMA failed, queue expiry): not the view. */
+static void fhss_ws_lfn_view_commit(struct fhss_ws_lfn *lfn)
+{
+    lfn->view_pend = false;
+    lfn->view_pend_on_air = false;
+    lfn->lutt_ext = lfn->view_pend_ext;
+    lfn->lutt_after_sync = true;
+    lfn->ref_valid = true;
+    lfn->ref_ext = lfn->view_pend_ext;
+    lfn->ref_slot = lfn->view_pend_slot;
+    lfn->ref_phase_us = (uint64_t)lfn->view_pend_offset_ms * 1000u;
+    lfn->ref_par_valid = fhss_ws_lfn_par_at(lfn, lfn->ref_ext, &lfn->ref_par_us);
+}
+
+static void fhss_ws_lfn_view_tx_done(struct fhss_ws_lfn *lfn, bool waiting_ack, bool tx_completed, uint8_t handle)
+{
+    if (!lfn->listen_running || !lfn->view_pend) {
+        return;
+    }
+    if (tx_completed) {
+        fhss_ws_lfn_view_commit(lfn);
+    } else if (waiting_ack) {
+        if (lfn->view_pend_on_air && lfn->view_pend_handle == handle) {
+            fhss_ws_lfn_view_commit(lfn);
+        } else {
+            lfn->view_pend_on_air = true;
+            lfn->view_pend_handle = handle;
+        }
+    }
+}
+
 static void fhss_ws_data_tx_done_callback(const fhss_api_t *api, bool waiting_ack, bool tx_completed, uint8_t handle)
 {
     tr_warn("fhss_ws_data_tx_done_callback: waiting_ack=%d, tx_completed=%d, handle=%d", waiting_ack, tx_completed, handle);
@@ -1175,6 +1227,7 @@ static void fhss_ws_data_tx_done_callback(const fhss_api_t *api, bool waiting_ac
     if (!fhss_structure) {
         return;
     }
+    fhss_ws_lfn_view_tx_done(&fhss_structure->ws->lfn, waiting_ack, tx_completed, handle);
     if (fhss_structure->ws->lfn.listen_running && !waiting_ack && !tx_completed) {
         // LFN: a failed frame may wait in the MAC queue for its restart; with
         // no periodic poll, poll until the queue is empty (fhss_event_timer_cb)
@@ -1737,6 +1790,8 @@ static void fhss_ws_lfn_listen_start(fhss_structure_t *fhss_structure)
     lfn->own_hop = false;
     lfn->stop_close_retry = false;
     lfn->ref_valid = false;
+    lfn->view_pend = false;
+    lfn->view_pend_on_air = false;
     lfn->ref_par_valid = false;
     lfn->slot = 0;
     lfn->slot_start = lfn->own.anchor_us;

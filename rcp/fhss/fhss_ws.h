@@ -92,6 +92,12 @@ struct fhss_ws_lfn {
     uint16_t ref_slot;              //   the slot then
     uint64_t ref_phase_us;          //   and the time into it, in the parent's µs (as the parent reads it)
     bool ref_par_valid;             // ref_ext on the parent's clock (ref_par_us): our slots then follow its view
+    bool view_pend;                 // the LUTT-IE of a frame built but not known to have reached the parent:
+    uint64_t view_pend_ext;         //   its TX time, extended,
+    uint16_t view_pend_slot;        //   slot
+    uint32_t view_pend_offset_ms;   //   and offset (fhss_ws_lfn_view_commit())
+    bool view_pend_on_air;          // an attempt of the frame view_pend_handle went on the air, unacknowledged
+    uint8_t view_pend_handle;
     uint64_t ref_par_us;            //   whatever the age of the reference
     bool sync_par_valid;            // the last sync's slot start on the parent's clock: its LFN broadcast
     uint64_t sync_par_us;           //   slots (nominal interval) counted since this schedule's first sync

@@ -1305,6 +1305,7 @@ static void test_own_ref(void)
         }
         now_us = L0 + up[i];
         api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, ts());
+        api->data_tx_done(api, false, true, 1);     // acknowledged
         lutt_t = now_us;
         lutt_slot = ie[4] | ie[5] << 8;
         lutt_off = ie[6] | ie[7] << 8 | ie[8] << 16;
@@ -1422,6 +1423,7 @@ static void test_own_ref_jitter(uint32_t lost_until, uint32_t seed)
             }
             now_us = t_lutt;
             api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, ts());
+            api->data_tx_done(api, false, true, 1);     // acknowledged
             lutt_t = now_us;
             lutt_off = ie[6] | ie[7] << 8 | ie[8] << 16;
             lutt_done = true;
@@ -1536,6 +1538,7 @@ static void test_ack_not_view(void)
     }
     now_us = AT(167);
     api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, ts());
+    api->data_tx_done(api, false, true, 1);     // acknowledged
     lutt_t = now_us;
     lutt_slot = ie[4] | ie[5] << 8;
     lutt_off = ie[6] | ie[7] << 8 | ie[8] << 16;
@@ -1586,6 +1589,124 @@ static void test_ack_not_view(void)
         seen++;
     }
     CHECK(seen >= 115);
+    #undef PS
+    #undef AT
+    CHECK(ns_fhss_delete(api) == 0);
+}
+
+/* Only a frame that reached the parent sets its view. The timeline of
+ * test_ack_not_view (Eco, the parent's clock 15.6 ppm off ours, the rate
+ * first measured at the 10 h sync): a data frame at 167 s, acknowledged
+ * (the view); later data frames (LUTT-IE) whose fate the MAC reports:
+ *   mode 0: at 4 967 s, CSMA failed (never on the air); at 15 767 s, one
+ *           attempt on the air, unacknowledged: neither is the view;
+ *   mode 1: at 15 767 s, two attempts on the air (the second 20 ms later),
+ *           unacknowledged: the view (the parent more likely has one);
+ *   mode 2: at 15 767 s, an LPCS (no ACK requested), sent: the view.
+ * Every window in the 10 h after the rate's sync must hold the parent's TX
+ * at the slot start of the expected view. Before the fix the view was set
+ * when a frame was built: in mode 0 our slots kept the 0.24 s they had
+ * drifted from the parent's view by 15 767 s, and every window missed. */
+static void test_view_on_tx_done(int mode)
+{
+    const uint32_t iv_ms = 300000, bc_ms = 600000, guard = 1000;
+    const double k = 1.0 + 15600e-9;          // our µs per parent µs
+    fhss_ws_lfn_listen_t cfg;
+    fhss_api_t *api;
+
+    reset_fakes();
+    api = create_fhss(lfn_mac, 255, 0, 0);
+    ns_fhss_ws_lfn_listen_defaults(&cfg);
+    cfg.listen_interval_ms = iv_ms;
+    cfg.rx_guard_us = guard;
+    cfg.bc_sync_only = true;
+    CHECK(ns_fhss_ws_lfn_listen_set(api, &cfg) == 0);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    uint64_t L0 = now_us + 1000000;            // the parent's broadcast slot 0
+    #define PS(k_) (L0 + (uint64_t)((double)(k_) * bc_ms * 1000 * k))
+    #define AT(s_) (L0 + (uint64_t)((double)(s_) * 1e6 * k))
+    fhss_ws_lfn_bc_sync_t sy = { .interval_ms = bc_ms, .bsi = 0x77, .sync_period = 60, .channel_function = WS_DH1CF };
+    now_us = AT(6);
+    sy.slot = 0;
+    sy.offset_ms = 6000;
+    sy.rx_timestamp_us = ts();
+    CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+    uint8_t ie[16];
+    int len = write_lutt_ie(ie);
+    uint64_t view_t = 0;
+    uint32_t view_off = 0;
+    uint16_t view_slot = 0;
+    // a frame built at time s_ (its LUTT-IE written), handle h_
+    #define BUILD(s_) do { \
+            while (step(AT(s_))) { \
+            } \
+            now_us = AT(s_); \
+            write_lutt_ie(ie); \
+            api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, ts()); \
+        } while (0)
+    #define VIEW() do { \
+            view_t = now_us; \
+            view_slot = ie[4] | ie[5] << 8; \
+            view_off = ie[6] | ie[7] << 8 | ie[8] << 16; \
+        } while (0)
+    BUILD(167);
+    api->data_tx_done(api, true, false, 7);    // on the air
+    api->data_tx_done(api, false, true, 7);    // acknowledged
+    VIEW();
+    for (int i = 0; i < 2; i++) {
+        uint16_t slot = i ? 61 : 1;
+        if (i == 1) {
+            if (mode == 0) {
+                BUILD(4967);
+                api->data_tx_done(api, false, false, 8);    // CSMA failed
+                BUILD(15767);
+                api->data_tx_done(api, true, false, 9);     // on the air
+                api->data_tx_done(api, false, false, 9);    // no ACK, given up
+            } else if (mode == 1) {
+                BUILD(15767);
+                api->data_tx_done(api, true, false, 9);
+                BUILD(15767.02);                           // the retry
+                api->data_tx_done(api, true, false, 9);
+                VIEW();
+                api->data_tx_done(api, false, false, 9);
+            } else {
+                BUILD(15767);
+                api->data_tx_done(api, false, true, 10);    // sent, no ACK requested
+                VIEW();
+            }
+        }
+        while (step(PS(slot) - 1)) {
+        }
+        now_us = PS(slot) + 500;
+        sy.slot = slot;
+        sy.offset_ms = 0;
+        sy.rx_timestamp_us = ts();
+        CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+    }
+    nevs = 0;
+    while (step(PS(120) - 2000000)) {
+    }
+    int seen = 0, bad = 0;
+    for (int i = 0; i + 1 < nevs; i++) {
+        if (evs[i].e != FHSS_RX_WINDOW_OPEN || evs[i + 1].e != FHSS_RX_WINDOW_CLOSE) {
+            continue;
+        }
+        double open = (double)evs[i].t, close = (double)evs[i + 1].t;
+        double s0 = (double)view_t - (double)view_off * 1000 * k;
+        long n = lround((open + guard - s0) / ((double)iv_ms * 1000 * k));
+        double view = s0 + (double)n * iv_ms * 1000 * k;
+        bool in = view >= open && view + 1000 <= close;
+        if (!in && bad++ < 3) {
+            fprintf(stderr, "view_on_tx_done mode %d: window %ld: the parent's TX %.0f us from the window's opening, window %.0f us\n",
+                    mode, n, view - open, close - open);
+        }
+        CHECK(in);
+        CHECK(evs[i].channel == dh1cf_channel((uint16_t)(view_slot + n), lfn_mac));
+        seen++;
+    }
+    CHECK(seen >= 115);
+    #undef BUILD
+    #undef VIEW
     #undef PS
     #undef AT
     CHECK(ns_fhss_delete(api) == 0);
@@ -1888,6 +2009,9 @@ int main(void)
         }
     }
     test_ack_not_view();
+    test_view_on_tx_done(0);
+    test_view_on_tx_done(1);
+    test_view_on_tx_done(2);
     test_sync_over_uc(0);
     test_sync_over_uc(1);
     test_sync_over_uc(2);
