@@ -3151,6 +3151,8 @@ int fhss_ws_lfn_bc_stop(fhss_structure_t *fhss_structure)
     lfn->rate_known = false;
     lfn->residual_ppb = 0;
     lfn->resched_after_bc = false;
+    // A unicast window cut for this window's sync slot is not resumed
+    lfn->uc_cut_for_sync = false;
     lfn->sync_par_valid = false;
     lfn->ref_par_valid = false;
     if (lfn->listen_running) {

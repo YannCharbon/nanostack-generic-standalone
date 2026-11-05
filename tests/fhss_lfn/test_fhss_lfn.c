@@ -38,6 +38,9 @@
 #include "nanostack/mac/fhss_ws_extension.h"
 #include "nanostack/mac/net_fhss.h"
 #include "fhss/fhss_ws_lfn.h"
+#include "fhss/fhss.h"            // white box: the LFN state (test_sync_over_uc mode 5)
+#include "fhss/fhss_common.h"
+#include "fhss/fhss_ws.h"
 #include "fhss/channel_functions.h"
 
 static uint64_t now_us;
@@ -1729,14 +1732,17 @@ static void test_view_on_tx_done(int mode)
  * 3: the LTS comes, our unicast slot 3 s after the predicted sync slot (the
  * broadcast window opens first; our window's time comes during it, after
  * the LTS); 4: as 3, then the parent lost while the broadcast window is
- * open, after our slot's time in it.
+ * open, after our slot's time in it; 5: as 1, then the parent lost while
+ * the broadcast window is open: the cut is forgotten (white box: before the
+ * fix the next broadcast window's close, in the same own slot, could reopen
+ * a unicast window from it).
  * When the LTS comes, our next unicast slots must move by its phase error:
  * before the fix the unicast timer, still running when the sync came,
  * re-anchored our slots at the old slot in the broadcast window (the skip
  * branch) and the correction was lost (562 ms off). */
 static void test_sync_over_uc(int mode)
 {
-    bool lts_lost = mode == 1 || mode == 2;
+    bool lts_lost = mode == 1 || mode == 2 || mode == 5;
     const uint32_t iv_ms = 300000, bc_ms = 600000, guard = 1000;
     const double k = 1.0 + 15600e-9;          // our µs per parent µs
     fhss_ws_lfn_listen_t cfg;
@@ -1752,7 +1758,7 @@ static void test_sync_over_uc(int mode)
     uint64_t L0 = now_us + 3000000;            // the parent's broadcast slot 0
     // our slot 120 starts 0.5 s before the sync slot 60 as we predict it
     // (mode 3: 3 s after it)
-    cfg.first_slot_delay_us = mode >= 3 ? 6000000 : 2500000;
+    cfg.first_slot_delay_us = mode == 3 || mode == 4 ? 6000000 : 2500000;
     if (mode == 2) {
         cfg.bc_widening_max_us = 500000;
     }
@@ -1805,6 +1811,14 @@ static void test_sync_over_uc(int mode)
         fprintf(stderr, "\n");
     }
     CHECK(bc_open);
+    if (mode == 5) {
+        struct fhss_ws_lfn *lfn = &fhss_get_object_with_api(api)->ws->lfn;
+        CHECK(lfn->uc_cut_for_sync);
+        CHECK(ns_fhss_ws_lfn_bc_stop(api) == 0);
+        CHECK(!lfn->uc_cut_for_sync);
+        CHECK(ns_fhss_delete(api) == 0);
+        return;
+    }
     if (lts_lost) {
         /* the LTS lost: the broadcast window outlasts what was left of our
            unicast window (both widen alike), and our next unicast window
@@ -2017,6 +2031,7 @@ int main(void)
     test_sync_over_uc(2);
     test_sync_over_uc(3);
     test_sync_over_uc(4);
+    test_sync_over_uc(5);
     test_sync_in_discovery();
     test_ffn_rate();
 #ifndef OLD_STACK
