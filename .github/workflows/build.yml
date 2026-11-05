@@ -39,6 +39,8 @@ jobs:
         run: tests/fhss_lfn/run.sh build-fhss-lfn-tests
       - name: Protocol timers, periodic against idle-tick skipping
         run: tests/protocol_timers/run.sh build-protocol-timers-tests
+      - name: Housekeeping timers, periodic against skipping
+        run: tests/housekeeping/run.sh build-housekeeping-tests
       - name: FHSS TX queue poll, periodic against idle-poll skipping
         run: tests/fhss_poll/run.sh build-fhss-poll-tests
       - name: Build mbedTLS v3.0.0

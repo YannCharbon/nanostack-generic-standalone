@@ -348,6 +348,12 @@ uint32_t mld_slow_timer_next(unsigned calls)
     if (!calls) {
         return UINT32_MAX;
     }
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+    // Not the querier: the reset sends nothing, mld_slow_timer() keeps the phase
+    if (!mld_querier) {
+        return UINT32_MAX;
+    }
+#endif
     return (left + calls - 1) / calls;
 }
 #endif
@@ -356,6 +362,15 @@ void mld_slow_timer(protocol_interface_info_entry_t *interface, uint_fast16_t se
 {
 #ifndef NS_PROTOCOL_TIMERS_SKIP_IDLE
     static uint8_t query_timer;
+#endif
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+    /* Not the querier: the call may span several resets (one per 125
+     * seconds added, the periodic timer adding 1 per call), none of which
+     * sends anything. */
+    if (!mld_querier) {
+        query_timer = (query_timer + seconds) % 125;
+        return;
+    }
 #endif
     query_timer += seconds;
     if (query_timer >= 125) {

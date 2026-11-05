@@ -670,7 +670,15 @@ uint32_t ws_common_seconds_timer_next(protocol_interface_info_entry_t *cur)
     next = ws_bootstrap_seconds_timer_next(cur);
     next = protocol_timer_next_min(next, ws_bootstrap_ffn_seconds_timer_next(cur));
     next = protocol_timer_next_min(next, ws_bootstrap_lfn_seconds_timer_next(cur));
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+    /* An LFN does not wake for the purge timer while the purge has nothing
+     * to remove; its draws are made later. An FFN keeps waking for it, so
+     * that its random draws stay at the same instants (it wakes many times
+     * a second for its FHSS anyway). */
+    next = protocol_timer_next_min(next, blacklist_ttl_update_next(wisun_mode_host(cur)));
+#else
     next = protocol_timer_next_min(next, blacklist_ttl_update_next());
+#endif
     return next;
 }
 
@@ -682,7 +690,11 @@ void ws_common_seconds_timer(protocol_interface_info_entry_t *cur, uint32_t seco
     ws_bootstrap_6lbr_seconds_timer(cur, seconds);
     ws_bootstrap_ffn_seconds_timer(cur, seconds);
     ws_bootstrap_lfn_seconds_timer(cur, seconds);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+    blacklist_ttl_update(seconds, wisun_mode_host(cur));
+#else
     blacklist_ttl_update(seconds);
+#endif
 }
 
 #ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE

@@ -58,6 +58,18 @@ project(nanostack-generic-standalone C)
 #                               the reference. Defines
 #                               NS_PROTOCOL_TIMERS_SKIP_IDLE for
 #                               nanostack_eventloop and its consumers
+#   NANOSTACK_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+#                               with NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE: the
+#                               housekeeping that has nothing to do does not
+#                               wake the stack (docs/PORTING.md, "Housekeeping
+#                               with nothing to do"): the neighbour and
+#                               destination cache collections, MLD's query
+#                               timer, an LFN's blacklist purge timer; their
+#                               ageing is applied for the whole time at the
+#                               next call. Default ON; OFF gives the previous
+#                               wakes (every 20 s, 30-90 s, 125 s). Defines
+#                               NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING for
+#                               nanostack_eventloop and its consumers
 #   NANOSTACK_FHSS_POLL_SKIP_IDLE
 #                               idle-poll skipping in the FHSS (docs/PORTING.md,
 #                               "Idle-poll skipping of the FHSS TX queue"):
@@ -78,6 +90,7 @@ option(NANOSTACK_FILE_NO_STDIO "Compile out the stdio fallback of ns_file_system
 option(NANOSTACK_TLS_STRONG_PORT_ENTROPY "The port's random source is a TRNG: strong TLS entropy source" OFF)
 option(NANOSTACK_EVENTLOOP_SKIP_IDLE_TICKS "Idle-tick skipping: the 10 ms tick runs only when an event timer is due" ON)
 option(NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE "Idle-tick skipping of the protocol timers: they run only when a module has work" ON)
+option(NANOSTACK_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING "With NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE: idle housekeeping (cache collections, MLD query timer, an LFN's blacklist purge) does not wake the stack" ON)
 option(NANOSTACK_FHSS_POLL_SKIP_IDLE "Idle-poll skipping: before the FHSS schedules start, the TX queue is polled only while it holds frames" ON)
 
 if(NANOSTACK_PORT MATCHES "^nanostack_port_(posix|sim)$")
@@ -140,6 +153,9 @@ if(NANOSTACK_EVENTLOOP_SKIP_IDLE_TICKS)
 endif()
 if(NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE)
     target_compile_definitions(nanostack_eventloop PUBLIC NS_PROTOCOL_TIMERS_SKIP_IDLE)
+    if(NANOSTACK_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING)
+        target_compile_definitions(nanostack_eventloop PUBLIC NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING)
+    endif()
 endif()
 if(NANOSTACK_FHSS_POLL_SKIP_IDLE)
     target_compile_definitions(nanostack_eventloop PUBLIC NS_FHSS_POLL_SKIP_IDLE)

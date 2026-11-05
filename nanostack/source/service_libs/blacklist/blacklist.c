@@ -172,6 +172,30 @@ void blacklist_free(void)
 }
 
 #ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+static bool blacklist_purge_due(void)
+{
+    return blacklist_entries_count() >= blacklist_data->blacklist_entry_max_nbr - blacklist_data->blacklist_purge_nbr;
+}
+
+/* Seconds until an entry's expiry, or the purge timer's expiry (a random
+ * draw). With purge_lazy, the purge timer counts only if the purge would
+ * remove entries: its expiries that find too few entries only draw the next
+ * timeout, and blacklist_ttl_update() (given purge_lazy too) makes those
+ * draws at its next call, one per expiry passed, so the purge keeps its
+ * timing law (the draws come later in the random sequence). The number of
+ * entries changes only in events and in this module's own actions. */
+uint32_t blacklist_ttl_update_next(bool purge_lazy)
+{
+    uint32_t next = UINT32_MAX;
+
+    if (!blacklist_data) {
+        return UINT32_MAX;
+    }
+    if (!purge_lazy || blacklist_purge_due()) {
+        next = blacklist_data->blacklist_purge_ttl ? blacklist_data->blacklist_purge_ttl : 1;
+    }
+#else
 /* Seconds until the purge (a random draw) or an entry's expiry */
 uint32_t blacklist_ttl_update_next(void)
 {
@@ -181,6 +205,7 @@ uint32_t blacklist_ttl_update_next(void)
         return UINT32_MAX;
     }
     next = blacklist_data->blacklist_purge_ttl ? blacklist_data->blacklist_purge_ttl : 1;
+#endif
     ns_list_foreach(blacklist_entry_t, blacklist_entry, &blacklist_data->blacklist) {
         uint32_t t = blacklist_entry->ttl ? blacklist_entry->ttl : 1;
         if (t < next) {
@@ -191,38 +216,69 @@ uint32_t blacklist_ttl_update_next(void)
 }
 
 #endif
+/* Purge timer expiry: draws the next timeout, and purges entries if there
+ * are too many */
+static void blacklist_purge_timer_expiry(void)
+{
+    /* 0.5 to 1.5 times timeout */
+    blacklist_data->blacklist_purge_ttl = rand_randomise_base(blacklist_data->blacklist_purge_timer_timeout, 0x4000, 0xC000);
+
+    if (blacklist_entries_count() >= blacklist_data->blacklist_entry_max_nbr - blacklist_data->blacklist_purge_nbr) {
+        uint8_t count = 0;
+        blacklist_entry_t *blacklist_entry_min_ttl;
+
+        tr_debug("Blacklist entries purge");
+
+        while (count++ < blacklist_data->blacklist_purge_nbr) {
+            blacklist_entry_min_ttl = NULL;
+            ns_list_foreach(blacklist_entry_t, blacklist_entry, &blacklist_data->blacklist) {
+                if (!blacklist_entry_min_ttl) {
+                    blacklist_entry_min_ttl = blacklist_entry;
+                } else if (blacklist_entry->ttl < blacklist_entry_min_ttl->ttl) {
+                    blacklist_entry_min_ttl = blacklist_entry;
+                }
+            }
+            if (blacklist_entry_min_ttl) {
+                blacklist_entry_free(blacklist_entry_min_ttl);
+            }
+        }
+    }
+}
+
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+void blacklist_ttl_update(uint16_t ticks, bool purge_lazy)
+#else
 void blacklist_ttl_update(uint16_t ticks)
+#endif
 {
     if (!blacklist_data) {
         return;
     }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+    if (purge_lazy) {
+        /* The call may span several expiries of the purge timer that were
+         * not woken for (see blacklist_ttl_update_next()): each draws the
+         * next timeout. With one second per call, this is the periodic
+         * timer's sequence. */
+        uint32_t left = ticks;
+        while (blacklist_data->blacklist_purge_ttl <= left) {
+            left -= blacklist_data->blacklist_purge_ttl;
+            blacklist_purge_timer_expiry();
+            if (!blacklist_data->blacklist_purge_ttl) {
+                // A zero timeout: one expiry per call, as the periodic timer
+                break;
+            }
+        }
+        if (blacklist_data->blacklist_purge_ttl > left) {
+            blacklist_data->blacklist_purge_ttl -= left;
+        }
+    } else
+#endif
     if (blacklist_data->blacklist_purge_ttl > ticks) {
         blacklist_data->blacklist_purge_ttl -= ticks;
     } else {
-        /* 0.5 to 1.5 times timeout */
-        blacklist_data->blacklist_purge_ttl = rand_randomise_base(blacklist_data->blacklist_purge_timer_timeout, 0x4000, 0xC000);
-
-        if (blacklist_entries_count() >= blacklist_data->blacklist_entry_max_nbr - blacklist_data->blacklist_purge_nbr) {
-            uint8_t count = 0;
-            blacklist_entry_t *blacklist_entry_min_ttl;
-
-            tr_debug("Blacklist entries purge");
-
-            while (count++ < blacklist_data->blacklist_purge_nbr) {
-                blacklist_entry_min_ttl = NULL;
-                ns_list_foreach(blacklist_entry_t, blacklist_entry, &blacklist_data->blacklist) {
-                    if (!blacklist_entry_min_ttl) {
-                        blacklist_entry_min_ttl = blacklist_entry;
-                    } else if (blacklist_entry->ttl < blacklist_entry_min_ttl->ttl) {
-                        blacklist_entry_min_ttl = blacklist_entry;
-                    }
-                }
-                if (blacklist_entry_min_ttl) {
-                    blacklist_entry_free(blacklist_entry_min_ttl);
-                }
-            }
-        }
+        blacklist_purge_timer_expiry();
     }
 
     ns_list_foreach_safe(blacklist_entry_t, blacklist_entry, &blacklist_data->blacklist) {

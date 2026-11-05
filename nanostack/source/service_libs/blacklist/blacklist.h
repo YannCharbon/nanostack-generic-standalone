@@ -51,9 +51,17 @@ uint8_t blacklist_init(void);
 void blacklist_params_set(uint16_t entry_lifetime, uint16_t timer_max_timeout, uint16_t timer_timeout, uint16_t entry_max_nbr, uint16_t purge_nbr, uint16_t purge_timer_timeout);
 bool blacklist_reject(const uint8_t *ll64_address);
 void blacklist_update(const uint8_t *ll64_address, bool success);
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+void blacklist_ttl_update(uint16_t ticks, bool purge_lazy);
+#else
 void blacklist_ttl_update(uint16_t ticks);
+#endif
 #ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+uint32_t blacklist_ttl_update_next(bool purge_lazy);
+#else
 uint32_t blacklist_ttl_update_next(void);
+#endif
 #endif
 void blacklist_clear(void);
 void blacklist_free(void);

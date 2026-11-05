@@ -47,6 +47,7 @@ the fire-alarm protocol stack, which takes no code from it.
 | `tests/port_sim/` | — | Unit tests of the simulation port |
 | `tests/eventloop/` | — | Event loop timers: periodic tick against idle-tick skipping |
 | `tests/protocol_timers/` | — | Protocol and core timers: periodic against idle-tick skipping ([docs/PORTING.md](docs/PORTING.md)) |
+| `tests/housekeeping/` | — | Neighbour and destination caches, MLD query timer, blacklist: periodic against skipping the housekeeping with nothing to do ([docs/PORTING.md](docs/PORTING.md)) |
 | `tests/fhss_lfn/` | — | FAN 1.1 LFN unicast mechanics in the FHSS ([docs/LFN_MAC.md](docs/LFN_MAC.md)) |
 | `tests/fhss_poll/` | — | FHSS TX queue poll: periodic against idle-poll skipping ([docs/PORTING.md](docs/PORTING.md)) |
 
@@ -225,6 +226,15 @@ timers"):
 
 ```bash
 tests/protocol_timers/run.sh [build dir]
+```
+
+The housekeeping timers with nothing to do (the stack's neighbour and
+destination caches, MLD's query timer and the blacklist on stubs), called
+every second against called as the skipping core timer calls them
+([docs/PORTING.md](docs/PORTING.md), "Housekeeping with nothing to do"):
+
+```bash
+tests/housekeeping/run.sh [build dir]
 ```
 
 The FHSS's TX queue poll before its schedules start, periodic against

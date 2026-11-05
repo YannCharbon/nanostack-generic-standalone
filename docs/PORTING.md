@@ -297,6 +297,84 @@ targets) and a deadline on the core time (MPL's messages). `OFF` gives the
 periodic timers of the reference; with `ON`, `dag_simple` and the LFN tests
 give the same logs as `OFF` (emulator `docs/POWER_MODEL.md` §15).
 
+### Housekeeping with nothing to do
+
+`NANOSTACK_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING` (CMake, default ON; effective
+only with `NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE`; it defines
+`NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING` for `nanostack_eventloop` and its
+consumers) refines four `..._next()` functions of the previous section. Without
+it, these modules are due at every expiry of their periodic timers, even when
+the expiry does nothing: an idle LFN then wakes about 4.3 times a minute for
+them. With it, a module is due only when its timer would act; what its timer
+does in between (ageing, phase) is applied for the whole elapsed time at its
+next call, so that the result is the periodic timer's. `OFF` gives the wakes
+of the previous section exactly.
+
+| Module | What an expiry does | Due with the option | Catch-up at the next call |
+| --- | --- | --- | --- |
+| Neighbour cache GC (`ipv6_neighbour_cache_slow_timer()`, every 20 s, `NCACHE_GC_PERIOD`) | Removes garbage-collectible entries, but only above the long-term number of them (8 by default, `ipv6_neighbour_cache_configure()`) | The GC only above that number; a registered or tentative entry's lifetime expiry (it is removed then), as before. A garbage-collectible entry's lifetime only runs down (0 is an input of the GC): no wake | Lifetimes aged by the seconds given, as before; a call that spans several GC periods keeps the GC's phase (`gc_timer`), and one GC run stands for all of them (each would have found too few entries) |
+| Destination cache GC (`ipv6_destination_cache_timer()`, every 20 s, `DCACHE_GC_PERIOD`) | Ages each entry's lifetime (in GC periods) and path-MTU lifetime, resets an expired path MTU (with a trace), removes entries only above the long-term number (16) | Every GC above that number; otherwise the GC that resets the first path MTU; none without either | One GC per period passed, in order: the ageing the periodic GCs would have done, and nothing else |
+| MLD query timer (`mld_slow_timer()`, 125 s) | Sends a general query, only if we are the querier (`mld_querier`, which nothing in the stack sets) | The reset only if we are the querier | The counter advances modulo 125, as one second per call does |
+| Blacklist purge timer (`blacklist_ttl_update()`, 30–90 s, random) | Draws the next timeout; purges only from `entry_max_nbr` − `purge_nbr` entries (7 in Wi-SUN) | **LFN:** the expiry only from that number of entries. **FFN, border router:** every expiry, as before. Entry expiries (with a trace): as before | **LFN:** the expiries passed, in turn, each drawing the next timeout: the purge timer keeps its timing law, but its draws come later in the random sequence. **FFN, border router:** as before |
+
+The number of entries, the querier flag and the path MTUs change only in
+events or in the modules' own timer actions, after which `core_timer_next()`
+is asked again (previous section), so a module whose expiry would start to act
+is due again in time.
+
+**FFNs and the border router.** Their logs do not change: none of these
+modules draws a random number for them, and the FFN's blacklist purge stays
+as before (an FFN wakes many times a second for its FHSS anyway, and its
+random sequence, hence the FAN 1.0 runs, stays the same). An FFN router loses
+the cache GC wakes (`dag_simple`: protocol timer 0.29 to 0.25 wakes/s); the
+border router, whose own timers run every second, does not change.
+
+**Late timers.** A call can also span several periods when the protocol timer
+fires late (in the emulator, an instance started with `--vtime-start` runs its
+first timers after the time jump to its start). The caches' and MLD's phases
+are then kept instead of being reset, with no other effect; an FFN's purge
+timer gives one expiry, as before, so its random draws do not change. (The
+slow timers that take their seconds as `uint8_t` get them modulo 256 in that
+case, with the option or without.)
+
+**Left as they are:**
+
+- the PAE controller's frame-counter check every 60 s
+  (`ws_pae_controller_frame_counter_timer()`, `FRAME_COUNTER_STORE_INTERVAL`).
+  It reads the MAC's frame counters, which advance with every secured frame
+  the MAC sends, and writes them to NVM when they advanced by a threshold or
+  the active key changed. Skipping it would need the MAC's counter changes to
+  re-check the core timer and could move NVM writes, so it stays: about 1 wake
+  a minute on an idle LFN. Before, it fell in the same wake as the cache GCs
+  (both periods start at the stack's start);
+- `ReachableTime`'s random re-roll (2–3 wakes in 1500 s on an idle LFN) and
+  the core timer's longest wait (250 s).
+
+**Effect.** Idle LFN in the emulator (FG25 LFN profile, EU mode 3, under the
+border router or a router, steady state 300–1800 s, the
+`NS_PROTOCOL_TIMERS_SKIP_STATS` build): 108–109 core timer wakes in 1500 s
+(4.3–4.4 a minute: neighbour cache GC 75, Wi-SUN seconds timer 25, MLD 8–9)
+become 26 (1.04 a minute: frame-counter check 22–23, `ReachableTime` 2–3,
+destination cache 1); the LFN's protocol timer wakes 0.07 to 0.02 a second.
+On the FG25 kits (AEM at 100 kHz, idle LFN under a router, default LFN
+settings): the wakes without radio activity go from 4.0 to 1.0 a minute (one
+every 60 s), 6.05 µC each: 0.40 to 0.10 µA (emulator `docs/POWER_MODEL.md`
+§15.2).
+
+Checks: `tests/housekeeping/run.sh` runs the stack's `ipv6_routing_table.c`,
+`mld.c` and `blacklist.c` on stubs, called every second (the reference code)
+and as the skipping core timer calls them (the due second, at most 250 s
+ahead, and the catch-up before each event), on one schedule of events over
+66 000 s that adds, refreshes and removes neighbour cache entries
+(garbage-collectible and registered), destinations and path MTUs, blacklist
+entries, changes the caches' thresholds and the querier flag, and reads every
+module's state; then 6000 s idle. It requires the same traces, removals, MLD
+queries, state reads and random draws with the periodic timer, with
+`NS_PROTOCOL_TIMERS_SKIP_IDLE` alone, and with the option as an LFN and as an
+FFN, and, as an LFN, at most one wake per 250 s once idle. In the emulator,
+`dag_simple` gives the permanent reference runs' logs with the option ON and
+OFF, and the LFN suite passes.
+
 ### Idle-poll skipping of the FHSS TX queue
 
 `NANOSTACK_FHSS_POLL_SKIP_IDLE` (CMake, default ON; it defines

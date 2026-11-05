@@ -754,6 +754,36 @@ static void ipv6_neighbour_cache_gc_periodic(ipv6_neighbour_cache_t *cache)
 }
 
 #ifdef NS_PROTOCOL_TIMERS_SKIP_IDLE
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+/* Seconds until a registered or tentative entry's lifetime expires, or the
+ * periodic GC if it would remove entries. The GC acts only above the
+ * long-term number of garbage-collectible entries, and that number changes
+ * only in events or in the timers' own actions, which re-evaluate this.
+ * A garbage-collectible entry's lifetime only runs down (0 is an input to
+ * the GC): it is aged for the whole time at the next call. */
+uint32_t ipv6_neighbour_cache_slow_timer_next(const ipv6_neighbour_cache_t *cache)
+{
+    uint32_t next = UINT32_MAX;
+    uint_fast16_t gc_count = 0;
+
+    ns_list_foreach(ipv6_neighbour_t, cur, &cache->list) {
+        if (cur->type == IP_NEIGHBOUR_GARBAGE_COLLECTIBLE) {
+            gc_count++;
+            continue;
+        }
+        if (cur->lifetime == 0 || cur->lifetime == 0xffffffff) {
+            continue;
+        }
+        if (cur->lifetime < next) {
+            next = cur->lifetime;
+        }
+    }
+    if (gc_count > neighbour_cache_config.long_term_entries) {
+        next = protocol_timer_next_min(next, cache->gc_timer ? cache->gc_timer : 1);
+    }
+    return next;
+}
+#else
 /* Seconds until an entry's lifetime expires or the periodic GC */
 uint32_t ipv6_neighbour_cache_slow_timer_next(const ipv6_neighbour_cache_t *cache)
 {
@@ -769,6 +799,7 @@ uint32_t ipv6_neighbour_cache_slow_timer_next(const ipv6_neighbour_cache_t *cach
     }
     return next;
 }
+#endif
 
 /* Seconds until a route expires (a probe timer only runs down) */
 uint32_t ipv6_route_table_ttl_update_next(void)
@@ -784,11 +815,45 @@ uint32_t ipv6_route_table_ttl_update_next(void)
     return next;
 }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+/* Seconds until the periodic destination cache GC acts: removes entries
+ * (above the long-term number of entries, which changes only in events) or
+ * resets a path MTU (a trace). Otherwise it only ages the entries' and the
+ * path MTUs' lifetimes, which ipv6_destination_cache_timer() applies for
+ * every GC period passed at its next call. */
+uint32_t ipv6_destination_cache_timer_next(void)
+{
+    uint32_t first = dcache_gc_timer < DCACHE_GC_PERIOD ? DCACHE_GC_PERIOD - dcache_gc_timer : 1;
+    uint32_t periods = UINT32_MAX;
+    uint_fast16_t count = 0;
+
+    ns_list_foreach(ipv6_destination_t, entry, &ipv6_destination_cache) {
+        count++;
+#ifndef NO_IPV6_PMTUD
+        if (entry->pmtu_lifetime) {
+            // Reset at the GC that sees pmtu_lifetime <= DCACHE_GC_PERIOD
+            uint32_t n = (entry->pmtu_lifetime + DCACHE_GC_PERIOD - 1) / DCACHE_GC_PERIOD;
+            if (n < periods) {
+                periods = n;
+            }
+        }
+#endif
+    }
+    if (count > destination_cache_config.long_term_entries) {
+        return first;
+    }
+    if (periods == UINT32_MAX) {
+        return UINT32_MAX;
+    }
+    return first + (periods - 1) * DCACHE_GC_PERIOD;
+}
+#else
 /* Seconds until the periodic destination cache GC */
 uint32_t ipv6_destination_cache_timer_next(void)
 {
     return dcache_gc_timer < DCACHE_GC_PERIOD ? DCACHE_GC_PERIOD - dcache_gc_timer : 1;
 }
+#endif
 
 #endif
 void ipv6_neighbour_cache_slow_timer(ipv6_neighbour_cache_t *cache, uint8_t seconds)
@@ -825,7 +890,17 @@ void ipv6_neighbour_cache_slow_timer(ipv6_neighbour_cache_t *cache, uint8_t seco
         return;
     }
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+    /* The call may span several GC periods (the GC had nothing to do in the
+     * earlier ones): keep the GC's phase. One GC run covers them, the
+     * entries' lifetimes being aged above. */
+    {
+        uint_fast16_t first = cache->gc_timer ? cache->gc_timer : 1;
+        cache->gc_timer = NCACHE_GC_PERIOD - (seconds - first) % NCACHE_GC_PERIOD;
+    }
+#else
     cache->gc_timer = NCACHE_GC_PERIOD;
+#endif
     //ipv6_neighbour_cache_print(cache);
     ipv6_neighbour_cache_gc_periodic(cache);
 }
@@ -1211,7 +1286,12 @@ void ipv6_destination_cache_timer(uint8_t seconds)
 {
     dcache_gc_timer += seconds;
 
+#ifdef NS_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING
+    // One GC per period passed: the call may span several (nothing to do in them but ageing)
+    while (dcache_gc_timer >= DCACHE_GC_PERIOD) {
+#else
     if (dcache_gc_timer >= DCACHE_GC_PERIOD) {
+#endif
         dcache_gc_timer -= DCACHE_GC_PERIOD;
         ipv6_destination_cache_gc_periodic();
         //ipv6_destination_cache_print(trace_debug_print);
