@@ -1735,7 +1735,9 @@ static void test_view_on_tx_done(int mode)
  * open, after our slot's time in it; 5: as 1, then the parent lost while
  * the broadcast window is open: the cut is forgotten (white box: before the
  * fix the next broadcast window's close, in the same own slot, could reopen
- * a unicast window from it).
+ * a unicast window from it); 6: the sync 0.56 s early (our clock slow),
+ * our slot 1.5 s after the predicted sync slot, then the parent lost in
+ * the broadcast window during a frame (close deferred once).
  * When the LTS comes, our next unicast slots must move by its phase error:
  * before the fix the unicast timer, still running when the sync came,
  * re-anchored our slots at the old slot in the broadcast window (the skip
@@ -1744,7 +1746,8 @@ static void test_sync_over_uc(int mode)
 {
     bool lts_lost = mode == 1 || mode == 2 || mode == 5;
     const uint32_t iv_ms = 300000, bc_ms = 600000, guard = 1000;
-    const double k = 1.0 + 15600e-9;          // our µs per parent µs
+    // our µs per parent µs (mode 6: our clock slow, the sync early)
+    const double k = mode == 6 ? 1.0 - 15600e-9 : 1.0 + 15600e-9;
     fhss_ws_lfn_listen_t cfg;
     fhss_ws_lfn_stats_t st;
     fhss_api_t *api;
@@ -1758,7 +1761,7 @@ static void test_sync_over_uc(int mode)
     uint64_t L0 = now_us + 3000000;            // the parent's broadcast slot 0
     // our slot 120 starts 0.5 s before the sync slot 60 as we predict it
     // (mode 3: 3 s after it)
-    cfg.first_slot_delay_us = mode == 3 || mode == 4 ? 6000000 : 2500000;
+    cfg.first_slot_delay_us = mode == 3 || mode == 4 ? 6000000 : mode == 6 ? 4500000 : 2500000;
     if (mode == 2) {
         cfg.bc_widening_max_us = 500000;
     }
@@ -1849,8 +1852,19 @@ static void test_sync_over_uc(int mode)
     sy.rx_timestamp_us = ts();
     CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
     CHECK(ns_fhss_ws_lfn_stats_get(api, &st) == 0);
-    CHECK(st.bc_syncs == 2 && st.last_sync_error_us > 550000 && st.last_sync_error_us < 575000);
+    int32_t err = mode == 6 ? -st.last_sync_error_us : st.last_sync_error_us;
+    CHECK(st.bc_syncs == 2 && err > 550000 && err < 575000);
     int n0 = nevs;
+    if (mode == 6) {
+        /* the parent lost while the broadcast window is open, during a frame
+           (the MAC defers the close once): the close retry must not bring
+           back our slots of before the sync */
+        while (step(PS(60) + 2160000)) {
+        }
+        now_us = PS(60) + 2160000;
+        close_defer = 1;
+        CHECK(ns_fhss_ws_lfn_bc_stop(api) == 0);
+    }
     if (mode == 4) {
         /* the parent lost while the broadcast window is open, after our
            slot's time in it (skipped): our slots go on without that
@@ -1871,7 +1885,7 @@ static void test_sync_over_uc(int mode)
     }
     // the broadcast window closes; our unicast windows go on, moved by the
     // sync's error: slot n at its old start + the error
-    while (step(PS(61))) {
+    while (step(mode == 6 ? PS(62) : PS(61))) {
     }
     int uc_after = 0;
     double slot0 = (double)L0 - 3000000 + cfg.first_slot_delay_us;
@@ -2032,6 +2046,7 @@ int main(void)
     test_sync_over_uc(3);
     test_sync_over_uc(4);
     test_sync_over_uc(5);
+    test_sync_over_uc(6);
     test_sync_in_discovery();
     test_ffn_rate();
 #ifndef OLD_STACK

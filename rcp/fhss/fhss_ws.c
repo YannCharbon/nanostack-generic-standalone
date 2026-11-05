@@ -1789,6 +1789,7 @@ static void fhss_ws_lfn_listen_start(fhss_structure_t *fhss_structure)
     lfn->own.anchor_slot = 0;
     lfn->own_hop = false;
     lfn->stop_close_retry = false;
+    lfn->stop_resched = false;
     lfn->ref_valid = false;
     lfn->view_pend = false;
     lfn->view_pend_on_air = false;
@@ -1816,6 +1817,7 @@ static void fhss_ws_lfn_listen_stop(fhss_structure_t *fhss_structure)
     // The schedule stops: no close retry (WINDOWS_STOP below)
     fhss_stop_timer(fhss_structure, fhss_ws_lfn_timer_handler);
     lfn->stop_close_retry = false;
+    lfn->stop_resched = false;
     if (lfn->window_open) {
         fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOW_CLOSE, 0);
         lfn->window_open = false;
@@ -1874,19 +1876,28 @@ static void fhss_ws_lfn_listen_timer(fhss_structure_t *fhss_structure)
         // The close of a broadcast window that fhss_ws_lfn_bc_stop() could
         // not finish (a frame was being received): asked again until it is
         // done, unless a window opened meanwhile (its own close follows)
-        if (!lfn->bc_window_open && !lfn->disc_open &&
-                (lfn->own_hop || (int32_t)(fhss_ws_lfn_open_time(lfn, lfn->slot_start, false) - now) > 0)) {
+        if (!lfn->bc_window_open && !lfn->disc_open && (lfn->stop_resched || lfn->own_hop ||
+                (int32_t)(fhss_ws_lfn_open_time(lfn, lfn->slot_start, false) - now) > 0)) {
             if (fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOW_CLOSE, 0) == 1) {
                 fhss_ws_lfn_timer_arm(fhss_structure, cfg->close_retry_us);
                 return;
             }
             lfn->stop_close_retry = false;
-            // back to the own schedule (this wake came before its window)
+            /* back to the own schedule: this wake came before its window,
+               or a sync moved our slots (stop_resched: slot_start is the old
+               schedule's; opened, its window re-anchored our slots there and
+               undid the sync's correction, 561 ms) */
+            lfn->stop_resched = false;
             lfn->own_hop = false;
             fhss_ws_lfn_own_next(fhss_structure, now);
             return;
         }
         lfn->stop_close_retry = false;
+        if (lfn->stop_resched) {
+            // a window opened meanwhile: its close computes the next slot
+            lfn->stop_resched = false;
+            lfn->resched_after_bc = true;
+        }
     }
     if (lfn->own_hop && !lfn->window_open) {
         lfn->own_hop = false;
@@ -2805,7 +2816,12 @@ static bool fhss_ws_lfn_bc_released(fhss_structure_t *fhss_structure, uint32_t n
         return false;
     }
     lfn->resched_after_bc = false;
-    if (!lfn->listen_running || lfn->window_open || lfn->stop_close_retry) {
+    if (lfn->listen_running && !lfn->window_open && lfn->stop_close_retry) {
+        // the close retry's end computes it (fhss_ws_lfn_listen_timer())
+        lfn->stop_resched = true;
+        return false;
+    }
+    if (!lfn->listen_running || lfn->window_open) {
         return false;
     }
     fhss_stop_timer(fhss_structure, fhss_ws_lfn_timer_handler);

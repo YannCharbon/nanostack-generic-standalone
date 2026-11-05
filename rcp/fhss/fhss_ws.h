@@ -113,6 +113,7 @@ struct fhss_ws_lfn {
     uint32_t own_frac_acc;          // its accumulation since the last whole µs
     bool own_hop;                   // the timer runs to a point on the way to a slot beyond 2^30 µs
     bool stop_close_retry;          // a broadcast window closed by fhss_ws_lfn_bc_stop() during a frame: the own-slot timer asks the MAC again
+    bool stop_resched;              //   and a sync had moved our slots during that window: the next slot is computed when the close is done
     uint32_t residual_ppb;          // drift left after the rate correction, measured at the syncs (decays by half per sync)
     bool bc_window_open;
     uint16_t bc_slot;               // current (open) or next broadcast slot
