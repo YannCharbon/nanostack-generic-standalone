@@ -1290,7 +1290,12 @@ static int32_t jitter_us(int32_t max)
     return (int32_t)((jit_state >> 8) % (uint32_t)(2 * max + 1)) - max;
 }
 
-static void test_own_ref_jitter(void)
+/* early_view: the uplink 20 s in, and the sync frames lost until slot 35
+ * (350 s): the rate is first measured at slot 40, 380 s after the parent's
+ * view was set, too long for that view to go on the parent's clock with the
+ * first rate (2^28 µs). Our slots must still follow the view through the
+ * silence (an LFN that sends only ACKs after its join) */
+static void test_own_ref_jitter(bool early_view)
 {
     const uint32_t iv_ms = 5000, bc_ms = 10000, guard = 1000;
     const double k = 1.0 - 31124e-9;          // our µs per parent µs
@@ -1318,7 +1323,7 @@ static void test_own_ref_jitter(void)
     int len = write_lutt_ie(ie);
     uint64_t lutt_t = 0;
     uint32_t lutt_off = 0;
-    uint64_t t_lutt = L0 + 600000000ull;      // the uplink, 10 min in
+    uint64_t t_lutt = L0 + (early_view ? 20000000ull : 600000000ull);  // the uplink
     uint64_t t_end = t_lutt + silence_us;
     bool lutt_done = false;
     nevs = 0;
@@ -1326,6 +1331,7 @@ static void test_own_ref_jitter(void)
     double worst = 1e9;
     for (uint32_t s = 5; PS(s) < t_end; s += 5) {
         uint64_t t_sync = PS(s) + 500 + jitter_us(40);
+        bool lost = early_view && s < 35;
         if (!lutt_done && t_lutt < t_sync) {
             while (step(t_lutt)) {
             }
@@ -1342,8 +1348,11 @@ static void test_own_ref_jitter(void)
         sy.slot = (uint16_t)s;
         sy.offset_ms = 0;
         sy.rx_timestamp_us = ts();
-        CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
-        if (!lutt_done) {
+        if (!lost) {
+            CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+        }
+        if (!lutt_done || lost) {
+            nevs = 0;
             continue;
         }
         // the unicast windows since the previous sync: open, close pairs
@@ -1371,14 +1380,120 @@ static void test_own_ref_jitter(void)
         }
         nevs = 0;
     }
-    if (bad || worst < 700 || getenv("FHSS_LFN_VERBOSE")) {
-        fprintf(stderr, "own_ref_jitter: %d of %d windows missed, worst margin %.0f us\n", bad, seen, worst);
+    if (bad || worst < (early_view ? 400 : 700) || getenv("FHSS_LFN_VERBOSE")) {
+        fprintf(stderr, "own_ref_jitter%s: %d of %d windows missed, worst margin %.0f us\n", early_view ? " (early view)" : "", bad, seen, worst);
     }
     CHECK(seen > 4000);
     CHECK(bad == 0);
-    // our slot start within 300 µs of the parent's view (the guard is 1 ms)
-    CHECK(worst >= 700);
+    /* our slot start within 300 µs of the parent's view (the guard is 1 ms);
+       with the early view, 600 µs: the view goes on the parent's clock with
+       the first rate, measured over one 50 s sync period (80 µs of jitter:
+       up to 1.6 ppm), 380 s from the view */
+    CHECK(worst >= (early_view ? 400 : 700));
     #undef PS
+    CHECK(ns_fhss_delete(api) == 0);
+}
+
+/* Our Enh-ACKs carry a LUTT-IE, which parents do not take as a view of our
+ * slots (ours: ws_llc_data_service.c; Silicon Labs' wsbrd v2.10.3,
+ * ws_llc_data_confirm: lifetime only). The timeline of the emulator's Eco
+ * silence test (seed 1, LFN under the border router): 300 s listen interval,
+ * 600 s LFN broadcast, sync every 60th slot (10 h), the parent's clock
+ * 15.6 ppm off ours; a data frame (LUTT-IE, the parent's view) at 167 s,
+ * syncs at 6 s (an LPA within the slot) and 600 s; ACKs (LUTT-IE, frame type
+ * 5) at 467 s, 4 967 s and 15 767 s; the rate first measured at the 10 h
+ * sync (36 600 s); then 10 h without a frame. Every window after the 10 h
+ * sync must hold the parent's TX at the slot start of its view. Before the
+ * fix the last ACK became the view, and our slots kept the 0.24 s they had
+ * drifted from the parent's view by 15 767 s: every window missed. */
+static void test_ack_not_view(void)
+{
+    const uint32_t iv_ms = 300000, bc_ms = 600000, guard = 1000;
+    const double k = 1.0 + 15600e-9;          // our µs per parent µs
+    fhss_ws_lfn_listen_t cfg;
+    fhss_ws_lfn_stats_t st;
+    fhss_api_t *api;
+
+    reset_fakes();
+    api = create_fhss(lfn_mac, 255, 0, 0);
+    ns_fhss_ws_lfn_listen_defaults(&cfg);
+    cfg.listen_interval_ms = iv_ms;
+    cfg.rx_guard_us = guard;
+    cfg.bc_sync_only = true;
+    CHECK(ns_fhss_ws_lfn_listen_set(api, &cfg) == 0);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    uint64_t L0 = now_us + 1000000;            // the parent's broadcast slot 0
+    #define PS(k_) (L0 + (uint64_t)((double)(k_) * bc_ms * 1000 * k))
+    #define AT(s_) (L0 + (uint64_t)((double)(s_) * 1e6 * k))
+    fhss_ws_lfn_bc_sync_t sy = { .interval_ms = bc_ms, .bsi = 0x77, .sync_period = 60, .channel_function = WS_DH1CF };
+    // an LPA within broadcast slot 0, 6 s in
+    now_us = AT(6);
+    sy.slot = 0;
+    sy.offset_ms = 6000;
+    sy.rx_timestamp_us = ts();
+    CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+    uint8_t ie[16];
+    int len = write_lutt_ie(ie);
+    uint64_t lutt_t = 0;
+    uint32_t lutt_off = 0;
+    uint16_t lutt_slot = 0;
+    // the data frame at 167 s: the parent's view
+    while (step(AT(167))) {
+    }
+    now_us = AT(167);
+    api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, ts());
+    lutt_t = now_us;
+    lutt_slot = ie[4] | ie[5] << 8;
+    lutt_off = ie[6] | ie[7] << 8 | ie[8] << 16;
+    // ACKs and the syncs at slots 1 (600 s, a broadcast LPC) and 61 (10 h)
+    const double acks[3] = { 467, 4967, 15767 };
+    int a = 0;
+    for (int i = 0; i < 2; i++) {
+        uint16_t slot = i ? 61 : 1;
+        for (; a < 3 && AT(acks[a]) < PS(slot); a++) {
+            while (step(AT(acks[a]))) {
+            }
+            now_us = AT(acks[a]);
+            uint8_t ack[16];
+            write_lutt_ie(ack);
+            ack[3] = 5;     // WS_FT_ACK
+            api->write_synch_info(api, ack, len, FHSS_DATA_FRAME, ts());
+        }
+        while (step(PS(slot) - 1)) {
+        }
+        now_us = PS(slot) + 500;
+        sy.slot = slot;
+        sy.offset_ms = 0;
+        sy.rx_timestamp_us = ts();
+        CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+    }
+    CHECK(ns_fhss_ws_lfn_stats_get(api, &st) == 0);
+    CHECK(st.rate_ppb > 15400 && st.rate_ppb < 15800);
+    // the windows of the next 10 h (no frame, no sync)
+    nevs = 0;
+    while (step(PS(120) - 2000000)) {
+    }
+    int seen = 0, bad = 0;
+    for (int i = 0; i + 1 < nevs; i++) {
+        if (evs[i].e != FHSS_RX_WINDOW_OPEN || evs[i + 1].e != FHSS_RX_WINDOW_CLOSE) {
+            continue;
+        }
+        double open = (double)evs[i].t, close = (double)evs[i + 1].t;
+        double s0 = (double)lutt_t - (double)lutt_off * 1000 * k;
+        long n = lround((open + guard - s0) / ((double)iv_ms * 1000 * k));
+        double view = s0 + (double)n * iv_ms * 1000 * k;
+        bool in = view >= open && view + 1000 <= close;
+        if (!in && bad++ < 3) {
+            fprintf(stderr, "ack_not_view: window %ld: the parent's TX %.0f us from the window's opening, window %.0f us\n",
+                    n, view - open, close - open);
+        }
+        CHECK(in);
+        CHECK(evs[i].channel == dh1cf_channel((uint16_t)(lutt_slot + n), lfn_mac));
+        seen++;
+    }
+    CHECK(seen >= 115);
+    #undef PS
+    #undef AT
     CHECK(ns_fhss_delete(api) == 0);
 }
 
@@ -1498,7 +1613,9 @@ int main(void)
     test_bc_lfn(true);
     test_discovery();
     test_own_ref();
-    test_own_ref_jitter();
+    test_own_ref_jitter(false);
+    test_own_ref_jitter(true);
+    test_ack_not_view();
     test_ffn_rate();
 #ifndef OLD_STACK
     test_tx_delay();

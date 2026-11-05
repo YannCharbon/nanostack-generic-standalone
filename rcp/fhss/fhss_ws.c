@@ -99,6 +99,8 @@ static uint32_t fhss_ws_lfn_widening(struct fhss_ws_lfn *lfn, uint32_t t, bool b
 static uint32_t fhss_ws_lfn_local_us(const struct fhss_ws_lfn *lfn, uint32_t parent_us);
 static void fhss_ws_lfn_own_interval_set(struct fhss_ws_lfn *lfn, uint64_t nominal_us);
 static void fhss_ws_lfn_own_advance(struct fhss_ws_lfn *lfn);
+// The frame type of an Enh-ACK in a UTT-IE or LUTT-IE (WS_FT_ACK, FAN 1.1)
+#define FHSS_WS_FT_ACK 5
 static uint64_t fhss_ws_lfn_parent_us(const struct fhss_ws_lfn *lfn, uint64_t local_us);
 static void fhss_ws_lfn_ref_from_own(struct fhss_ws_lfn *lfn, uint32_t t);
 static bool fhss_ws_lfn_par_at(const struct fhss_ws_lfn *lfn, uint64_t te, uint64_t *par);
@@ -1131,15 +1133,25 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
         }
         common_write_16_bit_inverse(slot, header_ie.content_ptr + 1);
         common_write_24_bit_inverse(offset_ms, header_ie.content_ptr + 3);
-        // The parent's view of our slots dates from this frame
-        fhss_ws_lfn_ext_update(lfn, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api));
-        lfn->lutt_ext = fhss_ws_lfn_ext(lfn, tx_time);
-        lfn->lutt_after_sync = true;
-        lfn->ref_valid = true;
-        lfn->ref_ext = lfn->lutt_ext;
-        lfn->ref_slot = slot;
-        lfn->ref_phase_us = (uint64_t)offset_ms * 1000u;
-        lfn->ref_par_valid = fhss_ws_lfn_par_at(lfn, lfn->ref_ext, &lfn->ref_par_us);
+        /* The parent's view of our slots dates from this frame, unless it is
+           our Enh-ACK: parents take an LFN's timing from its data, EAPOL,
+           LPAS and LPCS frames, not from the LUTT-IE of its ACKs (ours,
+           ws_llc_data_service.c; Silicon Labs' wsbrd v2.10.3, ws_llc.c,
+           ws_llc_data_confirm: the ACK's LUTT-IE only refreshes the
+           neighbour) [S]. Taken as the view, an ACK sent before the rate
+           was measured held our slots where they had drifted to since the
+           parent's view (Eco: 0.24 s after 4 h), and every downlink missed
+           the narrow windows once the rate was known */
+        if (header_ie.content_ptr[0] != FHSS_WS_FT_ACK) {
+            fhss_ws_lfn_ext_update(lfn, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api));
+            lfn->lutt_ext = fhss_ws_lfn_ext(lfn, tx_time);
+            lfn->lutt_after_sync = true;
+            lfn->ref_valid = true;
+            lfn->ref_ext = lfn->lutt_ext;
+            lfn->ref_slot = slot;
+            lfn->ref_phase_us = (uint64_t)offset_ms * 1000u;
+            lfn->ref_par_valid = fhss_ws_lfn_par_at(lfn, lfn->ref_ext, &lfn->ref_par_us);
+        }
     }
     if (fhss_structure->ws->lfn.bc_enabled) {
         fhss_ws_lfn_write_lbt_lto(fhss_structure, ptr, length, tx_time);
@@ -2317,6 +2329,7 @@ static void fhss_ws_lfn_own_from_ref(struct fhss_ws_lfn *lfn, uint32_t now)
     int64_t iv_ns = (int64_t)iv_p_us * 1000 + (int64_t)iv_p_us * r / 1000000;
     uint64_t now_ext = fhss_ws_lfn_ext(lfn, now), par_now;
     int64_t n, rem_ns;
+    bool on_par = false;
 
     if (!lfn->ref_par_valid && lfn->sync_par_valid && lfn->rate_known) {
         // A reference set before the rate was measured: placed on the
@@ -2339,6 +2352,7 @@ static void fhss_ws_lfn_own_from_ref(struct fhss_ws_lfn *lfn, uint32_t now)
         n = pos_p >= 0 ? pos_p / (int64_t)iv_p_us : -((-pos_p + (int64_t)iv_p_us - 1) / (int64_t)iv_p_us);
         int64_t rem_p = pos_p - n * (int64_t)iv_p_us;
         rem_ns = rem_p * 1000 + rem_p * r / 1000000;
+        on_par = true;
     } else {
         int64_t phase_ns = (int64_t)lfn->ref_phase_us * 1000 + (int64_t)lfn->ref_phase_us * r / 1000000;
         int64_t pos_ns = ((int64_t)now_ext - (int64_t)lfn->ref_ext) * 1000 + phase_ns;
@@ -2353,6 +2367,17 @@ static void fhss_ws_lfn_own_from_ref(struct fhss_ws_lfn *lfn, uint32_t now)
     // normalized (phase within an interval, the anchor at a slot start for
     // the short intervals)
     fhss_lfn_sched_shift(&lfn->own, 0);
+    if (!on_par && lfn->sync_par_valid && lfn->rate_known) {
+        /* A view too old for the parent's clock (set long before the first
+           sync with a rate, or before the parent's schedule changed): our
+           slots, just set from it at the measured rate, become the view on
+           the parent's clock now, so that the next syncs count the time
+           from it in the parent's slots. Kept on the view at each new rate
+           instead, a silent LFN (only ACKs, which are not views) took each
+           new rate's error over the whole silence again: the 6 ms after
+           4000 s of the kits' run (1ee1481) */
+        fhss_ws_lfn_ref_from_own(lfn, now);
+    }
 }
 
 // The next own slot
