@@ -1355,20 +1355,28 @@ static void test_own_ref(void)
  * from a new reference every 2^30 µs, over spans down to one sync period
  * (50 s): 80 µs of jitter there is 1.6 ppm, 6 ms after 4000 s of silence,
  * and the kit LFN missed 20 downlink windows in a row (dl16). */
-static uint32_t jit_state = 12345;
+static uint32_t jit_state;
 static int32_t jitter_us(int32_t max)
 {
     jit_state = jit_state * 1103515245u + 12345u;
     return (int32_t)((jit_state >> 8) % (uint32_t)(2 * max + 1)) - max;
 }
 
-/* early_view: the uplink 20 s in, and the sync frames lost until slot 35
- * (350 s): the rate is first measured at slot 40, 380 s after the parent's
- * view was set, too long for that view to go on the parent's clock with the
- * first rate (2^28 µs). Our slots must still follow the view through the
- * silence (an LFN that sends only ACKs after its join) */
-static void test_own_ref_jitter(bool early_view)
+/* lost_until (early view): the uplink 20 s in, and the sync frames lost
+ * until that slot (350 s to 10 050 s): the rate is first measured one sync
+ * period after the first sync heard, long after the parent's view was set.
+ * Our slots must still follow the view through the silence (an LFN that
+ * sends only ACKs after its join), from the time the view is placed on the
+ * parent's clock for good (the rate measured over the view's distance to
+ * the first sync heard; the misses before are printed, not checked). Each
+ * case with four jitter sequences. Before the fix the view was placed at
+ * the first rate, measured over 50 s (80 µs of jitter: up to 1.6 ppm), and
+ * that rate's error over the view's age stayed for the whole silence: 6 of
+ * the 32 cases missed every window (-0.1 to -10.5 ms) */
+static void test_own_ref_jitter(uint32_t lost_until, uint32_t seed)
 {
+    bool early_view = lost_until != 0;
+    jit_state = seed;
     const uint32_t iv_ms = 5000, bc_ms = 10000, guard = 1000;
     const double k = 1.0 - 31124e-9;          // our µs per parent µs
     const uint64_t silence_us = 6ull * 3600000000ull;
@@ -1399,11 +1407,16 @@ static void test_own_ref_jitter(bool early_view)
     uint64_t t_end = t_lutt + silence_us;
     bool lutt_done = false;
     nevs = 0;
-    int seen = 0, bad = 0;
+    int seen = 0, bad = 0, early_bad = 0;
     double worst = 1e9;
+    /* With the syncs lost, the view is placed on the parent's clock for good
+       once the rate is measured over the view's distance to the rate's
+       reference (the first sync heard): until then our slots follow it at
+       each better rate, and may miss (counted apart) */
+    uint32_t settled_slot = 2 * lost_until + 5;
     for (uint32_t s = 5; PS(s) < t_end; s += 5) {
         uint64_t t_sync = PS(s) + 500 + jitter_us(40);
-        bool lost = early_view && s < 35;
+        bool lost = early_view && s < lost_until;
         if (!lutt_done && t_lutt < t_sync) {
             while (step(t_lutt)) {
             }
@@ -1423,10 +1436,14 @@ static void test_own_ref_jitter(bool early_view)
         if (!lost) {
             CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
         }
-        if (!lutt_done || lost) {
+        if (!lutt_done || lost || (early_view && s < lost_until + 10)) {
+            // the windows from the first syncs heard on: before the rate
+            // is measured (the second one), our slots follow the syncs'
+            // phase error, not the view
             nevs = 0;
             continue;
         }
+        bool settled = !early_view || s >= settled_slot;
         // the unicast windows since the previous sync: open, close pairs
         for (int i = 0; i + 1 < nevs; i++) {
             if (evs[i].e != FHSS_RX_WINDOW_OPEN || evs[i + 1].e != FHSS_RX_WINDOW_CLOSE) {
@@ -1441,6 +1458,10 @@ static void test_own_ref_jitter(bool early_view)
             long n = lround((open + guard - s0) / ((double)iv_ms * 1000 * k));
             double view = s0 + (double)n * iv_ms * 1000 * k;
             double margin = fmin(view - open, close - (view + 1000));
+            if (!settled) {
+                early_bad += margin < 0;
+                continue;
+            }
             if (margin < worst) {
                 worst = margin;
             }
@@ -1453,14 +1474,15 @@ static void test_own_ref_jitter(bool early_view)
         nevs = 0;
     }
     if (bad || worst < (early_view ? 400 : 700) || getenv("FHSS_LFN_VERBOSE")) {
-        fprintf(stderr, "own_ref_jitter%s: %d of %d windows missed, worst margin %.0f us\n", early_view ? " (early view)" : "", bad, seen, worst);
+        fprintf(stderr, "own_ref_jitter (syncs lost before slot %" PRIu32 ", seed %" PRIu32 "): %d of %d windows missed, worst margin %.0f us; %d missed before the view was placed\n",
+                lost_until, seed, bad, seen, worst, early_bad);
     }
-    CHECK(seen > 4000);
+    CHECK(seen > (early_view ? (int)((t_end - PS(settled_slot)) / (iv_ms * 1000ull)) - 20 : 4000));
     CHECK(bad == 0);
     /* our slot start within 300 µs of the parent's view (the guard is 1 ms);
-       with the early view, 600 µs: the view goes on the parent's clock with
-       the first rate, measured over one 50 s sync period (80 µs of jitter:
-       up to 1.6 ppm), 380 s from the view */
+       with the early view, 600 µs: the view goes on the parent's clock at a
+       rate measured over at least its distance to the rate's reference
+       sync (about two syncs' timing error) */
     CHECK(worst >= (early_view ? 400 : 700));
     #undef PS
     CHECK(ns_fhss_delete(api) == 0);
@@ -1856,8 +1878,15 @@ int main(void)
     test_bc_lfn(true);
     test_discovery();
     test_own_ref();
-    test_own_ref_jitter(false);
-    test_own_ref_jitter(true);
+    test_own_ref_jitter(0, 12345);
+    {
+        static const uint32_t lost[] = { 35, 65, 105, 155, 205, 305, 505, 1005 };
+        for (unsigned i = 0; i < sizeof(lost) / sizeof(lost[0]); i++) {
+            for (uint32_t seed = 1; seed <= 4; seed++) {
+                test_own_ref_jitter(lost[i], seed * 12345);
+            }
+        }
+    }
     test_ack_not_view();
     test_sync_over_uc(0);
     test_sync_over_uc(1);

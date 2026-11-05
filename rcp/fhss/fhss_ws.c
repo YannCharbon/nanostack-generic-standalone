@@ -2312,10 +2312,6 @@ static uint64_t fhss_ws_lfn_parent_us(const struct fhss_ws_lfn *lfn, uint64_t lo
     return (uint64_t)((int64_t)local_us - corr);
 }
 
-// A reference set before the rate was measured is placed on the parent's
-// clock only if this close to the last sync (2^28 µs: 1.6 ppm, a rate over
-// one 50 s sync period with 80 µs of timing error, is 0.4 ms)
-#define FHSS_LFN_REF_PAR_SPAN_US 0x10000000u
 // The parent's view of our slots from our own schedule at time t
 static void fhss_ws_lfn_ref_from_own(struct fhss_ws_lfn *lfn, uint32_t t)
 {
@@ -2359,19 +2355,32 @@ static void fhss_ws_lfn_own_from_ref(struct fhss_ws_lfn *lfn, uint32_t now)
     uint64_t iv_p_us = (uint64_t)lfn->listen_cfg.listen_interval_ms * 1000u;
     int64_t iv_ns = (int64_t)iv_p_us * 1000 + (int64_t)iv_p_us * r / 1000000;
     uint64_t now_ext = fhss_ws_lfn_ext(lfn, now), par_now;
+    uint64_t ref_par = lfn->ref_par_us;
     int64_t n, rem_ns;
-    bool on_par = false;
+    bool on_par = false, ref_par_ok = lfn->ref_par_valid;
 
-    if (!lfn->ref_par_valid && lfn->sync_par_valid && lfn->rate_known) {
-        // A reference set before the rate was measured: placed on the
-        // parent's clock now, if close enough to the last sync for the rate
-        // just measured
-        uint64_t d = lfn->ref_ext > lfn->sync_ext ? lfn->ref_ext - lfn->sync_ext : lfn->sync_ext - lfn->ref_ext;
-        if (d < FHSS_LFN_REF_PAR_SPAN_US) {
-            lfn->ref_par_valid = fhss_ws_lfn_par_at(lfn, lfn->ref_ext, &lfn->ref_par_us);
+    if (!lfn->ref_par_valid && lfn->sync_par_valid && lfn->rate_known && lfn->rate_ref_valid &&
+            lfn->sync_ext >= lfn->rate_ref_ext) {
+        /* A view set before the rate was measured: placed on the parent's
+           clock from the rate's reference sync, at the measured rate. The
+           error is the rate's error times the view's distance d to that
+           sync: the view is placed for good once the rate is measured over
+           at least d (its error then about the syncs' timing error), and
+           until then again at each sync, at the rate measured over a longer
+           span (the reference is kept meanwhile). Placed for good at the
+           first rate, a view set 1000 s before the first sync heard (syncs
+           lost) took that rate's error over 1000 s for the whole silence:
+           0.6 ms, every window missed [I] */
+        uint64_t d = lfn->ref_ext > lfn->rate_ref_ext ? lfn->ref_ext - lfn->rate_ref_ext : lfn->rate_ref_ext - lfn->ref_ext;
+        uint64_t d_par = fhss_ws_lfn_parent_us(lfn, d);
+        ref_par = lfn->ref_ext > lfn->rate_ref_ext ? lfn->rate_ref_par + d_par : lfn->rate_ref_par - d_par;
+        ref_par_ok = true;
+        if (lfn->sync_ext - lfn->rate_ref_ext >= d) {
+            lfn->ref_par_us = ref_par;
+            lfn->ref_par_valid = true;
         }
     }
-    if (lfn->ref_par_valid && fhss_ws_lfn_par_at(lfn, now_ext, &par_now)) {
+    if (ref_par_ok && fhss_ws_lfn_par_at(lfn, now_ext, &par_now)) {
         /* On the parent's clock: the time since its view was set is counted
            in its LFN broadcast slots, exact however old the view is. At the
            measured rate over that whole time, a rate measured over a short
@@ -2379,7 +2388,7 @@ static void fhss_ws_lfn_own_from_ref(struct fhss_ws_lfn *lfn, uint32_t now)
            our slots 6 ms off after 4000 s of silence and the parent's
            frames missed every window until the next syncs (kits,
            2026-11-04 overnight run) */
-        int64_t pos_p = (int64_t)(par_now - lfn->ref_par_us) + (int64_t)lfn->ref_phase_us;
+        int64_t pos_p = (int64_t)(par_now - ref_par) + (int64_t)lfn->ref_phase_us;
         n = pos_p >= 0 ? pos_p / (int64_t)iv_p_us : -((-pos_p + (int64_t)iv_p_us - 1) / (int64_t)iv_p_us);
         int64_t rem_p = pos_p - n * (int64_t)iv_p_us;
         rem_ns = rem_p * 1000 + rem_p * r / 1000000;
@@ -2993,13 +3002,18 @@ int fhss_ws_lfn_bc_sync(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_s
                 lfn->rate_ppb = (int32_t)r;
                 lfn->rate_known = true;
             }
-            if (dt32 > 0x40000000u || dt > 0x40000000) {
-                // An old reference: this sync is the next one
+            if ((dt32 > 0x40000000u || dt > 0x40000000) && !(lfn->ref_valid && !lfn->ref_par_valid)) {
+                /* An old reference: this sync is the next one. Kept while
+                   the parent's view of our slots waits to go on its clock
+                   (fhss_ws_lfn_own_from_ref()): that needs a rate measured
+                   over at least the view's distance to this reference (the
+                   slot count unwraps any span) */
                 lfn->rate_ref_valid = false;
             }
         }
     }
-    if (!lfn->rate_ref_valid && at_start) {
+    bool new_rate_ref = !lfn->rate_ref_valid && at_start;
+    if (new_rate_ref) {
         lfn->rate_ref_valid = true;
         lfn->rate_ref_us = start;
         lfn->rate_ref_slot = sync->slot;
@@ -3033,6 +3047,10 @@ int fhss_ws_lfn_bc_sync(fhss_structure_t *fhss_structure, const fhss_ws_lfn_bc_s
         lfn->ref_par_valid = false;
     }
     lfn->sync_par_valid = true;
+    if (new_rate_ref) {
+        lfn->rate_ref_ext = start_ext;
+        lfn->rate_ref_par = lfn->sync_par_us;
+    }
     lfn->sync_ext = start_ext;
     lfn->lutt_after_sync = false;
     lfn->sync_us = start;

@@ -98,6 +98,8 @@ struct fhss_ws_lfn {
     bool rate_ref_valid;            // a reference sync for the rate measurement
     uint32_t rate_ref_us;           // its slot start on our clock
     uint16_t rate_ref_slot;
+    uint64_t rate_ref_ext;          //   on our extended clock
+    uint64_t rate_ref_par;          //   and on the parent's (sync_par_us then)
     int32_t rate_ppb;               // our clock against the parent's
     bool rate_known;                // rate_ppb was measured (against the current schedule)
     uint16_t last_sync_slot;        // slot of the last sync (residual drift span)
