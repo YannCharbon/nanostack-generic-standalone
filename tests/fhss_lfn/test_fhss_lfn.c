@@ -1605,7 +1605,10 @@ static void test_ack_not_view(void)
  *           attempt on the air, unacknowledged: neither is the view;
  *   mode 1: at 15 767 s, two attempts on the air (the second 20 ms later),
  *           unacknowledged: the view (the parent more likely has one);
- *   mode 2: at 15 767 s, an LPCS (no ACK requested), sent: the view.
+ *   mode 2: at 15 767 s, an LPCS (no ACK requested), sent: the view;
+ *   mode 3: at 15 767 s, a frame to another node than the parent (an old
+ *           parent's release), acknowledged: not the view (before the fix
+ *           it was: every window 0.24 s off).
  * Every window in the 10 h after the rate's sync must hold the parent's TX
  * at the slot start of the expected view. Before the fix the view was set
  * when a frame was built: in mode 0 our slots kept the 0.24 s they had
@@ -1652,7 +1655,13 @@ static void test_view_on_tx_done(int mode)
             view_slot = ie[4] | ie[5] << 8; \
             view_off = ie[6] | ie[7] << 8 | ie[8] << 16; \
         } while (0)
+    // our parent (the frames to it: tx_handle with its address)
+    ns_fhss_set_neighbor_info_fp(api, get_neighbor);
+    broadcast_timing_info_t pbt = { .broadcast_channel_function = WS_DH1CF, .broadcast_dwell_interval = 255, .broadcast_interval = 1020 };
+    CHECK(ns_fhss_ws_set_parent(api, parent_mac, &pbt, false) == 0);
+    static const uint8_t other_mac[8] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x00, 0x07 };
     BUILD(167);
+    api->tx_handle(api, false, (uint8_t *)parent_mac, FHSS_DATA_FRAME, 100, 0, 0, ts());
     api->data_tx_done(api, true, false, 7);    // on the air
     api->data_tx_done(api, false, true, 7);    // acknowledged
     VIEW();
@@ -1672,10 +1681,15 @@ static void test_view_on_tx_done(int mode)
                 api->data_tx_done(api, true, false, 9);
                 VIEW();
                 api->data_tx_done(api, false, false, 9);
-            } else {
+            } else if (mode == 2) {
                 BUILD(15767);
                 api->data_tx_done(api, false, true, 10);    // sent, no ACK requested
                 VIEW();
+            } else {
+                BUILD(15767);
+                api->tx_handle(api, false, (uint8_t *)other_mac, FHSS_DATA_FRAME, 100, 0, 0, ts());
+                api->data_tx_done(api, true, false, 11);    // on the air
+                api->data_tx_done(api, false, true, 11);    // acknowledged by that node
             }
         }
         while (step(PS(slot) - 1)) {
@@ -2040,6 +2054,7 @@ int main(void)
     test_view_on_tx_done(0);
     test_view_on_tx_done(1);
     test_view_on_tx_done(2);
+    test_view_on_tx_done(3);
     test_sync_over_uc(0);
     test_sync_over_uc(1);
     test_sync_over_uc(2);

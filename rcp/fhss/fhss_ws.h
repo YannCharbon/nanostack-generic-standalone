@@ -96,6 +96,7 @@ struct fhss_ws_lfn {
     uint64_t view_pend_ext;         //   its TX time, extended,
     uint16_t view_pend_slot;        //   slot
     uint32_t view_pend_offset_ms;   //   and offset (fhss_ws_lfn_view_commit())
+    bool view_pend_to_other;        //   sent to a node other than the parent (an old parent's release): never the view
     bool view_pend_on_air;          // an attempt of the frame view_pend_handle went on the air, unacknowledged
     uint8_t view_pend_handle;
     uint64_t ref_par_us;            //   whatever the age of the reference

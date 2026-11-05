@@ -820,6 +820,12 @@ static int fhss_ws_tx_handle_callback(const fhss_api_t *api, bool is_broadcast_a
     if (!fhss_structure) {
         return -1;
     }
+    // LFN: a pending view of our slots (fhss_ws_lfn_view_tx_done()) only
+    // from a frame to our parent (or a broadcast one)
+    if (fhss_structure->ws->lfn.view_pend && !is_broadcast_addr && destination_address) {
+        struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+        lfn->view_pend_to_other = !lfn->parent_eui64_valid || memcmp(destination_address, lfn->parent_eui64, 8);
+    }
     // LFN parent: a frame for the LFN broadcast slot goes on that slot's
     // channel, whatever our own schedule (released for the slot by
     // fhss_ws_lfn_tx_check_callback())
@@ -1148,6 +1154,7 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
         if (header_ie.content_ptr[0] != FHSS_WS_FT_ACK) {
             fhss_ws_lfn_ext_update(lfn, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api));
             lfn->view_pend = true;
+            lfn->view_pend_to_other = false;
             lfn->view_pend_ext = fhss_ws_lfn_ext(lfn, tx_time);
             lfn->view_pend_slot = slot;
             lfn->view_pend_offset_ms = offset_ms;
@@ -1189,7 +1196,11 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
  *    has one of them with probability over 1/2 for p below 0.6 (frame and
  *    ACK lost alike); an unacknowledged frame that the parent took leaves
  *    the same error as a lost frame taken as the view;
- *  - never on the air (CSMA failed, queue expiry): not the view. */
+ *  - never on the air (CSMA failed, queue expiry): not the view;
+ *  - a unicast frame to another node than our parent (the release of an
+ *    old parent after a parent change, acknowledged by it): not the view;
+ *    taken, it moved our slots by the drift since the new parent's view
+ *    (Eco: 20 ppm x 615 s, 12 ms) until the next uplink to the parent. */
 static void fhss_ws_lfn_view_commit(struct fhss_ws_lfn *lfn)
 {
     lfn->view_pend = false;
@@ -1205,7 +1216,7 @@ static void fhss_ws_lfn_view_commit(struct fhss_ws_lfn *lfn)
 
 static void fhss_ws_lfn_view_tx_done(struct fhss_ws_lfn *lfn, bool waiting_ack, bool tx_completed, uint8_t handle)
 {
-    if (!lfn->listen_running || !lfn->view_pend) {
+    if (!lfn->listen_running || !lfn->view_pend || lfn->view_pend_to_other) {
         return;
     }
     if (tx_completed) {
@@ -1449,11 +1460,8 @@ int fhss_ws_set_parent(fhss_structure_t *fhss_structure, const uint8_t eui64[8],
     // parent's, so that its uplinks avoid the parent's broadcast dwell
     if (fhss_structure->ws->lfn.listen_enabled) {
         struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
-        if (!bc_timing_info->broadcast_interval || !bc_timing_info->broadcast_dwell_interval ||
-                bc_timing_info->broadcast_dwell_interval >= bc_timing_info->broadcast_interval) {
-            lfn->parent_bc_valid = false;
-            return 0;
-        }
+        // The parent, also without a broadcast schedule (the view of our
+        // slots: fhss_ws_lfn_view_tx_done())
         if (eui64) {
             if (!lfn->parent_eui64_valid || memcmp(lfn->parent_eui64, eui64, 8)) {
                 lfn->ffn_ref_set = false;
@@ -1462,6 +1470,11 @@ int fhss_ws_set_parent(fhss_structure_t *fhss_structure, const uint8_t eui64[8],
             }
             memcpy(lfn->parent_eui64, eui64, 8);
             lfn->parent_eui64_valid = true;
+        }
+        if (!bc_timing_info->broadcast_interval || !bc_timing_info->broadcast_dwell_interval ||
+                bc_timing_info->broadcast_dwell_interval >= bc_timing_info->broadcast_interval) {
+            lfn->parent_bc_valid = false;
+            return 0;
         }
         lfn->parent_bc_interval_us = MS_TO_US(bc_timing_info->broadcast_interval);
         lfn->parent_bc_dwell_us = MS_TO_US(bc_timing_info->broadcast_dwell_interval);
