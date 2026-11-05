@@ -2,8 +2,9 @@
  *
  * Unit test of an LFN's timed receive windows in the MAC (mac_mlme.c,
  * mac_mlme_rx_window(); docs/LFN_MAC.md §3) and of the rule that turns its
- * radio off after a data confirm (mac_lfn_async.c, mac_lfn_radio_stays_on(),
- * used by mac_mcps_sap.c's mac_data_poll_radio_disable_check()), on a fake
+ * radio off after a data confirm (mac_lfn_async.c,
+ * mac_data_poll_radio_disable_check() and mac_lfn_radio_stays_on(), called
+ * by mac_mcps_sap.c at its data confirms), on a fake
  * PHY that records its state changes.
  *
  * The case it guards (emulator test_lfn_left.sh, seed 1): a window closes
@@ -96,13 +97,10 @@ static void setup(void)
     channel = 0;
 }
 
-/* What mac_data_poll_radio_disable_check() does at a data confirm (the
- * radio not transmitting) */
+/* A data confirm: the MAC's own radio-off check (mac_mcps_sap.c calls it) */
 static void data_confirm(void)
 {
-    if (!mac_lfn_radio_stays_on(&mac) && !mac.macRfRadioTxActive) {
-        mac_mlme_mac_radio_disabled(&mac);
-    }
+    mac_data_poll_radio_disable_check(&mac);
 }
 
 /* ------------------------------------------------------------------ tests */

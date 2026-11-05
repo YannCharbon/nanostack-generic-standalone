@@ -118,19 +118,6 @@ static bool mac_data_request_confirmation_finish(protocol_interface_rf_mac_setup
 }
 
 
-static void mac_data_poll_radio_disable_check(protocol_interface_rf_mac_setup_s *rf_mac_setup)
-{
-    // An open LFN receive window keeps the radio on until it closes, and so
-    // does a window whose close waits for the frame being received
-    if (mac_lfn_radio_stays_on(rf_mac_setup)) {
-        return;
-    }
-
-    if (!rf_mac_setup->macRfRadioTxActive) {
-        mac_mlme_mac_radio_disabled(rf_mac_setup);
-    }
-}
-
 static void mcps_data_confirm_cb(protocol_interface_rf_mac_setup_s *rf_mac_setup, mcps_data_conf_t *confirm, mac_pre_parsed_frame_t *ack_buf)
 {
     mac_data_poll_radio_disable_check(rf_mac_setup);

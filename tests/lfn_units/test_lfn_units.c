@@ -93,6 +93,7 @@ uint_fast8_t mac_helper_frame_overhead(struct protocol_interface_info_entry *cur
 mac_neighbor_table_entry_t *mac_neighbor_table_address_discover(mac_neighbor_table_t *table_class, const uint8_t *address, uint8_t address_type)
 { (void)table_class; (void)address; (void)address_type; return NULL; }
 uint8_t rand_get_8bit(void) { return 7; }
+void mac_mlme_mac_radio_disabled(struct protocol_interface_rf_mac_setup *rf_mac_setup) { (void)rf_mac_setup; }
 uint16_t rand_get_16bit(void) { return 77; }
 /* xorshift32; one state per simulated LFN (test_lpas_jitter) */
 static uint32_t rand_state = 1;

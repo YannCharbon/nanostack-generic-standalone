@@ -37,4 +37,11 @@ uint32_t mac_lfn_async_sweep_us(const struct mac_pre_build_frame *async, uint32_
  */
 bool mac_lfn_radio_stays_on(const struct protocol_interface_rf_mac_setup *rf_mac_setup);
 
+/**
+ * At a data confirm (and an LFN's frame waiting for its restart): the radio
+ * off unless mac_lfn_radio_stays_on() or a transmission holds it. Here for
+ * its unit test (tests/mac_window); called by mac_mcps_sap.c.
+ */
+void mac_data_poll_radio_disable_check(struct protocol_interface_rf_mac_setup *rf_mac_setup);
+
 #endif
