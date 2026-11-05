@@ -1734,6 +1734,7 @@ static void fhss_ws_lfn_listen_start(fhss_structure_t *fhss_structure)
     lfn->own.anchor_phase_us = 0;
     lfn->own.anchor_slot = 0;
     lfn->own_hop = false;
+    lfn->stop_close_retry = false;
     lfn->ref_valid = false;
     lfn->ref_par_valid = false;
     lfn->slot = 0;
@@ -1756,6 +1757,9 @@ static void fhss_ws_lfn_listen_stop(fhss_structure_t *fhss_structure)
     }
     fhss_stop_timer(fhss_structure, fhss_ws_lfn_timer_handler);
     fhss_ws_lfn_bc_stop(fhss_structure);
+    // The schedule stops: no close retry (WINDOWS_STOP below)
+    fhss_stop_timer(fhss_structure, fhss_ws_lfn_timer_handler);
+    lfn->stop_close_retry = false;
     if (lfn->window_open) {
         fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOW_CLOSE, 0);
         lfn->window_open = false;
@@ -1810,6 +1814,24 @@ static void fhss_ws_lfn_listen_timer(fhss_structure_t *fhss_structure)
     uint32_t now = fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api);
 
     fhss_ws_lfn_age(fhss_structure, now);
+    if (lfn->stop_close_retry && !lfn->window_open) {
+        // The close of a broadcast window that fhss_ws_lfn_bc_stop() could
+        // not finish (a frame was being received): asked again until it is
+        // done, unless a window opened meanwhile (its own close follows)
+        if (!lfn->bc_window_open && !lfn->disc_open &&
+                (lfn->own_hop || (int32_t)(fhss_ws_lfn_open_time(lfn, lfn->slot_start, false) - now) > 0)) {
+            if (fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOW_CLOSE, 0) == 1) {
+                fhss_ws_lfn_timer_arm(fhss_structure, cfg->close_retry_us);
+                return;
+            }
+            lfn->stop_close_retry = false;
+            // back to the own schedule (this wake came before its window)
+            lfn->own_hop = false;
+            fhss_ws_lfn_own_next(fhss_structure, now);
+            return;
+        }
+        lfn->stop_close_retry = false;
+    }
     if (lfn->own_hop && !lfn->window_open) {
         lfn->own_hop = false;
         fhss_ws_lfn_own_next(fhss_structure, now);
@@ -3013,7 +3035,15 @@ int fhss_ws_lfn_bc_stop(fhss_structure_t *fhss_structure)
 
     fhss_stop_timer(fhss_structure, fhss_ws_lfn_bc_timer_handler);
     if (lfn->bc_window_open) {
-        fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOW_CLOSE, 0);
+        /* The MAC defers the close while it receives a frame or sends our
+           ACK; this timer, which would have asked again, is stopped: the
+           own-slot timer asks again (without, the radio stayed on until our
+           next window opened: a listen interval, hours under Eco) */
+        if (fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOW_CLOSE, 0) == 1 &&
+                lfn->listen_running && !lfn->window_open) {
+            lfn->stop_close_retry = true;
+            fhss_ws_lfn_timer_arm(fhss_structure, lfn->listen_cfg.close_retry_us);
+        }
         lfn->bc_window_open = false;
     }
     lfn->pbc_valid = false;

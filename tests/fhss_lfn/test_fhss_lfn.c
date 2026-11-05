@@ -1092,6 +1092,37 @@ static void test_bc_lfn(bool sync_only)
     }
     CHECK(bc_opens == (sync_only ? 2 : 11));   // slots 16-26
     CHECK(uc_opens >= 20);
+    // Stopped during a broadcast window while the MAC receives a frame (it
+    // defers the close): the close is asked again every close_retry_us
+    // until done, not left to our next unicast window (before: the radio
+    // stayed on a listen interval, hours under Eco)
+    nevs = 0;
+    bool in_bc = false;
+    while (!in_bc && step(PSTART(36))) {
+        if (nevs && evs[nevs - 1].e == FHSS_RX_WINDOW_OPEN) {
+            int k = (int)((evs[nevs - 1].t - L0 + 5000000) / (bc_ms * 1000ull));
+            int64_t d = (int64_t)PSTART(k) + 500 - (int64_t)evs[nevs - 1].t;
+            in_bc = d > 0 && d < 10000;
+        }
+    }
+    CHECK(in_bc);
+    now_us += 1000;                     // inside the window, a frame arriving
+    uint64_t t_stop = now_us;
+    close_defer = 2;
+    nevs = 0;
+    CHECK(ns_fhss_ws_lfn_bc_stop(api) == 0);
+    while (step(t_stop + 10 * cfg.close_retry_us)) {
+    }
+    int closes = 0;
+    for (int i = 0; i < nevs; i++) {
+        if (evs[i].e == FHSS_RX_WINDOW_CLOSE) {
+            CHECK(evs[i].t == t_stop + (uint64_t)closes * cfg.close_retry_us);
+            CHECK(evs[i].ret == (closes < 2));
+            closes++;
+        }
+    }
+    CHECK(closes == 3);
+    CHECK(close_defer == 0);
     // Stop: no more broadcast windows
     CHECK(ns_fhss_ws_lfn_bc_stop(api) == 0);
     nevs = 0;
