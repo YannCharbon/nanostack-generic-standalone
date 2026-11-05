@@ -2,7 +2,9 @@
 #ifndef WS_LFN_RESTART_H_
 #define WS_LFN_RESTART_H_
 
+#include <stdbool.h>
 #include <stdint.h>
+#include "nanostack/ws_management_api.h"
 
 /*
  * The LFN's restarts of a failed uplink, against its parent's asynchronous
@@ -80,6 +82,19 @@ static inline void ws_lfn_restart_bounds(uint16_t channels, uint32_t datarate, u
     uint32_t mx = (uint32_t)((uint64_t)*max_ms * need / span) + 1;
     *min_ms = mn > 0xffffu ? 0xffffu : (uint16_t)mn;
     *max_ms = mx > 0xffffu ? 0xffffu : (uint16_t)mx;
+}
+
+/* The values the LFN gives the MAC: the defaults (WS_LFN_RESTART_MIN_MS_DEFAULT,
+ * WS_LFN_RESTART_MAX_MS_DEFAULT) scaled by ws_lfn_restart_bounds(); values
+ * set by the user are kept as they are. True if scaled */
+static inline bool ws_lfn_restart_effective(uint16_t channels, uint32_t datarate, uint8_t restarts,
+                                            uint16_t *min_ms, uint16_t *max_ms)
+{
+    if (*min_ms != WS_LFN_RESTART_MIN_MS_DEFAULT || *max_ms != WS_LFN_RESTART_MAX_MS_DEFAULT) {
+        return false;
+    }
+    ws_lfn_restart_bounds(channels, datarate, restarts, min_ms, max_ms);
+    return *min_ms != WS_LFN_RESTART_MIN_MS_DEFAULT;
 }
 
 #endif /* WS_LFN_RESTART_H_ */

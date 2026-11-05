@@ -120,15 +120,20 @@
  */
 
 
-/* The MAC's restarts of a failed uplink: restart_min_ms and restart_max_ms,
- * scaled up so that they outlast both of the parent's asynchronous sweeps
- * on our channel plan (ws_lfn_restart.h) */
+/* The MAC's restarts of a failed uplink: restart_min_ms and restart_max_ms;
+ * the defaults scaled up so that they outlast both of the parent's
+ * asynchronous sweeps on our channel plan, values set by the user kept
+ * (ws_lfn_restart.h) */
 static void ws_lfn_restart_configure(protocol_interface_info_entry_t *cur, uint8_t tx_restarts)
 {
     uint16_t min_ms = cur->ws_info->lfn_cfg.restart_min_ms, max_ms = cur->ws_info->lfn_cfg.restart_max_ms;
-    ws_lfn_restart_bounds(cur->ws_info->hopping_schedule.number_of_channels, ws_common_datarate_get(cur), tx_restarts, &min_ms, &max_ms);
-    if (min_ms != cur->ws_info->lfn_cfg.restart_min_ms) {
-        tr_info("LFN restarts %u-%u ms for %u channels", min_ms, max_ms, cur->ws_info->hopping_schedule.number_of_channels);
+    uint16_t channels = cur->ws_info->hopping_schedule.number_of_channels;
+    uint32_t datarate = ws_common_datarate_get(cur);
+    if (ws_lfn_restart_effective(channels, datarate, tx_restarts, &min_ms, &max_ms)) {
+        tr_info("LFN restarts %u-%u ms for %u channels", min_ms, max_ms, channels);
+    } else if (ws_lfn_restart_span_ms(min_ms, max_ms, tx_restarts) < ws_lfn_sweeps_ms(channels, datarate)) {
+        tr_info("LFN restarts %u-%u ms as set, shorter than the parent's sweeps on %u channels (%"PRIu32" ms)",
+                min_ms, max_ms, channels, ws_lfn_sweeps_ms(channels, datarate));
     }
     ws_bootstrap_configure_data_request_restart(cur, WS_CCA_REQUEST_RESTART_MAX, tx_restarts, min_ms, max_ms);
 }

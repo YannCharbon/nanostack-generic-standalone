@@ -544,6 +544,22 @@ static void test_restart_span(void)
     mx = 2000;
     ws_lfn_restart_bounds(129, 50000, 4, &mn, &mx);
     CHECK(ws_lfn_restart_span_ms(mn, mx, 4) >= 5730);
+    // Only the defaults are scaled (ws_lfn_restart_effective()); a value
+    // set by the user is kept, also when shorter than the sweeps
+    mn = WS_LFN_RESTART_MIN_MS_DEFAULT;
+    mx = WS_LFN_RESTART_MAX_MS_DEFAULT;
+    CHECK(ws_lfn_restart_effective(129, 50000, 4, &mn, &mx) && mn == 607 && mx == 4849);
+    mn = 300;
+    mx = 2000;
+    CHECK(!ws_lfn_restart_effective(129, 50000, 4, &mn, &mx) && mn == 300 && mx == 2000);
+    mn = 250;
+    mx = 3000;
+    CHECK(!ws_lfn_restart_effective(129, 50000, 4, &mn, &mx) && mn == 250 && mx == 3000);
+    // The FG25 kits' eu1a plan (69 channels at 50 kbit/s): 325-2593 ms
+    mn = WS_LFN_RESTART_MIN_MS_DEFAULT;
+    mx = WS_LFN_RESTART_MAX_MS_DEFAULT;
+    CHECK(ws_lfn_restart_effective(69, 50000, 4, &mn, &mx));
+    printf("  69 channels at 50000 bit/s (eu1a): restarts %u-%u ms\n", mn, mx);
     // No rate known: unchanged
     mn = 250;
     mx = 2000;
