@@ -1155,6 +1155,8 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
             fhss_ws_lfn_ext_update(lfn, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api));
             lfn->view_pend = true;
             lfn->view_pend_to_other = false;
+            lfn->view_pend_known = false;
+            lfn->view_pend_failed = false;
             lfn->view_pend_ext = fhss_ws_lfn_ext(lfn, tx_time);
             lfn->view_pend_slot = slot;
             lfn->view_pend_offset_ms = offset_ms;
@@ -1196,7 +1198,10 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
  *    has one of them with probability over 1/2 for p below 0.6 (frame and
  *    ACK lost alike); an unacknowledged frame that the parent took leaves
  *    the same error as a lost frame taken as the view;
- *  - never on the air (CSMA failed, queue expiry): not the view;
+ *  - never on the air (CSMA failed, queue expiry): not the view, nor
+ *    committed by a later TX done that is not this frame's (MSDU handle);
+ *    the mode-switch PHR's TX done (before its frame) does not occur: our
+ *    LFNs run one PHY mode;
  *  - a unicast frame to another node than our parent (the release of an
  *    old parent after a parent change, acknowledged by it): not the view;
  *    taken, it moved our slots by the drift since the new parent's view
@@ -1219,15 +1224,35 @@ static void fhss_ws_lfn_view_tx_done(struct fhss_ws_lfn *lfn, bool waiting_ack, 
     if (!lfn->listen_running || !lfn->view_pend || lfn->view_pend_to_other) {
         return;
     }
+    /* Which frame a report is about: its MSDU handle, learnt from the
+       reports since the frame was built (each attempt builds it again). A
+       TX done for another handle, or after the frame failed with no new
+       attempt, is not this frame's: an asynchronous buffer that expired in
+       the queue or could not start reports a TX done without building a
+       frame. Our ACKs' TX done (handle 0xff) and the receive path's
+       (handle 0) do not name a frame. */
     if (tx_completed) {
-        fhss_ws_lfn_view_commit(lfn);
-    } else if (waiting_ack) {
-        if (lfn->view_pend_on_air && lfn->view_pend_handle == handle) {
+        if (!lfn->view_pend_failed && (!lfn->view_pend_known || lfn->view_pend_frame == handle)) {
             fhss_ws_lfn_view_commit(lfn);
-        } else {
-            lfn->view_pend_on_air = true;
-            lfn->view_pend_handle = handle;
         }
+        return;
+    }
+    if (!waiting_ack) {
+        if (lfn->view_pend_known ? lfn->view_pend_frame == handle : handle != 0 && handle != 0xff) {
+            lfn->view_pend_known = true;
+            lfn->view_pend_frame = handle;
+            lfn->view_pend_failed = true;
+        }
+        return;
+    }
+    // On the air, an ACK awaited
+    lfn->view_pend_known = true;
+    lfn->view_pend_frame = handle;
+    if (lfn->view_pend_on_air && lfn->view_pend_handle == handle) {
+        fhss_ws_lfn_view_commit(lfn);
+    } else {
+        lfn->view_pend_on_air = true;
+        lfn->view_pend_handle = handle;
     }
 }
 

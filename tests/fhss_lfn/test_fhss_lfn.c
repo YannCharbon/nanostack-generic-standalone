@@ -1608,7 +1608,13 @@ static void test_ack_not_view(void)
  *   mode 2: at 15 767 s, an LPCS (no ACK requested), sent: the view;
  *   mode 3: at 15 767 s, a frame to another node than the parent (an old
  *           parent's release), acknowledged: not the view (before the fix
- *           it was: every window 0.24 s off).
+ *           it was: every window 0.24 s off);
+ *   mode 4: at 15 767 s, a frame whose CSMA failed for good, then the TX
+ *           done of an asynchronous buffer that expired in the queue
+ *           (another handle, no frame built): not the view (before the
+ *           fix it was);
+ *   mode 5: at 15 767 s, a CSMA failure, the frame built again, on the air
+ *           and acknowledged: the view (the second build).
  * Every window in the 10 h after the rate's sync must hold the parent's TX
  * at the slot start of the expected view. Before the fix the view was set
  * when a frame was built: in mode 0 our slots kept the 0.24 s they had
@@ -1684,6 +1690,17 @@ static void test_view_on_tx_done(int mode)
             } else if (mode == 2) {
                 BUILD(15767);
                 api->data_tx_done(api, false, true, 10);    // sent, no ACK requested
+                VIEW();
+            } else if (mode == 4) {
+                BUILD(15767);
+                api->data_tx_done(api, false, false, 12);   // CSMA failed, given up
+                api->data_tx_done(api, false, true, 13);    // an expired async buffer
+            } else if (mode == 5) {
+                BUILD(15767);
+                api->data_tx_done(api, false, false, 12);   // CSMA failed
+                BUILD(15767.01);                           // built again
+                api->data_tx_done(api, true, false, 12);    // on the air
+                api->data_tx_done(api, false, true, 12);    // acknowledged
                 VIEW();
             } else {
                 BUILD(15767);
@@ -2055,6 +2072,8 @@ int main(void)
     test_view_on_tx_done(1);
     test_view_on_tx_done(2);
     test_view_on_tx_done(3);
+    test_view_on_tx_done(4);
+    test_view_on_tx_done(5);
     test_sync_over_uc(0);
     test_sync_over_uc(1);
     test_sync_over_uc(2);
