@@ -234,6 +234,13 @@ typedef bool fhss_lfn_tx_delay(const fhss_api_t *api, const uint8_t *destination
 typedef void fhss_tx_queued(const fhss_api_t *api);
 
 /**
+ * @brief The MSDU handle of the data frame whose header IEs the MAC has the
+ * FHSS write next (write_synch_info()): an LFN ties the LUTT-IE it writes to
+ * that frame's TX done (data_tx_done()). Optional.
+ */
+typedef void fhss_tx_frame(const fhss_api_t *api, uint8_t handle);
+
+/**
  * \brief Struct fhss_api defines interface between software MAC and FHSS.
  * Application creates fhss_api_s object by calling FHSS creator function.
  * Then object is passed to software MAC which then initialises it's own callback functions.
@@ -256,6 +263,7 @@ struct fhss_api {
     fhss_lfn_pending *lfn_pending;                      /**< Frame-pending bit exchanged with an LFN (FAN 1.1). Optional, may be NULL. */
     fhss_lfn_tx_delay *lfn_tx_delay;                    /**< Time to an LFN frame's next TX opportunity (FAN 1.1 parent). Optional, may be NULL. */
     fhss_tx_queued *tx_queued;                          /**< A frame was queued for unicast TX. Optional, may be NULL. */
+    fhss_tx_frame *tx_frame;                            /**< The handle of the data frame written next. Optional, may be NULL. */
 };
 
 /**

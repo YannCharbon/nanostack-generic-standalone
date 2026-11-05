@@ -1617,6 +1617,12 @@ static void test_ack_not_view(void)
  *           it is set (ns_fhss_ws_set_parent() with interval 0): the frame
  *           at 167 s to it is the view (ab64f8b: before, the parent's
  *           address was stored only with a valid broadcast schedule);
+ *   mode 7: at 15 767 s, a frame that fails with no report naming its
+ *           handle, then an expired async buffer's TX done: not the view
+ *           (before the fix the handle was learnt from reports only);
+ *   mode 8: at 15 767 s, a frame with handle 0xff, reports with handles 0
+ *           and 0xff that are not its, then on the air and acknowledged:
+ *           the view;
  *   mode 5: at 15 767 s, a CSMA failure, the frame built again, a clear
  *           channel report (PHY_LINK_CCA_OK: no ACK, not completed), on the
  *           air and acknowledged: the view (the second build).
@@ -1654,11 +1660,14 @@ static void test_view_on_tx_done(int mode)
     uint32_t view_off = 0;
     uint16_t view_slot = 0;
     // a frame built at time s_ (its LUTT-IE written), handle h_
-    #define BUILD(s_) do { \
+    #define BUILD(s_, h_) do { \
             while (step(AT(s_))) { \
             } \
             now_us = AT(s_); \
             write_lutt_ie(ie); \
+            if (api->tx_frame) { \
+                api->tx_frame(api, h_); \
+            } \
             api->write_synch_info(api, ie, len, FHSS_DATA_FRAME, ts()); \
         } while (0)
     #define VIEW() do { \
@@ -1673,7 +1682,7 @@ static void test_view_on_tx_done(int mode)
     broadcast_timing_info_t pbt = { .broadcast_channel_function = WS_DH1CF, .broadcast_dwell_interval = 255, .broadcast_interval = mode == 6 ? 0 : 1020 };
     CHECK(ns_fhss_ws_set_parent(api, parent_mac, &pbt, false) == 0);
     static const uint8_t other_mac[8] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x00, 0x07 };
-    BUILD(167);
+    BUILD(167, 7);
     api->tx_handle(api, false, (uint8_t *)parent_mac, FHSS_DATA_FRAME, 100, 0, 0, ts());
     api->data_tx_done(api, true, false, 7);    // on the air
     api->data_tx_done(api, false, true, 7);    // acknowledged
@@ -1682,37 +1691,49 @@ static void test_view_on_tx_done(int mode)
         uint16_t slot = i ? 61 : 1;
         if (i == 1) {
             if (mode == 0 || mode == 6) {
-                BUILD(4967);
+                BUILD(4967, 8);
                 api->data_tx_done(api, false, false, 8);    // CSMA failed
-                BUILD(15767);
+                BUILD(15767, 9);
                 api->data_tx_done(api, true, false, 9);     // on the air
                 api->data_tx_done(api, false, false, 9);    // no ACK, given up
             } else if (mode == 1) {
-                BUILD(15767);
+                BUILD(15767, 9);
                 api->data_tx_done(api, true, false, 9);
-                BUILD(15767.02);                           // the retry
+                BUILD(15767.02, 9);                           // the retry
                 api->data_tx_done(api, true, false, 9);
                 VIEW();
                 api->data_tx_done(api, false, false, 9);
             } else if (mode == 2) {
-                BUILD(15767);
+                BUILD(15767, 10);
                 api->data_tx_done(api, false, true, 10);    // sent, no ACK requested
                 VIEW();
             } else if (mode == 4) {
-                BUILD(15767);
+                BUILD(15767, 12);
                 api->data_tx_done(api, false, false, 12);   // CSMA failed, given up
                 api->data_tx_done(api, false, true, 13);    // an expired async buffer
+            } else if (mode == 7) {
+                BUILD(15767, 14);
+                // it fails with no report naming it (a TX too late, a TX
+                // not allowed, a timeout), then an expired async buffer
+                api->data_tx_done(api, false, true, 15);
+            } else if (mode == 8) {
+                BUILD(15767, 0xff);                         // handles wrap through 0xff and 0
+                api->data_tx_done(api, false, false, 0);    // a frame received
+                api->data_tx_done(api, false, false, 0xff); // our ACK's TX done
+                api->data_tx_done(api, true, false, 0xff);  // on the air
+                api->data_tx_done(api, false, true, 0xff);  // acknowledged
+                VIEW();
             } else if (mode == 5) {
-                BUILD(15767);
+                BUILD(15767, 12);
                 api->data_tx_done(api, false, false, 12);   // CSMA failed
-                BUILD(15767.01);                           // built again
+                BUILD(15767.01, 12);                           // built again
                 api->data_tx_done(api, false, false, 12);   // channel clear (PHY_LINK_CCA_OK)
                 api->data_tx_done(api, false, false, 0);    // a frame received meanwhile
                 api->data_tx_done(api, true, false, 12);    // on the air
                 api->data_tx_done(api, false, true, 12);    // acknowledged
                 VIEW();
             } else {
-                BUILD(15767);
+                BUILD(15767, 11);
                 api->tx_handle(api, false, (uint8_t *)other_mac, FHSS_DATA_FRAME, 100, 0, 0, ts());
                 api->data_tx_done(api, true, false, 11);    // on the air
                 api->data_tx_done(api, false, true, 11);    // acknowledged by that node
@@ -2116,6 +2137,8 @@ int main(void)
     test_view_on_tx_done(4);
     test_view_on_tx_done(5);
     test_view_on_tx_done(6);
+    test_view_on_tx_done(7);
+    test_view_on_tx_done(8);
     test_sync_over_uc(0);
     test_sync_over_uc(1);
     test_sync_over_uc(2);

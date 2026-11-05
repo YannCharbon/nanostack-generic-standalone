@@ -577,6 +577,9 @@ uint8_t *mac_generic_packet_write(struct protocol_interface_rf_mac_setup *rf_ptr
             uint8_t *synch_info = tx_buf->buf + rf_ptr->dev_driver->phy_driver->phy_header_length + tx_buf->len - FHSS_SYNCH_INFO_LENGTH;
             rf_ptr->fhss_api->write_synch_info(rf_ptr->fhss_api, synch_info, FHSS_SYNCH_INFO_LENGTH, FHSS_SYNCH_FRAME, buffer->tx_time);
         } else {
+            if (rf_ptr->fhss_api->tx_frame) {
+                rf_ptr->fhss_api->tx_frame(rf_ptr->fhss_api, buffer->msduHandle);
+            }
             rf_ptr->fhss_api->write_synch_info(rf_ptr->fhss_api, ie_start, buffer->headerIeLength, FHSS_DATA_FRAME, buffer->tx_time);
         }
     }

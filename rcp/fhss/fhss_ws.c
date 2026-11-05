@@ -1153,9 +1153,14 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
            (fhss_ws_lfn_view_tx_done()) */
         if (header_ie.content_ptr[0] != FHSS_WS_FT_ACK) {
             fhss_ws_lfn_ext_update(lfn, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api));
+            if (!lfn->view_pend || !lfn->tx_frame_valid || !lfn->view_pend_known || lfn->view_pend_frame != lfn->tx_frame_handle) {
+                // another frame: its attempts are counted anew
+                lfn->view_pend_on_air = false;
+            }
             lfn->view_pend = true;
             lfn->view_pend_to_other = false;
-            lfn->view_pend_known = false;
+            lfn->view_pend_known = lfn->tx_frame_valid;
+            lfn->view_pend_frame = lfn->tx_frame_handle;
             lfn->view_pend_ext = fhss_ws_lfn_ext(lfn, tx_time);
             lfn->view_pend_slot = slot;
             lfn->view_pend_offset_ms = offset_ms;
@@ -1170,9 +1175,20 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
         int32_t delay_us = (int32_t)(fhss_structure->ws->lfn.disc_start - tx_time);
         common_write_24_bit_inverse(delay_us > 0 ? (uint32_t)delay_us / 1000 : 0, header_ie.content_ptr + 1);
     }
+    fhss_structure->ws->lfn.tx_frame_valid = false;
     platform_exit_critical();
     //TODO return destination channel here
     return fhss_structure->rx_channel;
+}
+
+static void fhss_ws_tx_frame_callback(const fhss_api_t *api, uint8_t handle)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(api);
+    if (!fhss_structure) {
+        return;
+    }
+    fhss_structure->ws->lfn.tx_frame_valid = true;
+    fhss_structure->ws->lfn.tx_frame_handle = handle;
 }
 
 /* The parent's view of our slots: the LUTT-IE of a frame it took. A frame
@@ -1223,30 +1239,26 @@ static void fhss_ws_lfn_view_tx_done(struct fhss_ws_lfn *lfn, bool waiting_ack, 
     if (!lfn->listen_running || !lfn->view_pend || lfn->view_pend_to_other) {
         return;
     }
-    /* Which frame a report is about: its MSDU handle, learnt from the
-       MAC's reports since the frame was built. A TX done for another
-       handle is not this frame's: an asynchronous buffer that expired in
-       the queue or could not start reports a TX done without building a
-       frame, after an earlier frame that failed. Our ACKs' TX done (handle
-       0xff) and the receive path's (handle 0) do not name a frame. A
-       report without ACK nor completion is not a failure: the radio
-       reports a clear channel (PHY_LINK_CCA_OK) that way before its TX. */
+    /* Which frame a report is about: its MSDU handle, given by the MAC when
+       the frame was built (tx_frame). Another handle's report is not this
+       frame's: an asynchronous buffer that expired in the queue or could
+       not start reports a TX done without building a frame, after an
+       earlier frame that may have failed with no report naming it (a TX
+       too late, a TX not allowed, a timeout). Reports with neither an ACK
+       awaited nor completion (a clear channel, a failure, our ACK's TX,
+       the receive path) change nothing. Without the handle (a MAC without
+       tx_frame), any report counts. */
+    if (lfn->view_pend_known && lfn->view_pend_frame != handle) {
+        return;
+    }
     if (tx_completed) {
-        if (!lfn->view_pend_known || lfn->view_pend_frame == handle) {
-            fhss_ws_lfn_view_commit(lfn);
-        }
+        fhss_ws_lfn_view_commit(lfn);
         return;
     }
     if (!waiting_ack) {
-        if (!lfn->view_pend_known && handle != 0 && handle != 0xff) {
-            lfn->view_pend_known = true;
-            lfn->view_pend_frame = handle;
-        }
         return;
     }
-    // On the air, an ACK awaited
-    lfn->view_pend_known = true;
-    lfn->view_pend_frame = handle;
+    // On the air, an ACK awaited: the second attempt of the frame commits
     if (lfn->view_pend_on_air && lfn->view_pend_handle == handle) {
         fhss_ws_lfn_view_commit(lfn);
     } else {
@@ -1469,6 +1481,7 @@ int fhss_ws_set_callbacks(fhss_structure_t *fhss_structure)
 #else
     fhss_structure->fhss_api->tx_queued = NULL;
 #endif
+    fhss_structure->fhss_api->tx_frame = &fhss_ws_tx_frame_callback;
     return 0;
 }
 

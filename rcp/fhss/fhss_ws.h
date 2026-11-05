@@ -98,8 +98,10 @@ struct fhss_ws_lfn {
     uint32_t view_pend_offset_ms;   //   and offset (fhss_ws_lfn_view_commit())
     bool view_pend_to_other;        //   sent to a node other than the parent (an old parent's release): never the view
     bool view_pend_on_air;          // an attempt of the frame view_pend_handle went on the air, unacknowledged
-    bool view_pend_known;           // the MSDU handle of the pending view's frame, from the MAC's reports since it was built
+    bool view_pend_known;           // the MSDU handle of the pending view's frame, given by the MAC when it was built (tx_frame)
     uint8_t view_pend_frame;
+    bool tx_frame_valid;            // the handle the MAC gave for the frame written next (fhss_ws_tx_frame_callback())
+    uint8_t tx_frame_handle;
     uint8_t view_pend_handle;
     uint64_t ref_par_us;            //   whatever the age of the reference
     bool sync_par_valid;            // the last sync's slot start on the parent's clock: its LFN broadcast
