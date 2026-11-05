@@ -28,7 +28,8 @@ typedef enum {
     WS_ROUTING_READY,        /**< RPL routing connected to BR*/
     WS_FAST_DISCONNECT,      /**< Do fast timeout after Border router timeout*/
     WS_NORMAL_DISCONNECT,    /**< Border have been rebooted so Slow poison Process*/
-    WS_TEST_PROC_TRIGGER     /**< Trigger test procedure */
+    WS_TEST_PROC_TRIGGER,    /**< Trigger test procedure */
+    WS_LFN_LPAS_TIMER        /**< LFN: an LPAS sweep is due (ws_bootstrap_lfn.c) */
 } ws_bootstrap_event_type_e;
 
 /* Bootstrap internal test procedures, these must match to ws_test_proc_t

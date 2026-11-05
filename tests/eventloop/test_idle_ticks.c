@@ -8,7 +8,9 @@
  *
  * Each program runs the same pseudo-random schedule: one-shot and periodic
  * event timers requested at arbitrary instants (also at tick boundaries and
- * from event handlers), cancellations, long idle gaps (longer than the tick
+ * from event handlers), one-shots at an absolute tick
+ * (eventOS_event_timer_ticks() + n, eventOS_event_timer_request_at(), as the
+ * LFN's LPAS timer), cancellations, long idle gaps (longer than the tick
  * timer's 3.28 s range) and a 32-bit clock wrap. It prints one line per
  * delivered event ("<µs> <type> <id>"); run.sh checks that the periodic and
  * the µs idle-tick skipping programs print the same lines (with 50 µs slots, a tick may
@@ -128,13 +130,17 @@ static int8_t tasklet;
 static unsigned long delivered;
 #define PERIODIC 8
 static arm_event_storage_t *periodic[PERIODIC];
+#define AT 4
+static arm_event_storage_t *at_ev[AT];
 
-enum { EV_ONE_SHOT = 1, EV_CHAIN = 2, EV_PERIODIC = 3 };
+enum { EV_ONE_SHOT = 1, EV_CHAIN = 2, EV_PERIODIC = 3, EV_AT = 4 };
 
 static void handler(arm_event_t *ev)
 {
     if (ev->event_type == ARM_LIB_TASKLET_INIT_EVENT)
         return;
+    if (ev->event_type == EV_AT)
+        at_ev[ev->event_id] = NULL;
     delivered++;
     printf("%" PRIu64 " %u %u\n", now_us, ev->event_type, ev->event_id);
 #if defined NS_EVENTLOOP_SKIP_IDLE_TICKS && !defined NS_PORT_TIMER_USEC
@@ -152,7 +158,7 @@ static void request_some(void)
 {
     uint8_t id = rnd(250);
 
-    switch (rnd(6)) {
+    switch (rnd(8)) {
     case 0:
     case 1:
         CHECK(!eventOS_event_timer_request(id, EV_ONE_SHOT, tasklet, rnd(5000)));
@@ -177,6 +183,27 @@ static void request_some(void)
         if (periodic[slot]) {
             eventOS_cancel(periodic[slot]);
             periodic[slot] = NULL;
+        }
+        break;
+    }
+    case 6: {
+        // At an absolute tick, 1-500 ticks from now
+        int slot = rnd(AT);
+        const arm_event_t ev = {
+            .receiver = tasklet, .event_type = EV_AT, .event_id = slot,
+            .priority = ARM_LIB_MED_PRIORITY_EVENT,
+        };
+        if (at_ev[slot])
+            eventOS_cancel(at_ev[slot]);
+        at_ev[slot] = eventOS_event_timer_request_at(&ev, eventOS_event_timer_ticks() + 1 + rnd(500));
+        CHECK(at_ev[slot]);
+        break;
+    }
+    case 7: {
+        int slot = rnd(AT);
+        if (at_ev[slot]) {
+            eventOS_cancel(at_ev[slot]);
+            at_ev[slot] = NULL;
         }
         break;
     }

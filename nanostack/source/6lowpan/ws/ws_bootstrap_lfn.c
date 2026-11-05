@@ -30,6 +30,7 @@
 #include "service_libs/blacklist/blacklist.h"
 #include "service_libs/random_early_detection/random_early_detection_api.h"
 #include "nanostack-event-loop/eventOS_event.h"
+#include "nanostack-event-loop/eventOS_event_timer.h"
 #include "nanostack/dhcp_service_api.h"
 #include "nanostack/net_interface.h"
 #include "nanostack/ws_management_api.h"
@@ -81,6 +82,7 @@
 #include "6lowpan/ws/ws_stats.h"
 #include "6lowpan/ws/ws_bootstrap_lfn.h"
 #include "6lowpan/ws/ws_lfn_parent.h"
+#include "6lowpan/ws/ws_lfn_jitter.h"
 #include "security/protocols/sec_prot_keys.h"
 #include "nanostack/mac/fhss_ws_extension.h"
 #include "common_protocols/icmpv6.h"
@@ -216,10 +218,75 @@ static void ws_lfn_candidates_clear(protocol_interface_info_entry_t *cur)
     cur->ws_info->lfn.disc_decide_s = 0;
 }
 
-static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur)
+/* LPAS sweeps: one asynchronous frame on every channel of the plan per sweep */
+static void ws_lfn_lpas_tx(protocol_interface_info_entry_t *cur, uint8_t sweeps)
+{
+    asynch_request_t req;
+
+    memset(&req, 0, sizeof(req));
+    req.message_type = WS_FT_LPAS;
+    req.wh_requested_ie_list.lutt_ie = true;
+    req.wh_requested_ie_list.nr_ie = true;
+    req.wh_requested_ie_list.lus_ie = true;
+    req.wh_requested_ie_list.lnd_ie = true;
+    // Our unicast schedule in an LCP-IE (tag of the LUS-IE) [S: wsbrd needs
+    // it; M: Silicon Labs' LPAS]
+    req.wp_requested_nested_ie_list.lcp_ie = true;
+    req.wp_requested_nested_ie_list.net_name_ie = true;
+    req.security.SecurityLevel = 0;
+    // The channels of the plan, as an FFN's PAN advertisement solicits
+    req.channel_list.channel_page = CHANNEL_PAGE_10;
+    req.channel_list.next_channel_number = 0;
+    ws_common_generate_channel_list(cur, req.channel_list.channel_mask, cur->ws_info->hopping_schedule.number_of_channels,
+                                    cur->ws_info->hopping_schedule.regulatory_domain, cur->ws_info->hopping_schedule.operating_class,
+                                    cur->ws_info->hopping_schedule.channel_plan_id);
+    for (uint8_t i = 0; i < sweeps; i++) {
+        tr_info("LFN: LPAS sweep");
+        ws_stats_update(cur, STATS_WS_ASYNCH_TX_PAS, 1);
+        ws_llc_asynch_request(cur, &req);
+    }
+}
+
+static void ws_lfn_lpas_timer_stop(protocol_interface_info_entry_t *cur)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+
+    if (lfn->lpas_event) {
+        eventOS_cancel(lfn->lpas_event);
+        lfn->lpas_event = NULL;
+    }
+    lfn->lpas_sweeps = 0;
+}
+
+/* The LPAS timer (GS11, ws_lfn_jitter.h): an event to the bootstrap tasklet
+ * delay_ms from now, at the event loop's 10 ms resolution; sweeps > 0: it
+ * sends that many sweeps of a search or check whose window is already set,
+ * 0: a discovery tick (WS_LFN_LPAS_TIMER) */
+static void ws_lfn_lpas_timer_start(protocol_interface_info_entry_t *cur, uint32_t delay_ms, uint8_t sweeps)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+
+    ws_lfn_lpas_timer_stop(cur);
+    lfn->lpas_sweeps = sweeps;
+    arm_event_t event = {
+        .receiver = cur->bootStrapId,
+        .sender = 0,
+        .event_type = WS_LFN_LPAS_TIMER,
+        .event_data = ++lfn->lpas_event_seq,
+        .priority = ARM_LIB_LOW_PRIORITY_EVENT,
+    };
+    lfn->lpas_event = eventOS_event_timer_request_at(&event, eventOS_event_timer_ticks() + eventOS_event_timer_ms_to_ticks(delay_ms));
+    if (!lfn->lpas_event) {
+        tr_error("LFN: LPAS timer refused");
+        lfn->lpas_sweeps = 0;
+    }
+}
+
+/* An LPAS sweep (or parent_check_sweeps of them) start_ms from now, with its
+ * discovery window */
+static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur, uint32_t start_ms)
 {
     const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
-    asynch_request_t req;
 
     /* The discovery window: lnd_response_delay_ms after the sweep starts,
        lnd_slots x lnd_slot_time_ms long; the parents answer in a random slot
@@ -247,32 +314,15 @@ static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur)
        channel of slot number disc_first_slot + i [M: Silicon Labs' LFN draws
        one per sweep and its parents send the LPA on that channel] */
     cur->ws_info->lfn.disc_first_slot = rand_get_16bit();
-    if (window_ms && ns_fhss_ws_lfn_discovery_set(cur->ws_info->fhss_api, now + delay_ms * 1000u, window_ms * 1000u,
+    if (window_ms && ns_fhss_ws_lfn_discovery_set(cur->ws_info->fhss_api, now + (start_ms + delay_ms) * 1000u, window_ms * 1000u,
                                                   cur->ws_info->lfn.disc_first_slot, (uint32_t)c->lnd_slot_time_ms * 1000u) == 0) {
-        cur->ws_info->lfn.disc_decide_s = cur->ws_info->uptime + (delay_ms + window_ms + 999) / 1000 + 1;
+        cur->ws_info->lfn.disc_decide_s = cur->ws_info->uptime + (start_ms + delay_ms + window_ms + 999) / 1000 + 1;
     }
-
-    memset(&req, 0, sizeof(req));
-    req.message_type = WS_FT_LPAS;
-    req.wh_requested_ie_list.lutt_ie = true;
-    req.wh_requested_ie_list.nr_ie = true;
-    req.wh_requested_ie_list.lus_ie = true;
-    req.wh_requested_ie_list.lnd_ie = true;
-    // Our unicast schedule in an LCP-IE (tag of the LUS-IE) [S: wsbrd needs
-    // it; M: Silicon Labs' LPAS]
-    req.wp_requested_nested_ie_list.lcp_ie = true;
-    req.wp_requested_nested_ie_list.net_name_ie = true;
-    req.security.SecurityLevel = 0;
-    // The channels of the plan, as an FFN's PAN advertisement solicits
-    req.channel_list.channel_page = CHANNEL_PAGE_10;
-    req.channel_list.next_channel_number = 0;
-    ws_common_generate_channel_list(cur, req.channel_list.channel_mask, cur->ws_info->hopping_schedule.number_of_channels,
-                                    cur->ws_info->hopping_schedule.regulatory_domain, cur->ws_info->hopping_schedule.operating_class,
-                                    cur->ws_info->hopping_schedule.channel_plan_id);
-    for (uint8_t i = 0; i < sweeps; i++) {
-        tr_info("LFN: LPAS sweep");
-        ws_stats_update(cur, STATS_WS_ASYNCH_TX_PAS, 1);
-        ws_llc_asynch_request(cur, &req);
+    if (!start_ms) {
+        ws_lfn_lpas_tx(cur, sweeps);
+    } else if (cur->ws_info->lfn.disc_decide_s) {
+        // Later; without a window (the caller tries again) no LPA could be heard
+        ws_lfn_lpas_timer_start(cur, start_ms, sweeps);
     }
 }
 
@@ -810,6 +860,9 @@ static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struc
     ns_fhss_ws_set_parent(cur->ws_info->fhss_api, data->SrcAddr, &ni.ws_neighbor->fhss_data.bc_timing_info, true);
     memcpy(lfn->parent_eui64, data->SrcAddr, 8);
     lfn->parent_known = true;
+    if (!lfn->lpas_sweeps) {
+        ws_lfn_lpas_timer_stop(cur);    // the discovery's sweeps end
+    }
     lfn->parent_rx_s = cur->ws_info->uptime;
     lfn->parent_rsl_x8 = 0;
     {
@@ -1111,7 +1164,9 @@ void ws_bootstrap_lfn_address_register(protocol_interface_info_entry_t *cur)
         cur->ws_info->aro_registration_timer = 0;
         cur->ws_info->lfn.addr_registered = true;
         uint32_t t = (uint32_t)cur->ws_info->lfn_cfg.registration_lifetime_min * 60 * 92 / 100;
-        cur->ws_info->lfn.lpas_timer_s = 0;
+        if (!cur->ws_info->lfn.lpas_sweeps) {
+            ws_lfn_lpas_timer_stop(cur);
+        }
         cur->ws_info->lfn.reregister_s = t ? t : 1;
         if (cur->nwk_bootstrap_state != ER_BOOTSTRAP_DONE) {
             ws_bootstrap_event_routing_ready(cur);
@@ -1176,7 +1231,8 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             ws_bootstrap_configure_data_request_restart(cur, WS_CCA_REQUEST_RESTART_MAX, WS_TX_REQUEST_RESTART_MAX_BOOTSTRAP, cur->ws_info->lfn_cfg.restart_min_ms, cur->ws_info->lfn_cfg.restart_max_ms);
             ws_bootstrap_configure_csma_ca_backoffs(cur, WS_MAX_CSMA_BACKOFFS, WS_MAC_MIN_BE, WS_MAC_MAX_BE);
             cur->nwk_bootstrap_state = ER_ACTIVE_SCAN;
-            lfn->lpas_timer_s = 1;
+            // The first LPAS sweep 0.5-1.5 s from now, at random (GS11)
+            ws_lfn_lpas_timer_start(cur, ws_lfn_lpas_first_ms(), 0);
             break;
         case WS_CONFIGURATION_START:
             /* Authenticated (or rejoining with valid keys): LPCS -> LPC,
@@ -1244,6 +1300,39 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
         case WS_NORMAL_DISCONNECT:
             ws_bootstrap_event_discovery_start(cur);
             break;
+        case WS_LFN_LPAS_TIMER:
+            if (!lfn->lpas_event || event->event_data != lfn->lpas_event_seq) {
+                break;  // a timer stopped since
+            }
+            lfn->lpas_event = NULL;
+            if (!(cur->lowpan_info & INTERFACE_NWK_ACTIVE)) {
+                lfn->lpas_sweeps = 0;
+                break;
+            }
+            if (lfn->lpas_sweeps) {
+                // A search or check that the seconds timer started: its
+                // window is set, unless the search ended meanwhile
+                uint8_t sweeps = lfn->lpas_sweeps;
+                lfn->lpas_sweeps = 0;
+                if (lfn->disc_decide_s) {
+                    ws_lfn_lpas_tx(cur, sweeps);
+                }
+                break;
+            }
+            // Discovery: an LPAS sweep every lpas_interval_s (+- 25 %, at
+            // random) until an LPA comes
+            if (cur->nwk_bootstrap_state != ER_ACTIVE_SCAN || lfn->parent_known) {
+                break;
+            }
+            if (lfn->disc_decide_s) {
+                // The window of an earlier sweep is still open (a short
+                // lpas_interval_s): the next sweep after its end
+                ws_lfn_lpas_timer_start(cur, ws_lfn_lpas_first_ms(), 0);
+                break;
+            }
+            ws_lfn_lpas_send(cur, 0);
+            ws_lfn_lpas_timer_start(cur, ws_lfn_lpas_next_ms(cur->ws_info->lfn_cfg.lpas_interval_s), 0);
+            break;
         default:
             tr_err("Invalid event received");
             break;
@@ -1283,9 +1372,6 @@ uint32_t ws_bootstrap_lfn_seconds_timer_next(protocol_interface_info_entry_t *cu
         return next;
     }
     lfn = &cur->ws_info->lfn;
-    if (cur->nwk_bootstrap_state == ER_ACTIVE_SCAN && !lfn->parent_known && lfn->lpas_timer_s) {
-        next = protocol_timer_next_min(next, lfn->lpas_timer_s);
-    }
     if (lfn->disc_decide_s) {
         uint32_t up = cur->ws_info->uptime;
         next = protocol_timer_next_min(next, lfn->disc_decide_s > up ? lfn->disc_decide_s - up : 1);
@@ -1355,15 +1441,7 @@ void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
     if (lfn->disc_decide_s && cur->ws_info->uptime >= lfn->disc_decide_s) {
         ws_lfn_lpa_choose(cur);
     }
-    // Discovery: an LPAS sweep every lpas_interval_s until an LPA comes
-    if (cur->nwk_bootstrap_state == ER_ACTIVE_SCAN && !lfn->parent_known && lfn->lpas_timer_s) {
-        if (lfn->lpas_timer_s > seconds) {
-            lfn->lpas_timer_s -= seconds;
-        } else {
-            ws_lfn_lpas_send(cur);
-            lfn->lpas_timer_s = cur->ws_info->lfn_cfg.lpas_interval_s;
-        }
-    }
+    // Discovery: the LPAS timer (WS_LFN_LPAS_TIMER)
     // Configuration: LPCS again if no LPC came
     if (cur->nwk_bootstrap_state == ER_SCAN && !lfn->lpc_received && lfn->lpcs_timer_s) {
         if (lfn->lpcs_timer_s > seconds) {
@@ -1432,7 +1510,9 @@ void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
         lfn->searching = true;
         lfn->check = true;
         lfn->disc_slots = cur->ws_info->lfn_cfg.parent_check_lnd_slots;
-        ws_lfn_lpas_send(cur);
+        // Within the second, at random: LFNs on the same second do not sweep
+        // together (GS11)
+        ws_lfn_lpas_send(cur, ws_lfn_lpas_dither_ms());
         if (!lfn->disc_decide_s) {
             // No discovery window (a broadcast window was open): in a second
             lfn->searching = false;
@@ -1455,7 +1535,9 @@ void ws_bootstrap_lfn_seconds_timer(protocol_interface_info_entry_t *cur, uint32
             lfn->searching = true;
             // the next search one sync period later, if this one finds nobody
             lfn->search_next_s = cur->ws_info->uptime + ws_lfn_sync_period_s(cur);
-            ws_lfn_lpas_send(cur);
+            // The children of a silent parent start their search on the
+            // same second (its last sync frame): within it at random (GS11)
+            ws_lfn_lpas_send(cur, ws_lfn_lpas_dither_ms());
             if (!lfn->disc_decide_s) {
                 // No discovery window (a broadcast window was open): again
                 // in a second

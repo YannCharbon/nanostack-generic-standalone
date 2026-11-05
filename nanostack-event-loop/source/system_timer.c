@@ -343,6 +343,41 @@ static arm_event_storage_t *eventOS_event_timer_request_at_(const arm_event_t *e
     return &timer->event;
 }
 
+/* Arm's eventOS_event_timer_ticks() and eventOS_event_timer_request_at(),
+ * declared in eventOS_event_timer.h (the LFN's LPAS timer, GS11) */
+uint32_t eventOS_event_timer_ticks(void)
+{
+    uint32_t ret;
+
+    platform_enter_critical();
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
+    uint32_t now = ns_port_time_us();
+    idle_ticks_catch_up(now);
+    idle_ticks_rearm(now);
+#endif
+    ret = timer_sys_ticks;
+    platform_exit_critical();
+    return ret;
+}
+
+arm_event_storage_t *eventOS_event_timer_request_at(const arm_event_t *event, uint32_t at)
+{
+    platform_enter_critical();
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
+    uint32_t now = ns_port_time_us();
+    idle_ticks_catch_up(now);
+#endif
+
+    arm_event_storage_t *ret = eventOS_event_timer_request_at_(event, at, 0);
+
+#ifdef NS_EVENTLOOP_SKIP_IDLE_TICKS
+    idle_ticks_rearm(now);
+#endif
+    platform_exit_critical();
+
+    return ret;
+}
+
 arm_event_storage_t *eventOS_event_timer_request_every(const arm_event_t *event, int32_t period)
 {
     if (period <= 0) {

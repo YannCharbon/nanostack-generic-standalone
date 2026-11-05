@@ -13,9 +13,13 @@
  *      accepted; a retry in the next window is dropped.
  *   3. Adaptation layer (adaptation_interface.c): a frame to an LFN child
  *      whose MAC TTL expired is not queued again; to an FFN it is (unchanged).
+ *   4. LPAS jitter (ws_lfn_jitter.h, GS11): the range, step and mean of each
+ *      draw, with the default lpas_interval_s and others; two LFNs that start
+ *      their discovery in the same tick, or a search in the same second, do
+ *      not sweep together again (the former fixed timing did, every time).
  *
- * OLD_STACK: built against the stack before these fixes (no part 1; the
- * duplicate check's former signature), to show which checks fail there.
+ * OLD_STACK: built against the stack before these fixes (no parts 1 and 4;
+ * the duplicate check's former signature), to show which checks fail there.
  *
  *   tests/lfn_units/run.sh [build dir]
  */
@@ -45,6 +49,8 @@
 #include "nanostack/mac/mlme.h"
 #include "mac_data_buffer.h"
 #include "mac_lfn_async.h"
+#include "nanostack/ws_management_api.h"
+#include "6lowpan/ws/ws_lfn_jitter.h"
 #endif
 
 static unsigned checks, failures;
@@ -88,6 +94,15 @@ mac_neighbor_table_entry_t *mac_neighbor_table_address_discover(mac_neighbor_tab
 { (void)table_class; (void)address; (void)address_type; return NULL; }
 uint8_t rand_get_8bit(void) { return 7; }
 uint16_t rand_get_16bit(void) { return 77; }
+/* xorshift32; one state per simulated LFN (test_lpas_jitter) */
+static uint32_t rand_state = 1;
+uint32_t rand_get_32bit(void)
+{
+    rand_state ^= rand_state << 13;
+    rand_state ^= rand_state >> 17;
+    rand_state ^= rand_state << 5;
+    return rand_state;
+}
 uint16_t random_early_detection_aq_calc(struct red_info_s *red_info, uint16_t sampleLen) { (void)red_info; return sampleLen; }
 bool random_early_detection_congestion_check(struct red_info_s *red_info) { (void)red_info; return false; }
 bool rpl_data_is_rpl_parent_route(ipv6_route_src_t source) { (void)source; return false; }
@@ -336,10 +351,149 @@ static void test_lfn_ttl(void)
     CHECK(again == 1);
 }
 
+#ifndef OLD_STACK
+/* ------------------------------------------------- 4. LPAS jitter (GS11) */
+
+/* n draws in [lo, hi], in steps of 10 ms from lo, mean (lo + hi) / 2 within
+ * tol_ms; both ends reached (unless there are too many steps for n) */
+static void check_draws(uint32_t (*draw)(uint16_t), uint16_t arg, uint32_t lo, uint32_t hi, double tol_ms)
+{
+    const unsigned n = 200000;
+    double sum = 0;
+    bool in = true, step = true, lo_hit = false, hi_hit = false;
+
+    for (unsigned i = 0; i < n; i++) {
+        uint32_t v = draw(arg);
+        in &= v >= lo && v <= hi;
+        step &= (v - lo) % WS_LFN_JITTER_STEP_MS == 0;
+        lo_hit |= v == lo;
+        hi_hit |= v == hi;
+        sum += v;
+    }
+    double mean = sum / n;
+    printf("  draws in [%"PRIu32", %"PRIu32"] ms: mean %.1f ms (expected %.1f)\n", lo, hi, mean, (lo + hi) / 2.0);
+    CHECK(in);
+    CHECK(step);
+    if ((hi - lo) / WS_LFN_JITTER_STEP_MS < n / 100) {
+        CHECK(lo_hit && hi_hit);
+    }
+    CHECK(mean > (lo + hi) / 2.0 - tol_ms && mean < (lo + hi) / 2.0 + tol_ms);
+}
+
+static uint32_t draw_next(uint16_t interval_s) { return ws_lfn_lpas_next_ms(interval_s); }
+static uint32_t draw_first(uint16_t unused) { (void)unused; return ws_lfn_lpas_first_ms(); }
+static uint32_t draw_dither(uint16_t unused) { (void)unused; return ws_lfn_lpas_dither_ms(); }
+
+/* Start times (ms) of the first n sweeps of a discovery started at 0; fixed:
+ * the former timing (the next seconds tick, then every lpas_interval_s) */
+static void sweep_times(uint32_t *t, unsigned n, uint16_t interval_s, bool fixed)
+{
+    t[0] = fixed ? 1000 : ws_lfn_lpas_first_ms();
+    for (unsigned i = 1; i < n; i++) {
+        t[i] = t[i - 1] + (fixed ? interval_s * 1000u : ws_lfn_lpas_next_ms(interval_s));
+    }
+}
+
+/* Sweeps of A that start within 20 ms of one of B's (a frame's airtime at
+ * 50 kbit/s and a tick), and the longest run of them in a row */
+static unsigned together(const uint32_t *a, const uint32_t *b, unsigned n, unsigned *run_max)
+{
+    unsigned count = 0, run = 0, j = 0;
+
+    *run_max = 0;
+    for (unsigned i = 0; i < n; i++) {
+        while (j + 1 < n && b[j + 1] <= a[i]) {
+            j++;
+        }
+        bool near = (a[i] >= b[j] ? a[i] - b[j] : b[j] - a[i]) < 20 ||
+                    (j + 1 < n && b[j + 1] - a[i] < 20);
+        if (near) {
+            count++;
+            run++;
+            if (run > *run_max) {
+                *run_max = run;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    return count;
+}
+
+static void test_lpas_jitter(void)
+{
+    enum { N = 2000 };
+    static uint32_t ta[N], tb[N];
+    unsigned run, count;
+
+    printf("LPAS jitter\n");
+    // The default configuration: lpas_interval_s 10 s, 7.5-12.5 s, mean 10 s
+    ws_lfn_settings_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.lpas_interval_s = WS_LFN_LPAS_INTERVAL_S_DEFAULT;
+    CHECK(cfg.lpas_interval_s == 10);
+    check_draws(draw_next, cfg.lpas_interval_s, 7500, 12500, 20);
+    // Other intervals: +- 25 %, the mean kept
+    check_draws(draw_next, 1, 750, 1250, 2);
+    check_draws(draw_next, 60, 45000, 75000, 120);
+    check_draws(draw_next, 65535, 49151250, 81918750, 150000);
+    // The first sweep: 0.5-1.5 s, mean 1 s; a sweep the seconds timer starts:
+    // 0-990 ms after that second
+    check_draws(draw_first, 0, 500, 1500, 5);
+    check_draws(draw_dither, 0, 0, 990, 5);
+
+    // Two LFNs whose discovery starts in the same tick (their own random
+    // streams): the former timing kept every sweep together
+    sweep_times(ta, N, 10, true);
+    sweep_times(tb, N, 10, true);
+    count = together(ta, tb, N, &run);
+    printf("  fixed timing: %u of %u sweeps together, %u in a row\n", count, N, run);
+    CHECK(count == N);
+    unsigned worst = 0, worst_run = 0, total = 0;
+    for (uint32_t pair = 1; pair <= 20; pair++) {
+        rand_state = 0x9e3779b9u * pair;
+        sweep_times(ta, N, 10, false);
+        rand_state = 0x85ebca6bu * pair + 1;
+        sweep_times(tb, N, 10, false);
+        count = together(ta, tb, N, &run);
+        total += count;
+        worst = count > worst ? count : worst;
+        worst_run = run > worst_run ? run : worst_run;
+    }
+    printf("  jitter, 20 pairs: %u of %u sweeps together (worst pair %u), at most %u in a row\n", total, 20 * N, worst, worst_run);
+    // Expected about 0.4 % (a gap of 7.5-12.5 s in 10 ms steps against a
+    // +-20 ms coincidence)
+    CHECK(total < 20 * N / 100);
+    CHECK(worst_run <= 2);
+
+    // A search on the same second (children of one silent parent): the
+    // sub-second dither, drawn anew at each search
+    count = 0;
+    run = 0;
+    unsigned run_max = 0;
+    rand_state = 12345;
+    for (unsigned i = 0; i < N; i++) {
+        uint32_t a = ws_lfn_lpas_dither_ms(), b = ws_lfn_lpas_dither_ms();
+        if ((a > b ? a - b : b - a) < 20) {
+            count++;
+            run++;
+            run_max = run > run_max ? run : run_max;
+        } else {
+            run = 0;
+        }
+    }
+    printf("  searches on the same second: %u of %u together, at most %u in a row\n", count, N, run_max);
+    // Expected about 3 % (3 of 100 steps)
+    CHECK(count < N * 5 / 100);
+    CHECK(run_max <= 3);
+}
+#endif
+
 int main(void)
 {
 #ifndef OLD_STACK
     test_async_hold();
+    test_lpas_jitter();
 #endif
     test_duplicates();
     test_lfn_ttl();

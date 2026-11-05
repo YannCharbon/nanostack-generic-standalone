@@ -118,7 +118,9 @@ typedef struct ws_lfn_state_s {
     uint32_t listen_interval_ms;    /**< Current listen interval (LUS-IE) */
     uint32_t parent_rx_s;           /**< Uptime of the last frame from the parent */
     uint32_t sync_period_s;         /**< Parent's LFN sync period (LBS-IE); 0: unknown */
-    uint16_t lpas_timer_s;          /**< Next LPAS sweep */
+    struct arm_event_storage *lpas_event; /**< Pending LPAS timer (event loop, 10 ms resolution; GS11); NULL: none */
+    uint8_t lpas_event_seq;         /**< Sequence of that timer: an event of an older one is ignored */
+    uint8_t lpas_sweeps;            /**< Sweeps the pending timer sends (a search or check started by the seconds timer); 0: a discovery tick */
     uint16_t lpcs_timer_s;          /**< LPCS retry */
     uint8_t lpcs_count;             /**< LPCS sent since the configuration started */
     uint16_t lgtk_mismatch_timer_s; /**< Key request after an LGTK hash mismatch */

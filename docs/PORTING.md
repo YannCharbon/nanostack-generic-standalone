@@ -116,6 +116,10 @@ are skipped, so the CPU is not woken for nothing.
   than the 32-bit clock's 71.6 min is harmless.
 - `eventOS_event_timer_shortest_active_timer()` gives the time to the earliest
   event timer (ms, 0 if none), for a port's sleep decision.
+- `eventOS_event_timer_ticks()` and `eventOS_event_timer_request_at()` (Arm's
+  API, declared in `eventOS_event_timer.h`, implemented since GS11 for the
+  LFN's LPAS timer) count the grid points passed first, as the other
+  requests do, so an absolute tick means the same with both ticks.
 
 What a port must change: nothing in its API, but **its run loop must not rely
 on the tick to wake up**. A timeout on its wait becomes a periodic wake of its

@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.17)
 # Unit tests of LFN code outside the FHSS (docs/LFN_STACK.md §11): the MAC's
 # hold-back of an asynchronous sweep (mac_lfn_async.c), the duplicate
-# detection (ws_neighbor_class.c) and the TTL of frames to LFN children in
-# the adaptation layer (adaptation_interface.c), on stubs.
+# detection (ws_neighbor_class.c), the TTL of frames to LFN children in
+# the adaptation layer (adaptation_interface.c) and the LPAS jitter
+# (ws_lfn_jitter.h), on stubs.
 #
 #   tests/lfn_units/run.sh [build dir]
 project(nanostack-lfn-units C)
