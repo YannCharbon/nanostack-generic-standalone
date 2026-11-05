@@ -1880,11 +1880,26 @@ static uint32_t fhss_ws_lfn_open_time(struct fhss_ws_lfn *lfn, uint32_t slot_sta
     return slot_start - lfn->listen_cfg.rx_guard_us - fhss_ws_lfn_widening(lfn, slot_start, bc);
 }
 
+// The own-slot timer towards a slot (or a point on the way), at most a close
+// retry away while a broadcast window's close is retried (stop_close_retry):
+// the timer is that retry's too
+static void fhss_ws_lfn_own_arm(fhss_structure_t *fhss_structure, int32_t delay_us)
+{
+    struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+
+    if (lfn->stop_close_retry && delay_us > (int32_t)lfn->listen_cfg.close_retry_us) {
+        delay_us = lfn->listen_cfg.close_retry_us;
+    }
+    fhss_ws_lfn_timer_arm(fhss_structure, delay_us);
+}
+
 // The next own slot whose window opens after now, from the 'own' schedule
 static void fhss_ws_lfn_own_next(fhss_structure_t *fhss_structure, uint32_t now)
 {
     struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
 
+    // The next slot is computed here, whatever asked for it
+    lfn->stop_resched = false;
     uint64_t d = fhss_lfn_sched_next_delta(&lfn->own, now, &lfn->slot);
     if (d > FHSS_LFN_SHORT_INTERVAL_US) {
         /* The next slot is beyond the 32-bit clock's reach (an interval
@@ -1892,14 +1907,14 @@ static void fhss_ws_lfn_own_next(fhss_structure_t *fhss_structure, uint32_t now)
            schedule near its time and computes the window then */
         lfn->own_hop = true;
         fhss_lfn_sched_reanchor(&lfn->own, now);
-        fhss_ws_lfn_timer_arm(fhss_structure, FHSS_LFN_SHORT_INTERVAL_US / 2);
+        fhss_ws_lfn_own_arm(fhss_structure, FHSS_LFN_SHORT_INTERVAL_US / 2);
         return;
     }
     lfn->slot_start = now + (uint32_t)d;
     while ((int32_t)(fhss_ws_lfn_open_time(lfn, lfn->slot_start, false) - now) <= 0) {
         fhss_ws_lfn_own_advance(lfn);
     }
-    fhss_ws_lfn_timer_arm(fhss_structure, (int32_t)(fhss_ws_lfn_open_time(lfn, lfn->slot_start, false) - now));
+    fhss_ws_lfn_own_arm(fhss_structure, (int32_t)(fhss_ws_lfn_open_time(lfn, lfn->slot_start, false) - now));
 }
 
 static void fhss_ws_lfn_listen_timer(fhss_structure_t *fhss_structure)

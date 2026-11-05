@@ -1777,7 +1777,8 @@ static void test_view_on_tx_done(int mode)
  * fix the next broadcast window's close, in the same own slot, could reopen
  * a unicast window from it); 6: the sync 0.56 s early (our clock slow),
  * our slot 1.5 s after the predicted sync slot, then the parent lost in
- * the broadcast window during a frame (close deferred once).
+ * the broadcast window during a frame (close deferred once); 7: as 6, then
+ * our schedule set again (an LTO-IE) while the close is retried.
  * When the LTS comes, our next unicast slots must move by its phase error:
  * before the fix the unicast timer, still running when the sync came,
  * re-anchored our slots at the old slot in the broadcast window (the skip
@@ -1787,7 +1788,7 @@ static void test_sync_over_uc(int mode)
     bool lts_lost = mode == 1 || mode == 2 || mode == 5;
     const uint32_t iv_ms = 300000, bc_ms = 600000, guard = 1000;
     // our µs per parent µs (mode 6: our clock slow, the sync early)
-    const double k = mode == 6 ? 1.0 - 15600e-9 : 1.0 + 15600e-9;
+    const double k = mode >= 6 ? 1.0 - 15600e-9 : 1.0 + 15600e-9;
     fhss_ws_lfn_listen_t cfg;
     fhss_ws_lfn_stats_t st;
     fhss_api_t *api;
@@ -1801,7 +1802,7 @@ static void test_sync_over_uc(int mode)
     uint64_t L0 = now_us + 3000000;            // the parent's broadcast slot 0
     // our slot 120 starts 0.5 s before the sync slot 60 as we predict it
     // (mode 3: 3 s after it)
-    cfg.first_slot_delay_us = mode == 3 || mode == 4 ? 6000000 : mode == 6 ? 4500000 : 2500000;
+    cfg.first_slot_delay_us = mode == 3 || mode == 4 ? 6000000 : mode >= 6 ? 4500000 : 2500000;
     if (mode == 2) {
         cfg.bc_widening_max_us = 500000;
     }
@@ -1892,10 +1893,10 @@ static void test_sync_over_uc(int mode)
     sy.rx_timestamp_us = ts();
     CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
     CHECK(ns_fhss_ws_lfn_stats_get(api, &st) == 0);
-    int32_t err = mode == 6 ? -st.last_sync_error_us : st.last_sync_error_us;
+    int32_t err = mode >= 6 ? -st.last_sync_error_us : st.last_sync_error_us;
     CHECK(st.bc_syncs == 2 && err > 550000 && err < 575000);
     int n0 = nevs;
-    if (mode == 6) {
+    if (mode >= 6) {
         /* the parent lost while the broadcast window is open, during a frame
            (the MAC defers the close once): the close retry must not bring
            back our slots of before the sync */
@@ -1904,6 +1905,37 @@ static void test_sync_over_uc(int mode)
         now_us = PS(60) + 2160000;
         close_defer = 1;
         CHECK(ns_fhss_ws_lfn_bc_stop(api) == 0);
+    }
+    if (mode == 7) {
+        /* then our schedule set again at once (an LPA's LTO-IE: offset 20 s
+           from now): the close is still retried, and our next window, of
+           the new schedule, opens */
+        uint64_t t_stop = now_us;
+        CHECK(ns_fhss_ws_lfn_timing_set(api, 20000, 0, ts()) == 0);
+        while (step(t_stop + 700000000)) {
+        }
+        uint64_t closed_at = 0;
+        int opens = 0;
+        for (int i = n0; i < nevs; i++) {
+            if (!closed_at && evs[i].t >= t_stop && evs[i].e == FHSS_RX_WINDOW_CLOSE && !evs[i].ret) {
+                closed_at = evs[i].t;
+            }
+            opens += evs[i].e == FHSS_RX_WINDOW_OPEN && evs[i].t > t_stop;
+        }
+        if (!closed_at || closed_at - t_stop > 3 * cfg.close_retry_us || opens < 2) {
+            fprintf(stderr, "sync_over_uc mode 7: radio closed %.3f s after the stop, %d windows opened\n",
+                    closed_at ? (double)(closed_at - t_stop) / 1e6 : -1.0, opens);
+        }
+        CHECK(closed_at && closed_at - t_stop <= 3 * cfg.close_retry_us);
+        // the windows of the new schedule: 20 s after the LTO, then every 300 s
+        CHECK(opens >= 2);
+        bool first = false;
+        for (int i = n0; i < nevs; i++) {
+            first |= evs[i].e == FHSS_RX_WINDOW_OPEN && evs[i].t > t_stop + 19000000 && evs[i].t < t_stop + 20000000;
+        }
+        CHECK(first);
+        CHECK(ns_fhss_delete(api) == 0);
+        return;
     }
     if (mode == 4) {
         /* the parent lost while the broadcast window is open, after our
@@ -2091,6 +2123,7 @@ int main(void)
     test_sync_over_uc(4);
     test_sync_over_uc(5);
     test_sync_over_uc(6);
+    test_sync_over_uc(7);
     test_sync_in_discovery();
     test_ffn_rate();
 #ifndef OLD_STACK
