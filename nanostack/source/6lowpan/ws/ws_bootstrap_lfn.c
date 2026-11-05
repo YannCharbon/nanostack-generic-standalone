@@ -282,16 +282,14 @@ static void ws_lfn_lpas_timer_start(protocol_interface_info_entry_t *cur, uint32
     }
 }
 
-/* An LPAS sweep (or parent_check_sweeps of them) start_ms from now, with its
- * discovery window */
-static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur, uint32_t start_ms)
+/* The sweeps of an LPAS and its discovery window (lengths in ms) */
+static uint8_t ws_lfn_lpas_plan(protocol_interface_info_entry_t *cur, uint32_t *delay_ms_out, uint32_t *window_ms_out)
 {
     const ws_lfn_settings_t *c = &cur->ws_info->lfn_cfg;
 
     /* The discovery window: lnd_response_delay_ms after the sweep starts,
        lnd_slots x lnd_slot_time_ms long; the parents answer in a random slot
        of it [S: LND-IE; M items 4-5] */
-    uint32_t now = ns_sw_mac_read_current_timestamp(cur->mac_api);
     uint32_t window_ms = (uint32_t)(cur->ws_info->lfn.disc_slots ? cur->ws_info->lfn.disc_slots : c->lnd_slots) * c->lnd_slot_time_ms;
     /* Never before the sweep can have ended: about 20 ms per channel [M:
        16.8 ms on Silicon Labs' LFN, item 1], plus 300 ms [I] */
@@ -309,21 +307,71 @@ static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur, uint32_t star
     if (delay_ms < sweep_ms) {
         delay_ms = sweep_ms;
     }
+    *delay_ms_out = delay_ms;
+    *window_ms_out = window_ms;
+    return sweeps;
+}
+
+/* The discovery window of a sweep that starts now (FHSS); 0: set */
+static int ws_lfn_lpas_window_set(protocol_interface_info_entry_t *cur, uint32_t delay_ms, uint32_t window_ms)
+{
+    uint32_t now = ns_sw_mac_read_current_timestamp(cur->mac_api);
+
+    if (!window_ms) {
+        return -1;
+    }
+    return ns_fhss_ws_lfn_discovery_set(cur->ws_info->fhss_api, now + delay_ms * 1000u, window_ms * 1000u,
+                                        cur->ws_info->lfn.disc_first_slot, (uint32_t)cur->ws_info->lfn_cfg.lnd_slot_time_ms * 1000u);
+}
+
+/* An LPAS sweep (or parent_check_sweeps of them) start_ms from now, with its
+ * discovery window. A later sweep (a search or check dithered within its
+ * second) sets its window when it is sent (the WS_LFN_LPAS_TIMER event): the
+ * LFN broadcast windows run until then; the time of the choice
+ * (disc_decide_s) is set now */
+static void ws_lfn_lpas_send(protocol_interface_info_entry_t *cur, uint32_t start_ms)
+{
+    uint32_t delay_ms, window_ms;
+    uint8_t sweeps = ws_lfn_lpas_plan(cur, &delay_ms, &window_ms);
+
     ws_lfn_candidates_clear(cur);
     /* A new first slot per sweep (LND-IE): discovery slot i is on our unicast
        channel of slot number disc_first_slot + i [M: Silicon Labs' LFN draws
        one per sweep and its parents send the LPA on that channel] */
     cur->ws_info->lfn.disc_first_slot = rand_get_16bit();
-    if (window_ms && ns_fhss_ws_lfn_discovery_set(cur->ws_info->fhss_api, now + (start_ms + delay_ms) * 1000u, window_ms * 1000u,
-                                                  cur->ws_info->lfn.disc_first_slot, (uint32_t)c->lnd_slot_time_ms * 1000u) == 0) {
-        cur->ws_info->lfn.disc_decide_s = cur->ws_info->uptime + (start_ms + delay_ms + window_ms + 999) / 1000 + 1;
-    }
     if (!start_ms) {
+        if (ws_lfn_lpas_window_set(cur, delay_ms, window_ms) == 0) {
+            cur->ws_info->lfn.disc_decide_s = cur->ws_info->uptime + (delay_ms + window_ms + 999) / 1000 + 1;
+        }
         ws_lfn_lpas_tx(cur, sweeps);
-    } else if (cur->ws_info->lfn.disc_decide_s) {
-        // Later; without a window (the caller tries again) no LPA could be heard
+    } else if (window_ms) {
+        cur->ws_info->lfn.disc_decide_s = cur->ws_info->uptime + (start_ms + delay_ms + window_ms + 999) / 1000 + 1;
         ws_lfn_lpas_timer_start(cur, start_ms, sweeps);
     }
+}
+
+/* The delayed sweep of a search or check: its window now, then the sweep.
+ * No window (a broadcast window is open): no sweep, the search or check
+ * again in a second, as when it is refused at once */
+static void ws_lfn_lpas_delayed(protocol_interface_info_entry_t *cur, uint8_t sweeps)
+{
+    ws_lfn_state_t *lfn = &cur->ws_info->lfn;
+    uint32_t delay_ms, window_ms;
+
+    (void)ws_lfn_lpas_plan(cur, &delay_ms, &window_ms);
+    if (ws_lfn_lpas_window_set(cur, delay_ms, window_ms) == 0) {
+        ws_lfn_lpas_tx(cur, sweeps);
+        return;
+    }
+    lfn->disc_decide_s = 0;
+    lfn->disc_slots = 0;
+    if (lfn->check) {
+        lfn->check = false;
+        lfn->check_next_s = cur->ws_info->uptime + 1;
+    } else {
+        lfn->search_next_s = cur->ws_info->uptime + 1;
+    }
+    lfn->searching = false;
 }
 
 /* Before the first LPC tells the active key: the first LGTK installed (key
@@ -1310,12 +1358,12 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
                 break;
             }
             if (lfn->lpas_sweeps) {
-                // A search or check that the seconds timer started: its
-                // window is set, unless the search ended meanwhile
+                // A search or check that the seconds timer started, unless
+                // it ended meanwhile
                 uint8_t sweeps = lfn->lpas_sweeps;
                 lfn->lpas_sweeps = 0;
                 if (lfn->disc_decide_s) {
-                    ws_lfn_lpas_tx(cur, sweeps);
+                    ws_lfn_lpas_delayed(cur, sweeps);
                 }
                 break;
             }
