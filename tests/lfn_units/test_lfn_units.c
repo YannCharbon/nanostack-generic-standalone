@@ -19,6 +19,9 @@
  *      not sweep together again (the former fixed timing did, every time).
  *   5. LFN restarts (ws_lfn_restart.h): the MAC's restart span, and the
  *      restart values scaled to outlast a parent's two sweeps on large plans.
+ *   6. The parent's neighbour entry (ws_lfn_parent_entry.h): kept and the
+ *      primary parent while it is the parent, a normal neighbour once
+ *      dropped (the LLC follows a primary parent's BT-IE).
  *
  * OLD_STACK: built against the stack before these fixes (no parts 1 and 4;
  * the duplicate check's former signature), to show which checks fail there.
@@ -54,6 +57,7 @@
 #include "nanostack/ws_management_api.h"
 #include "6lowpan/ws/ws_lfn_jitter.h"
 #include "6lowpan/ws/ws_lfn_restart.h"
+#include "6lowpan/ws/ws_lfn_parent_entry.h"
 #endif
 
 static unsigned checks, failures;
@@ -567,12 +571,35 @@ static void test_restart_span(void)
     CHECK(mn == 250 && mx == 2000);
 }
 
+/* The parent's neighbour entry (ws_lfn_parent_entry.h). Dropped as parent
+ * (a parent change), the old parent must no longer be the primary parent:
+ * the LLC gives the FHSS the broadcast timing of every frame with a BT-IE
+ * from a PRIORITY_PARENT_NEIGHBOUR, and made the old parent the FHSS's
+ * parent again at each of its downlinks. Fails before the fix: the role
+ * stayed. */
+static void test_parent_entry(void)
+{
+    printf("LFN parent entry\n");
+    mac_neighbor_table_entry_t n;
+    memset(&n, 0, sizeof(n));
+    n.link_role = NORMAL_NEIGHBOUR;
+    n.lifetime = n.link_lifetime = 100;
+    ws_lfn_parent_entry_set(&n, true);
+    CHECK(n.link_role == PRIORITY_PARENT_NEIGHBOUR);
+    CHECK(n.link_lifetime == 0xffffffff && n.lifetime == 0xffffffff);
+    ws_lfn_parent_entry_set(&n, false);
+    CHECK(n.link_role == NORMAL_NEIGHBOUR);
+    CHECK(n.link_lifetime == WS_NEIGHBOR_LINK_TIMEOUT && n.lifetime == WS_NEIGHBOR_LINK_TIMEOUT);
+    ws_lfn_parent_entry_set(NULL, false);       // no entry: nothing
+}
+
 int main(void)
 {
 #ifndef OLD_STACK
     test_async_hold();
     test_lpas_jitter();
     test_restart_span();
+    test_parent_entry();
 #endif
     test_duplicates();
     test_lfn_ttl();

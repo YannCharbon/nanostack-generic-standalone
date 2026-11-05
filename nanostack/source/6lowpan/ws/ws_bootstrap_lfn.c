@@ -84,6 +84,7 @@
 #include "6lowpan/ws/ws_lfn_parent.h"
 #include "6lowpan/ws/ws_lfn_jitter.h"
 #include "6lowpan/ws/ws_lfn_restart.h"
+#include "6lowpan/ws/ws_lfn_parent_entry.h"
 #include "security/protocols/sec_prot_keys.h"
 #include "nanostack/mac/fhss_ws_extension.h"
 #include "common_protocols/icmpv6.h"
@@ -430,19 +431,13 @@ static void ws_lfn_lpcs_send(protocol_interface_info_entry_t *cur)
     cur->ws_info->lfn.lpcs_timer_s = (cur->ws_info->lfn.listen_interval_ms * cur->ws_info->lfn_cfg.lpcs_retry_intervals + 999) / 1000 + 1;
 }
 
-/* The parent's neighbour entry does not expire while it is our parent: we
- * may hear it once per sync period (Silicon Labs' Eco: 10 h), and an entry
- * gone (2200 s, WS_NEIGHBOR_LINK_TIMEOUT) refused every uplink until the
- * next frame from it [I]. Parent maintenance decides when it is lost.
- * Dropped as parent: the usual lifetime again. */
+/* The parent's neighbour entry: kept and our primary parent while it is
+ * our parent, the usual lifetime and a normal role once dropped
+ * (ws_lfn_parent_entry.h) */
 static void ws_lfn_parent_entry_keep(protocol_interface_info_entry_t *cur, mac_neighbor_table_entry_t *n, bool keep)
 {
     (void)cur;
-    if (!n) {
-        return;
-    }
-    n->link_lifetime = keep ? 0xffffffff : WS_NEIGHBOR_LINK_TIMEOUT;
-    n->lifetime = n->link_lifetime;
+    ws_lfn_parent_entry_set(n, keep);
 }
 
 static void ws_lfn_parent_drop(protocol_interface_info_entry_t *cur)
@@ -918,7 +913,6 @@ static void ws_lfn_lpa_analyse(protocol_interface_info_entry_t *cur, const struc
     }
     ws_bootstrap_neighbor_set_stable(cur, data->SrcAddr);
     ws_lfn_parent_entry_keep(cur, ni.neighbor, true);
-    ni.neighbor->link_role = PRIORITY_PARENT_NEIGHBOUR;
     mac_neighbor_table_trusted_neighbor(mac_neighbor_info(cur), ni.neighbor, true);
     ws_neighbor_class_neighbor_unicast_time_info_update(ni.ws_neighbor, &utt, data->timestamp, (uint8_t *)data->SrcAddr);
     ws_neighbor_class_neighbor_unicast_schedule_set(cur, ni.ws_neighbor, &us, &cur->ws_info->hopping_schedule, data->SrcAddr);

@@ -1613,6 +1613,10 @@ static void test_ack_not_view(void)
  *           done of an asynchronous buffer that expired in the queue
  *           (another handle, no frame built): not the view (before the
  *           fix it was);
+ *   mode 6: as mode 0, the parent's FFN broadcast schedule unknown when
+ *           it is set (ns_fhss_ws_set_parent() with interval 0): the frame
+ *           at 167 s to it is the view (ab64f8b: before, the parent's
+ *           address was stored only with a valid broadcast schedule);
  *   mode 5: at 15 767 s, a CSMA failure, the frame built again, a clear
  *           channel report (PHY_LINK_CCA_OK: no ACK, not completed), on the
  *           air and acknowledged: the view (the second build).
@@ -1662,9 +1666,11 @@ static void test_view_on_tx_done(int mode)
             view_slot = ie[4] | ie[5] << 8; \
             view_off = ie[6] | ie[7] << 8 | ie[8] << 16; \
         } while (0)
-    // our parent (the frames to it: tx_handle with its address)
+    // our parent (the frames to it: tx_handle with its address); mode 6:
+    // its FFN broadcast schedule not known (no BT-IE yet): the parent is
+    // still ours
     ns_fhss_set_neighbor_info_fp(api, get_neighbor);
-    broadcast_timing_info_t pbt = { .broadcast_channel_function = WS_DH1CF, .broadcast_dwell_interval = 255, .broadcast_interval = 1020 };
+    broadcast_timing_info_t pbt = { .broadcast_channel_function = WS_DH1CF, .broadcast_dwell_interval = 255, .broadcast_interval = mode == 6 ? 0 : 1020 };
     CHECK(ns_fhss_ws_set_parent(api, parent_mac, &pbt, false) == 0);
     static const uint8_t other_mac[8] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x00, 0x07 };
     BUILD(167);
@@ -1675,7 +1681,7 @@ static void test_view_on_tx_done(int mode)
     for (int i = 0; i < 2; i++) {
         uint16_t slot = i ? 61 : 1;
         if (i == 1) {
-            if (mode == 0) {
+            if (mode == 0 || mode == 6) {
                 BUILD(4967);
                 api->data_tx_done(api, false, false, 8);    // CSMA failed
                 BUILD(15767);
@@ -2077,6 +2083,7 @@ int main(void)
     test_view_on_tx_done(3);
     test_view_on_tx_done(4);
     test_view_on_tx_done(5);
+    test_view_on_tx_done(6);
     test_sync_over_uc(0);
     test_sync_over_uc(1);
     test_sync_over_uc(2);
