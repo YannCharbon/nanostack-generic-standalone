@@ -1497,6 +1497,134 @@ static void test_ack_not_view(void)
     CHECK(ns_fhss_delete(api) == 0);
 }
 
+/* A sync slot's broadcast window against our own unicast window (emulator
+ * Eco seed 2, stack 60ce54d): Eco settings (300 s listen interval, 600 s LFN
+ * broadcast, a sync frame every 60th slot, listening only in those), the
+ * parent's clock 15.6 ppm off ours, the rate not measured yet (one sync
+ * from an LPA). 10 h later both windows have widened by 50 ppm (1.8 s each
+ * side) and overlap: our unicast slot starts 0.5 s before the sync slot as
+ * we predict it, so its window opens first. The parent's LTS, 0.56 s after
+ * the predicted start, must find a broadcast window open on the broadcast
+ * channel; the unicast windows go on after it, whether or not the LTS
+ * comes.
+ * Before the fix the broadcast window was skipped while the unicast one
+ * held the radio, and the sync came 20 h after the previous one. */
+/* mode 0: the LTS comes; 1: lost; 2: lost, the broadcast widening bound
+ * at 0.5 s: the rest of the unicast window opens after the broadcast one */
+static void test_sync_over_uc(int mode)
+{
+    bool lts_lost = mode != 0;
+    const uint32_t iv_ms = 300000, bc_ms = 600000, guard = 1000;
+    const double k = 1.0 + 15600e-9;          // our µs per parent µs
+    fhss_ws_lfn_listen_t cfg;
+    fhss_ws_lfn_stats_t st;
+    fhss_api_t *api;
+
+    reset_fakes();
+    api = create_fhss(lfn_mac, 255, 0, 0);
+    ns_fhss_ws_lfn_listen_defaults(&cfg);
+    cfg.listen_interval_ms = iv_ms;
+    cfg.rx_guard_us = guard;
+    cfg.bc_sync_only = true;
+    uint64_t L0 = now_us + 3000000;            // the parent's broadcast slot 0
+    // our slot 120 starts 0.5 s before the sync slot 60 as we predict it
+    cfg.first_slot_delay_us = 2500000;
+    if (mode == 2) {
+        cfg.bc_widening_max_us = 500000;
+    }
+    CHECK(ns_fhss_ws_lfn_listen_set(api, &cfg) == 0);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    #define PS(k_) (L0 + (uint64_t)((double)(k_) * bc_ms * 1000 * k))
+    fhss_ws_lfn_bc_sync_t sy = { .interval_ms = bc_ms, .bsi = 0x77, .sync_period = 60, .channel_function = WS_DH1CF };
+    // an LPA 4 s into the parent's broadcast slot 0
+    while (step(L0 + 4000000)) {
+    }
+    now_us = L0 + 4000000;
+    sy.slot = 0;
+    sy.offset_ms = 4000;
+    sy.rx_timestamp_us = ts();
+    CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+    nevs = 0;
+    uint64_t t_lts = PS(60) + 500;
+    while (step(t_lts)) {
+    }
+    now_us = t_lts;
+    // the radio at the LTS: the last window opened is the broadcast one
+    int last_open = -1;
+    bool closed = false;
+    for (int i = 0; i < nevs; i++) {
+        if (evs[i].t < PS(60) - 10000000) {
+            continue;
+        }
+        if (evs[i].e == FHSS_RX_WINDOW_OPEN) {
+            last_open = i;
+            closed = false;
+        } else if (evs[i].e == FHSS_RX_WINDOW_CLOSE && !evs[i].ret) {
+            closed = true;
+        }
+    }
+    bool bc_open = last_open >= 0 && !closed && evs[last_open].channel == bc_channel(60, 0x77);
+    if (mode == 2) {
+        // the LTS falls after this narrower broadcast window: the rest of
+        // the unicast window of slot 120 is open on its channel
+        bc_open = last_open >= 2 && !closed && evs[last_open].channel == dh1cf_channel(120, lfn_mac) &&
+                  evs[last_open - 1].e == FHSS_RX_WINDOW_CLOSE && evs[last_open - 2].channel == bc_channel(60, 0x77);
+    }
+    if (!bc_open) {
+        fprintf(stderr, "sync_over_uc: at the LTS (%.3f s): ", (double)(t_lts - L0) / 1e6);
+        for (int i = 0; i < nevs; i++) {
+            if (evs[i].t >= PS(60) - 10000000) {
+                fprintf(stderr, "%s %.3f ch %d; ", evs[i].e == FHSS_RX_WINDOW_OPEN ? "open" : "close",
+                        ((double)evs[i].t - (double)L0) / 1e6, evs[i].channel);
+            }
+        }
+        fprintf(stderr, "\n");
+    }
+    CHECK(bc_open);
+    if (lts_lost) {
+        /* the LTS lost: the broadcast window outlasts what was left of our
+           unicast window (both widen alike), and our next unicast window
+           (slot 121) opens on its channel; with a broadcast widening bound
+           below the unicast one, the rest of the unicast window would open
+           after the broadcast window */
+        int n1 = nevs;
+        while (step(PS(60) + 303000000)) {
+        }
+        bool resumed = false;
+        for (int i = n1; i < nevs; i++) {
+            resumed |= evs[i].e == FHSS_RX_WINDOW_OPEN && evs[i].channel == dh1cf_channel(121, lfn_mac) &&
+                       evs[i].t > PS(60) + 290000000;
+        }
+        if (!resumed) {
+            for (int i = n1; i < nevs; i++) {
+                fprintf(stderr, "  lts_lost: %s %.3f ch %d ret %d\n", evs[i].e == FHSS_RX_WINDOW_OPEN ? "open" : "close", ((double)evs[i].t - (double)L0) / 1e6, evs[i].channel, evs[i].ret);
+            }
+        }
+        CHECK(resumed);
+        CHECK(ns_fhss_delete(api) == 0);
+        return;
+    }
+    // the LTS: a sync, 0.56 s from our prediction (the rate needs a second
+    // slot-start frame)
+    sy.slot = 60;
+    sy.offset_ms = 0;
+    sy.rx_timestamp_us = ts();
+    CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+    CHECK(ns_fhss_ws_lfn_stats_get(api, &st) == 0);
+    CHECK(st.bc_syncs == 2 && st.last_sync_error_us > 550000 && st.last_sync_error_us < 575000);
+    // the broadcast window closes; our unicast windows go on
+    int n0 = nevs;
+    while (step(PS(61))) {
+    }
+    int uc_after = 0;
+    for (int i = n0; i < nevs; i++) {
+        uc_after += evs[i].e == FHSS_RX_WINDOW_OPEN;
+    }
+    CHECK(uc_after >= 2);
+    #undef PS
+    CHECK(ns_fhss_delete(api) == 0);
+}
+
 /* The rate of the parent's FFN unicast schedule, measured from its UTT-IEs
  * apart from the rate against its LFN broadcast schedule (a router's FFN
  * hopping follows the border router's time base). The parent's schedule
@@ -1616,6 +1744,9 @@ int main(void)
     test_own_ref_jitter(false);
     test_own_ref_jitter(true);
     test_ack_not_view();
+    test_sync_over_uc(0);
+    test_sync_over_uc(1);
+    test_sync_over_uc(2);
     test_ffn_rate();
 #ifndef OLD_STACK
     test_tx_delay();

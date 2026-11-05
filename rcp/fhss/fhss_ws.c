@@ -2725,6 +2725,29 @@ static void fhss_ws_lfn_bc_timer_handler(const fhss_api_t *fhss_api, uint16_t de
     uint32_t widening = fhss_ws_lfn_widening(lfn, lfn->bc_slot_start, true);
 
     if (!lfn->bc_window_open) {
+        bool sync_slot = lfn->pbc_sync_period && !(lfn->bc_slot % lfn->pbc_sync_period);
+        if (lfn->window_open && sync_slot) {
+            /* A slot that carries the sync frame takes the radio from our
+               unicast window, which resumes at the broadcast window's close
+               until its own end. Before the rate is measured both windows
+               widen by 50 ppm of the time since the last sync (Eco: 1.8 s
+               each side after 10 h), so they overlap although the parent
+               keeps its LTS and its frames to us 300 ms apart or more;
+               skipped, the sync left the next one 20 h after the last and
+               the windows twice as wide (Eco seed 2, 2 s of error). A missed
+               unicast window costs one listen interval at most: the parent
+               sends again in the next one. The MAC defers the close while a
+               frame is received: asked again shortly */
+            if (fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOW_CLOSE, 0) == 1) {
+                fhss_start_timer(fhss_structure, cfg->close_retry_us, fhss_ws_lfn_bc_timer_handler);
+                return;
+            }
+            lfn->window_open = false;
+            lfn->pending_valid = false;
+            lfn->uc_cut_for_sync = true;
+            lfn->uc_cut_slot = lfn->slot;
+            tr_debug("LFN window of slot %u closed for the sync slot %u", lfn->slot, lfn->bc_slot);
+        }
         if (lfn->window_open) {
             // The unicast window holds the radio: skip this broadcast slot
             lfn->stats.bc_windows_skipped++;
@@ -2761,10 +2784,22 @@ static void fhss_ws_lfn_bc_timer_handler(const fhss_api_t *fhss_api, uint16_t de
         return;
     }
     lfn->bc_window_open = false;
+    bool resume = lfn->uc_cut_for_sync;
+    lfn->uc_cut_for_sync = false;
     if (lfn->resched_after_bc) {
         lfn->resched_after_bc = false;
         fhss_stop_timer(fhss_structure, fhss_ws_lfn_timer_handler);
         fhss_ws_lfn_own_next(fhss_structure, now);
+    } else if (resume && !lfn->window_open && !lfn->own_hop && lfn->slot == lfn->uc_cut_slot) {
+        /* The rest of our unicast window cut for the sync, if it outlasts
+           the broadcast window (a broadcast widening bound below the
+           unicast one; with equal widenings its end has passed, and its
+           timer has moved on to the next slot) */
+        uint32_t uc_end = lfn->slot_start - cfg->rx_guard_us + cfg->rx_window_us + fhss_ws_lfn_widening(lfn, lfn->slot_start, false);
+        if ((int32_t)(uc_end - now) > 0) {
+            fhss_stop_timer(fhss_structure, fhss_ws_lfn_timer_handler);
+            fhss_ws_lfn_listen_timer(fhss_structure);
+        }
     }
     fhss_ws_lfn_bc_arm_next(fhss_structure, now);
 }

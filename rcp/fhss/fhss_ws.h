@@ -110,6 +110,8 @@ struct fhss_ws_lfn {
     uint32_t bc_slot_start;
     uint16_t bc_close_retries;
     bool resched_after_bc;          // a sync during a broadcast window: our next unicast slot is computed at its close
+    bool uc_cut_for_sync;           // our unicast window closed early for a sync slot's broadcast window: resumed at its close
+    uint16_t uc_cut_slot;           //   the slot of that unicast window
     /* LFN role: LND discovery window (stage 5), on the broadcast-window timer */
     bool disc_set;
     bool disc_open;
