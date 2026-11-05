@@ -30,6 +30,7 @@ static struct {
     uint64_t seed;
     int32_t drift_ppb;
     bool medium;                // NSIM_WELCOME_MEDIUM
+    uint64_t start_us;          // virtual time of the node's start (welcome)
     uint64_t now_us;
     volatile bool signalled;
 
@@ -98,11 +99,14 @@ uint64_t ns_port_sim_now_us(void)
     return sim.now_us;
 }
 
-// local = v + floor(v × ppb / 10^9). The inverse is not exact in integers:
-// sim_deadline_after() takes the first virtual µs at which the node's clock
-// has reached the target, so a timer never fires early on the node's clock.
+// The node's clock starts at 0 at its start (the welcome's start_us), as a
+// device's clock at power-up: with e = v − start, local = e + floor(e × ppb /
+// 10^9). The inverse is not exact in integers: sim_deadline_after() takes the
+// first virtual µs at which the node's clock has reached the target, so a
+// timer never fires early on the node's clock.
 uint64_t sim_local_of(uint64_t v)
 {
+    v = v > sim.start_us ? v - sim.start_us : 0;
     if (!sim.drift_ppb)
         return v;
     __int128 d = (__int128)v * sim.drift_ppb;
@@ -121,12 +125,17 @@ uint64_t sim_deadline_after(uint64_t us)
         return sim.now_us + us;
     target = sim_local_of(sim.now_us) + us;
     // first guess from the rate, then step to the first v with local >= target
-    v = (uint64_t)((__int128)target * 1000000000 / (1000000000 + (__int128)sim.drift_ppb));
+    v = sim.start_us + (uint64_t)((__int128)target * 1000000000 / (1000000000 + (__int128)sim.drift_ppb));
     while (v > sim.now_us && sim_local_of(v - 1) >= target)
         v--;
     while (sim_local_of(v) < target)
         v++;
     return v > sim.now_us ? v : sim.now_us + 1;
+}
+
+uint64_t ns_port_sim_start_us(void)
+{
+    return sim.start_us;
 }
 
 uint64_t ns_port_sim_local_us(void)
@@ -219,8 +228,16 @@ void ns_port_sim_attach(int fd, int node_id)
     FATAL_ON(msg.welcome.drift_ppb <= -100000000 || msg.welcome.drift_ppb >= 100000000, 2,
              "conductor: clock drift %d ppb out of range", msg.welcome.drift_ppb);
     sim.drift_ppb = msg.welcome.drift_ppb;
+    // A late start (the emulator's --vtime-start, --vtime-power-up): virtual
+    // time is already start_us, and the node's clock starts at 0 then
+    FATAL_ON(sim.now_us > msg.welcome.start_us, 2, "conductor: start at %llu µs, before the node's time %llu µs",
+             (unsigned long long)msg.welcome.start_us, (unsigned long long)sim.now_us);
+    sim.start_us = sim.now_us = msg.welcome.start_us;
     if (sim.drift_ppb)
         INFO("ns_port_sim: clock drift %+.3f ppm", sim.drift_ppb / 1000.0);
+    if (sim.start_us)
+        INFO("ns_port_sim: started at %llu.%06llu s of virtual time", (unsigned long long)(sim.start_us / 1000000),
+             (unsigned long long)(sim.start_us % 1000000));
     g_sim_power = msg.welcome.flags & NSIM_WELCOME_POWER;
     sim.medium = msg.welcome.flags & NSIM_WELCOME_MEDIUM;
     sim_random_seed(sim.seed, node_id);

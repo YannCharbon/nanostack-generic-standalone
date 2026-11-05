@@ -1050,6 +1050,43 @@ static void cond_drift_slow(void)
     c_quit();
 }
 
+// A late start (welcome with start_us, +100 ppm): virtual time is the start,
+// the node's clock starts at 0 there, the timers count from it and the date
+// stays the run's.
+#define LATE_T 5000000ULL
+static void node_late(int fd)
+{
+    int id = eventOS_callback_timer_register(drift_cb);
+
+    node_attach(fd, 1);
+    NODE_CHECK(ns_port_sim_now_us() == LATE_T);
+    NODE_CHECK(ns_port_sim_start_us() == LATE_T);
+    NODE_CHECK(ns_port_sim_local_us() == 0);
+    NODE_CHECK(ns_port_time_us() == (uint32_t)NSIM_CLOCK32_OFFSET_US);
+    NODE_CHECK(ns_port_time_wall_s() == NSIM_EPOCH_S + LATE_T / 1000000);
+    eventOS_callback_timer_start_sec(id, 1);
+    ns_port_fhss_timer.fhss_timer_start(2000000, drift_fhss_cb, NULL);
+    NODE_CHECK(ns_port_fhss_timer.fhss_get_remaining_slots(drift_fhss_cb, NULL) == 2000000);
+    ns_port_run();
+}
+
+static void cond_late(void)
+{
+    struct nsim_welcome w = { .magic = { 'x', 'w' }, .version = NSIM_PROTO_VERSION, .seed = 1,
+                              .drift_ppb = 100000, .start_us = LATE_T };
+
+    c_send(&w, sizeof(w));
+    // local(v) = e + floor(e / 10^4), e = v - LATE_T
+    CHECK_U64(c_idle(), LATE_T + 999901);
+    c_advance(LATE_T + 999901, 0, NULL);
+    CHECK_U64(c_idle(), LATE_T + 1999801);
+    EXPECT("timer 0 5999901 local 1000000");
+    c_advance(LATE_T + 1999801, 0, NULL);
+    CHECK_U64(c_idle(), NEVER);
+    EXPECT("fhss 6999801 local 2000000");
+    c_quit();
+}
+
 // Central medium: NSIM_WELCOME_MEDIUM sets ns_port_sim_medium() and nothing
 // else: no "xc" (c_idle() keeps any message before "xi" as a report).
 static void node_medium(int fd)
@@ -1130,6 +1167,7 @@ int main(void)
     run_test("quit before the welcome", node_quit, cond_quit_welcome);
     run_test("clock drift +100 ppm", node_drift_fast, cond_drift_fast);
     run_test("clock drift -100 ppm", node_drift_slow, cond_drift_slow);
+    run_test("late start: the node's clock from its start", node_late, cond_late);
     test_logs();
     say("%s: %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);
     return g_failures ? 1 : 0;
