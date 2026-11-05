@@ -83,6 +83,7 @@
 #include "6lowpan/ws/ws_bootstrap_lfn.h"
 #include "6lowpan/ws/ws_lfn_parent.h"
 #include "6lowpan/ws/ws_lfn_jitter.h"
+#include "6lowpan/ws/ws_lfn_restart.h"
 #include "security/protocols/sec_prot_keys.h"
 #include "nanostack/mac/fhss_ws_extension.h"
 #include "common_protocols/icmpv6.h"
@@ -117,6 +118,20 @@
  * LTS) syncs the FHSS to its LFN broadcast schedule, whose slots the LFN
  * listens to; the FHSS keeps our unicast slots in the parent's time base.
  */
+
+
+/* The MAC's restarts of a failed uplink: restart_min_ms and restart_max_ms,
+ * scaled up so that they outlast both of the parent's asynchronous sweeps
+ * on our channel plan (ws_lfn_restart.h) */
+static void ws_lfn_restart_configure(protocol_interface_info_entry_t *cur, uint8_t tx_restarts)
+{
+    uint16_t min_ms = cur->ws_info->lfn_cfg.restart_min_ms, max_ms = cur->ws_info->lfn_cfg.restart_max_ms;
+    ws_lfn_restart_bounds(cur->ws_info->hopping_schedule.number_of_channels, ws_common_datarate_get(cur), tx_restarts, &min_ms, &max_ms);
+    if (min_ms != cur->ws_info->lfn_cfg.restart_min_ms) {
+        tr_info("LFN restarts %u-%u ms for %u channels", min_ms, max_ms, cur->ws_info->hopping_schedule.number_of_channels);
+    }
+    ws_bootstrap_configure_data_request_restart(cur, WS_CCA_REQUEST_RESTART_MAX, tx_restarts, min_ms, max_ms);
+}
 
 static void ws_lfn_listen_apply(protocol_interface_info_entry_t *cur, uint32_t interval_ms)
 {
@@ -1281,7 +1296,7 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             // listen schedule starts now
             ns_fhss_ws_lfn_listen_start(cur->ws_info->fhss_api);
             ws_bootstrap_configure_max_retries(cur, WS_MAX_FRAME_RETRIES_BOOTSTRAP);
-            ws_bootstrap_configure_data_request_restart(cur, WS_CCA_REQUEST_RESTART_MAX, WS_TX_REQUEST_RESTART_MAX_BOOTSTRAP, cur->ws_info->lfn_cfg.restart_min_ms, cur->ws_info->lfn_cfg.restart_max_ms);
+            ws_lfn_restart_configure(cur, WS_TX_REQUEST_RESTART_MAX_BOOTSTRAP);
             ws_bootstrap_configure_csma_ca_backoffs(cur, WS_MAX_CSMA_BACKOFFS, WS_MAC_MIN_BE, WS_MAC_MAX_BE);
             cur->nwk_bootstrap_state = ER_ACTIVE_SCAN;
             // The first LPAS sweep 0.5-1.5 s from now, at random (GS11)
@@ -1311,8 +1326,8 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             tr_info("LFN operation start");
             ws_bootstrap_ip_stack_activate(cur);
             ws_bootstrap_configure_max_retries(cur, WS_MAX_FRAME_RETRIES);
-            // The LFN's restarts outlast a parent's asynchronous sweep
-            ws_bootstrap_configure_data_request_restart(cur, WS_CCA_REQUEST_RESTART_MAX, WS_TX_REQUEST_RESTART_MAX, cur->ws_info->lfn_cfg.restart_min_ms, cur->ws_info->lfn_cfg.restart_max_ms);
+            // The LFN's restarts outlast a parent's asynchronous sweeps
+            ws_lfn_restart_configure(cur, WS_TX_REQUEST_RESTART_MAX);
             cur->nwk_bootstrap_state = ER_RPL_SCAN;
             {
                 uint8_t ll_parent[16];

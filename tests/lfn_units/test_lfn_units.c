@@ -17,6 +17,8 @@
  *      draw, with the default lpas_interval_s and others; two LFNs that start
  *      their discovery in the same tick, or a search in the same second, do
  *      not sweep together again (the former fixed timing did, every time).
+ *   5. LFN restarts (ws_lfn_restart.h): the MAC's restart span, and the
+ *      restart values scaled to outlast a parent's two sweeps on large plans.
  *
  * OLD_STACK: built against the stack before these fixes (no parts 1 and 4;
  * the duplicate check's former signature), to show which checks fail there.
@@ -51,6 +53,7 @@
 #include "mac_lfn_async.h"
 #include "nanostack/ws_management_api.h"
 #include "6lowpan/ws/ws_lfn_jitter.h"
+#include "6lowpan/ws/ws_lfn_restart.h"
 #endif
 
 static unsigned checks, failures;
@@ -490,11 +493,70 @@ static void test_lpas_jitter(void)
 }
 #endif
 
+/* An LFN's restarts of a failed uplink against its parent's sweeps
+ * (ws_lfn_restart.h). The FG25 host twin (NA plan, 129 channels at
+ * 50 kbit/s) lost an uplink whose 4 restarts (250/2000 ms: 2.75 s at the
+ * shortest) all fell inside the border router's PAN configuration and PAN
+ * advertisement sweeps. Fails before the fix: the configured values were
+ * used as they were. */
+static void test_restart_span(void)
+{
+    printf("LFN restarts\n");
+    uint16_t mn, mx;
+    // The MAC's rule (mcps_set_packet_blacklist): 250-500, 500-1000,
+    // 1000-2000, 1000-2000 ms
+    CHECK(ws_lfn_restart_span_ms(250, 2000, 4) == 2750);
+    CHECK(ws_lfn_restart_span_ms(20, 300, 4) == 20 + 40 + 80 + 150);
+    CHECK(ws_lfn_restart_span_ms(250, 2000, 19) == 1750 + 16 * 1000);
+    // Both sweeps against the emulator's (NA, 129 channels at 50 kbit/s:
+    // 3.57 s and 2.14 s for a 127-byte PAN configuration and a 57-byte PAN
+    // advertisement; EU, 35 channels at 100 kbit/s: 12.63 + 8.89 ms per
+    // channel): the estimate is above, by less than a quarter
+    CHECK(ws_lfn_sweeps_ms(129, 50000) >= 5710 && ws_lfn_sweeps_ms(129, 50000) < 5710 * 5 / 4);
+    uint32_t emu = 35 * (12630 + 8890) / 1000;
+    CHECK(ws_lfn_sweeps_ms(35, 100000) >= emu && ws_lfn_sweeps_ms(35, 100000) < emu * 3 / 2);
+    // The defaults unchanged where they cover both sweeps (35 channels at
+    // 100 kbit/s, 129 at 150 kbit/s), scaled where not (62 channels at
+    // 50 kbit/s: 3.2 s, just above the 2.75 s; NA 129 at 50 kbit/s)
+    const struct { uint16_t ch; uint32_t rate; bool scaled; } plans[] = {
+        { 35, 100000, false }, { 62, 50000, true }, { 129, 50000, true }, { 129, 150000, false },
+        { 136, 50000, true }, { 255, 10000, true },
+    };
+    for (unsigned i = 0; i < sizeof(plans) / sizeof(plans[0]); i++) {
+        mn = 250;
+        mx = 2000;
+        ws_lfn_restart_bounds(plans[i].ch, plans[i].rate, 4, &mn, &mx);
+        uint32_t need = ws_lfn_sweeps_ms(plans[i].ch, plans[i].rate);
+        uint32_t span = ws_lfn_restart_span_ms(mn, mx, 4);
+        printf("  %u channels at %u bit/s: both sweeps %u ms, restarts %u-%u ms, at least %u ms in all\n",
+               plans[i].ch, (unsigned)plans[i].rate, (unsigned)need, mn, mx, (unsigned)span);
+        CHECK((mn != 250) == plans[i].scaled);
+        CHECK(span >= need || (mn == 0xffff && mx == 0xffff));
+        CHECK(mx >= mn);
+        if (plans[i].scaled && mx < 0xffff) {
+            // not more than needed: within 5 %
+            CHECK(span <= need + need / 20 + 10);
+        }
+    }
+    // NA 129 channels at 50 kbit/s: the restarts outlast both sweeps as
+    // the emulator shows them back to back (5.73 s)
+    mn = 250;
+    mx = 2000;
+    ws_lfn_restart_bounds(129, 50000, 4, &mn, &mx);
+    CHECK(ws_lfn_restart_span_ms(mn, mx, 4) >= 5730);
+    // No rate known: unchanged
+    mn = 250;
+    mx = 2000;
+    ws_lfn_restart_bounds(129, 0, 4, &mn, &mx);
+    CHECK(mn == 250 && mx == 2000);
+}
+
 int main(void)
 {
 #ifndef OLD_STACK
     test_async_hold();
     test_lpas_jitter();
+    test_restart_span();
 #endif
     test_duplicates();
     test_lfn_ttl();
