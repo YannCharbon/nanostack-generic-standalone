@@ -1216,6 +1216,47 @@ static void test_discovery(void)
     CHECK(ns_fhss_delete(api) == 0);
 }
 
+/* A sync (an LPA) during a discovery window, whose time covers our next
+ * unicast slot: our unicast windows go on after the discovery window. The
+ * own-slot timer, at that slot during the discovery window, must leave the
+ * slot to the sync's schedule and not stop for good. */
+static void test_sync_in_discovery(void)
+{
+    fhss_ws_lfn_listen_t cfg;
+    fhss_api_t *api;
+
+    reset_fakes();
+    api = create_fhss(lfn_mac, 255, 0, 0);
+    ns_fhss_ws_lfn_listen_defaults(&cfg);
+    cfg.listen_interval_ms = 6000;
+    cfg.first_slot_delay_us = 3000000;
+    cfg.bc_sync_only = true;    // no broadcast window in the next 9 min
+    CHECK(ns_fhss_ws_lfn_listen_set(api, &cfg) == 0);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    // the discovery window from 1 s to 5 s, over our slot 0 (3 s)
+    uint64_t t0 = now_us;
+    CHECK(ns_fhss_ws_lfn_discovery_set(api, (uint32_t)(t0 + 1000000 + CLOCK32_OFFSET_US), 4000000, 0, 0) == 0);
+    while (step(t0 + 2000000)) {
+    }
+    now_us = t0 + 2000000;
+    fhss_ws_lfn_bc_sync_t sy = { .interval_ms = 10000, .bsi = 0x77, .sync_period = 60, .channel_function = WS_DH1CF,
+                                 .slot = 3, .offset_ms = 4321, .rx_timestamp_us = ts() };
+    CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
+    nevs = 0;
+    while (step(t0 + 40000000)) {
+    }
+    int uc_opens = 0;
+    for (int i = 0; i < nevs; i++) {
+        uc_opens += evs[i].e == FHSS_RX_WINDOW_OPEN && evs[i].t > t0 + 5000000 &&
+                    evs[i].channel != bc_channel((uint16_t)(3 + (evs[i].t - (t0 + 2000000 - 4321000)) / 10000000), 0x77);
+    }
+    if (uc_opens < 4) {
+        fprintf(stderr, "sync_in_discovery: %d unicast windows after the discovery window\n", uc_opens);
+    }
+    CHECK(uc_opens >= 4);
+    CHECK(ns_fhss_delete(api) == 0);
+}
+
 /* Follow-up of phase B1: the LFN's own slots, once the rate is measured,
  * where the parent expects them from its view (the LFN's last LUTT-IE), to
  * well under a ms: 4 h interval, a 10 h sync period (Eco), our clock 15.6 ppm
@@ -1541,10 +1582,18 @@ static void test_ack_not_view(void)
  * Before the fix the broadcast window was skipped while the unicast one
  * held the radio, and the sync came 20 h after the previous one. */
 /* mode 0: the LTS comes; 1: lost; 2: lost, the broadcast widening bound
- * at 0.5 s: the rest of the unicast window opens after the broadcast one */
+ * at 0.5 s: the rest of the unicast window opens after the broadcast one;
+ * 3: the LTS comes, our unicast slot 3 s after the predicted sync slot (the
+ * broadcast window opens first; our window's time comes during it, after
+ * the LTS); 4: as 3, then the parent lost while the broadcast window is
+ * open, after our slot's time in it.
+ * When the LTS comes, our next unicast slots must move by its phase error:
+ * before the fix the unicast timer, still running when the sync came,
+ * re-anchored our slots at the old slot in the broadcast window (the skip
+ * branch) and the correction was lost (562 ms off). */
 static void test_sync_over_uc(int mode)
 {
-    bool lts_lost = mode != 0;
+    bool lts_lost = mode == 1 || mode == 2;
     const uint32_t iv_ms = 300000, bc_ms = 600000, guard = 1000;
     const double k = 1.0 + 15600e-9;          // our µs per parent µs
     fhss_ws_lfn_listen_t cfg;
@@ -1559,7 +1608,8 @@ static void test_sync_over_uc(int mode)
     cfg.bc_sync_only = true;
     uint64_t L0 = now_us + 3000000;            // the parent's broadcast slot 0
     // our slot 120 starts 0.5 s before the sync slot 60 as we predict it
-    cfg.first_slot_delay_us = 2500000;
+    // (mode 3: 3 s after it)
+    cfg.first_slot_delay_us = mode >= 3 ? 6000000 : 2500000;
     if (mode == 2) {
         cfg.bc_widening_max_us = 500000;
     }
@@ -1643,13 +1693,47 @@ static void test_sync_over_uc(int mode)
     CHECK(ns_fhss_ws_lfn_bc_sync(api, &sy) == 0);
     CHECK(ns_fhss_ws_lfn_stats_get(api, &st) == 0);
     CHECK(st.bc_syncs == 2 && st.last_sync_error_us > 550000 && st.last_sync_error_us < 575000);
-    // the broadcast window closes; our unicast windows go on
     int n0 = nevs;
+    if (mode == 4) {
+        /* the parent lost while the broadcast window is open, after our
+           slot's time in it (skipped): our slots go on without that
+           window's close */
+        while (step(PS(60) + 1000000)) {
+        }
+        now_us = PS(60) + 1000000;
+        CHECK(ns_fhss_ws_lfn_bc_stop(api) == 0);
+        while (step(PS(61))) {
+        }
+        int opens = 0;
+        for (int i = n0; i < nevs; i++) {
+            opens += evs[i].e == FHSS_RX_WINDOW_OPEN && evs[i].t > PS(60) + 1000000;
+        }
+        CHECK(opens >= 2);
+        CHECK(ns_fhss_delete(api) == 0);
+        return;
+    }
+    // the broadcast window closes; our unicast windows go on, moved by the
+    // sync's error: slot n at its old start + the error
     while (step(PS(61))) {
     }
     int uc_after = 0;
-    for (int i = n0; i < nevs; i++) {
-        uc_after += evs[i].e == FHSS_RX_WINDOW_OPEN;
+    double slot0 = (double)L0 - 3000000 + cfg.first_slot_delay_us;
+    for (int i = n0; i + 1 < nevs; i++) {
+        if (evs[i].e != FHSS_RX_WINDOW_OPEN || evs[i + 1].e != FHSS_RX_WINDOW_CLOSE ||
+                evs[i].channel == bc_channel(61, 0x77)) {
+            continue;
+        }
+        uc_after++;
+        // the slot start, from the window: open = start - guard - w,
+        // close = start - guard + rx_window + w
+        double start = ((double)evs[i].t + (double)evs[i + 1].t - cfg.rx_window_us) / 2 + guard;
+        long n = lround((start - slot0) / (iv_ms * 1000.0));
+        double expect = slot0 + (double)n * iv_ms * 1000 + st.last_sync_error_us;
+        if (fabs(start - expect) > 1000) {
+            fprintf(stderr, "sync_over_uc mode %d: slot %ld starts %.0f us from the sync's correction\n", mode, n, start - expect);
+        }
+        CHECK(fabs(start - expect) <= 1000);
+        CHECK(evs[i].channel == dh1cf_channel((uint16_t)n, lfn_mac));
     }
     CHECK(uc_after >= 2);
     #undef PS
@@ -1778,6 +1862,9 @@ int main(void)
     test_sync_over_uc(0);
     test_sync_over_uc(1);
     test_sync_over_uc(2);
+    test_sync_over_uc(3);
+    test_sync_over_uc(4);
+    test_sync_in_discovery();
     test_ffn_rate();
 #ifndef OLD_STACK
     test_tx_delay();

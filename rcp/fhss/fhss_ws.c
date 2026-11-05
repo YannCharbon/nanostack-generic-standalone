@@ -95,6 +95,7 @@ static bool fhss_allow_unicast_on_broadcast_channel(fhss_structure_t *fhss_struc
 static int32_t fhss_channel_index_from_mask(const uint32_t *channel_mask, int32_t channel_index, uint16_t number_of_channels);
 static void fhss_ws_lfn_timer_handler(const fhss_api_t *fhss_api, uint16_t delay);
 static void fhss_ws_lfn_bc_timer_handler(const fhss_api_t *fhss_api, uint16_t delay);
+static bool fhss_ws_lfn_bc_released(fhss_structure_t *fhss_structure, uint32_t now);
 static uint32_t fhss_ws_lfn_widening(struct fhss_ws_lfn *lfn, uint32_t t, bool bc);
 static uint32_t fhss_ws_lfn_local_us(const struct fhss_ws_lfn *lfn, uint32_t parent_us);
 static void fhss_ws_lfn_own_interval_set(struct fhss_ws_lfn *lfn, uint64_t nominal_us);
@@ -1843,6 +1844,14 @@ static void fhss_ws_lfn_listen_timer(fhss_structure_t *fhss_structure)
     if (!lfn->window_open && lfn->bc_window_open) {
         // A broadcast window holds the radio: skip this slot
         lfn->stats.windows_skipped++;
+        if (lfn->resched_after_bc) {
+            /* A sync during that window moved our slots: slot_start is the
+               old schedule's, and anchoring there would undo the sync's
+               correction (a slot that came during a broadcast window, or
+               the timer of a unicast window cut for a sync slot). The
+               broadcast window's close computes the next slot */
+            return;
+        }
         lfn->own.anchor_us = lfn->slot_start;
         lfn->own.anchor_phase_us = 0;
         lfn->own.anchor_slot = lfn->slot;
@@ -2721,6 +2730,25 @@ static void fhss_ws_lfn_bc_arm_next(fhss_structure_t *fhss_structure, uint32_t n
     fhss_start_timer(fhss_structure, (uint32_t)(fhss_ws_lfn_open_time(lfn, lfn->bc_slot_start, true) - now), fhss_ws_lfn_bc_timer_handler);
 }
 
+/* A broadcast or discovery window has given the radio back: if a sync moved
+ * our slots meanwhile, the own-slot timer (stopped, or at a slot of the old
+ * schedule) goes to the next slot of the new one. True if it did */
+static bool fhss_ws_lfn_bc_released(fhss_structure_t *fhss_structure, uint32_t now)
+{
+    struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+
+    if (!lfn->resched_after_bc) {
+        return false;
+    }
+    lfn->resched_after_bc = false;
+    if (!lfn->listen_running || lfn->window_open || lfn->stop_close_retry) {
+        return false;
+    }
+    fhss_stop_timer(fhss_structure, fhss_ws_lfn_timer_handler);
+    fhss_ws_lfn_own_next(fhss_structure, now);
+    return true;
+}
+
 static void fhss_ws_lfn_bc_timer_handler(const fhss_api_t *fhss_api, uint16_t delay)
 {
     (void) delay;
@@ -2808,10 +2836,7 @@ static void fhss_ws_lfn_bc_timer_handler(const fhss_api_t *fhss_api, uint16_t de
     lfn->bc_window_open = false;
     bool resume = lfn->uc_cut_for_sync;
     lfn->uc_cut_for_sync = false;
-    if (lfn->resched_after_bc) {
-        lfn->resched_after_bc = false;
-        fhss_stop_timer(fhss_structure, fhss_ws_lfn_timer_handler);
-        fhss_ws_lfn_own_next(fhss_structure, now);
+    if (fhss_ws_lfn_bc_released(fhss_structure, now)) {
     } else if (resume && !lfn->window_open && !lfn->own_hop && lfn->slot == lfn->uc_cut_slot) {
         /* The rest of our unicast window cut for the sync, if it outlasts
            the broadcast window (a broadcast widening bound below the
@@ -3046,6 +3071,7 @@ int fhss_ws_lfn_bc_stop(fhss_structure_t *fhss_structure)
         }
         lfn->bc_window_open = false;
     }
+    bool resched = lfn->resched_after_bc;
     lfn->pbc_valid = false;
     lfn->rate_ref_valid = false;
     lfn->rate_ppb = 0;
@@ -3057,6 +3083,13 @@ int fhss_ws_lfn_bc_stop(fhss_structure_t *fhss_structure)
     if (lfn->listen_running) {
         // Our own slots back on our clock's interval
         fhss_ws_lfn_own_interval_set(lfn, (uint64_t)lfn->listen_cfg.listen_interval_ms * 1000u);
+        /* A sync had moved our slots during the broadcast window, whose
+           close would have computed the next one (the own-slot timer may
+           have stopped for it): computed now. With a close retry pending,
+           its end does it */
+        lfn->resched_after_bc = resched;
+        fhss_ws_lfn_bc_released(fhss_structure, fhss_structure->callbacks.read_timestamp(fhss_structure->fhss_api));
+        lfn->resched_after_bc = false;
     }
     return 0;
 }
@@ -3104,6 +3137,7 @@ static void fhss_ws_lfn_disc_timer(fhss_structure_t *fhss_structure)
         lfn->disc_open = false;
         lfn->disc_set = false;
         lfn->bc_window_open = false;
+        fhss_ws_lfn_bc_released(fhss_structure, now);
         if (lfn->pbc_valid) {
             fhss_ws_lfn_bc_arm_next(fhss_structure, now);
         }
@@ -3160,6 +3194,7 @@ int fhss_ws_lfn_discovery_set(fhss_structure_t *fhss_structure, uint32_t start_u
         fhss_structure->callbacks.rx_window(fhss_structure->fhss_api, FHSS_RX_WINDOW_CLOSE, 0);
         lfn->disc_open = false;
         lfn->bc_window_open = false;
+        fhss_ws_lfn_bc_released(fhss_structure, now);
     }
     fhss_start_timer(fhss_structure, (int32_t)(start_us - now) > 0 ? start_us - now : 1, fhss_ws_lfn_bc_timer_handler);
     return 0;
