@@ -1266,6 +1266,11 @@ void ws_bootstrap_lfn_event_handler(protocol_interface_info_entry_t *cur, arm_ev
             lfn->na_wait_s = 0;
             lfn->na_tries = 0;
             lfn->dhcp_delay_s = 0;
+            /* A search's or check's discovery window, and the choice at its
+               end, end here: the new discovery's first sweep must not wait
+               for them (3-5 s late) */
+            ws_lfn_candidates_clear(cur);
+            ns_fhss_ws_lfn_discovery_set(cur->ws_info->fhss_api, 0, 0, 0, 0);
             ws_lfn_network_configure(cur);
             // The receiver is off outside the listen windows
             cur->ws_info->rx_off_when_idle = true;
