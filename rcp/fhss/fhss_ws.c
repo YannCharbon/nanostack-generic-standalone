@@ -1156,7 +1156,6 @@ static int16_t fhss_ws_write_synch_info_callback(const fhss_api_t *api, uint8_t 
             lfn->view_pend = true;
             lfn->view_pend_to_other = false;
             lfn->view_pend_known = false;
-            lfn->view_pend_failed = false;
             lfn->view_pend_ext = fhss_ws_lfn_ext(lfn, tx_time);
             lfn->view_pend_slot = slot;
             lfn->view_pend_offset_ms = offset_ms;
@@ -1225,23 +1224,23 @@ static void fhss_ws_lfn_view_tx_done(struct fhss_ws_lfn *lfn, bool waiting_ack, 
         return;
     }
     /* Which frame a report is about: its MSDU handle, learnt from the
-       reports since the frame was built (each attempt builds it again). A
-       TX done for another handle, or after the frame failed with no new
-       attempt, is not this frame's: an asynchronous buffer that expired in
+       MAC's reports since the frame was built. A TX done for another
+       handle is not this frame's: an asynchronous buffer that expired in
        the queue or could not start reports a TX done without building a
-       frame. Our ACKs' TX done (handle 0xff) and the receive path's
-       (handle 0) do not name a frame. */
+       frame, after an earlier frame that failed. Our ACKs' TX done (handle
+       0xff) and the receive path's (handle 0) do not name a frame. A
+       report without ACK nor completion is not a failure: the radio
+       reports a clear channel (PHY_LINK_CCA_OK) that way before its TX. */
     if (tx_completed) {
-        if (!lfn->view_pend_failed && (!lfn->view_pend_known || lfn->view_pend_frame == handle)) {
+        if (!lfn->view_pend_known || lfn->view_pend_frame == handle) {
             fhss_ws_lfn_view_commit(lfn);
         }
         return;
     }
     if (!waiting_ack) {
-        if (lfn->view_pend_known ? lfn->view_pend_frame == handle : handle != 0 && handle != 0xff) {
+        if (!lfn->view_pend_known && handle != 0 && handle != 0xff) {
             lfn->view_pend_known = true;
             lfn->view_pend_frame = handle;
-            lfn->view_pend_failed = true;
         }
         return;
     }

@@ -1613,8 +1613,9 @@ static void test_ack_not_view(void)
  *           done of an asynchronous buffer that expired in the queue
  *           (another handle, no frame built): not the view (before the
  *           fix it was);
- *   mode 5: at 15 767 s, a CSMA failure, the frame built again, on the air
- *           and acknowledged: the view (the second build).
+ *   mode 5: at 15 767 s, a CSMA failure, the frame built again, a clear
+ *           channel report (PHY_LINK_CCA_OK: no ACK, not completed), on the
+ *           air and acknowledged: the view (the second build).
  * Every window in the 10 h after the rate's sync must hold the parent's TX
  * at the slot start of the expected view. Before the fix the view was set
  * when a frame was built: in mode 0 our slots kept the 0.24 s they had
@@ -1699,6 +1700,8 @@ static void test_view_on_tx_done(int mode)
                 BUILD(15767);
                 api->data_tx_done(api, false, false, 12);   // CSMA failed
                 BUILD(15767.01);                           // built again
+                api->data_tx_done(api, false, false, 12);   // channel clear (PHY_LINK_CCA_OK)
+                api->data_tx_done(api, false, false, 0);    // a frame received meanwhile
                 api->data_tx_done(api, true, false, 12);    // on the air
                 api->data_tx_done(api, false, true, 12);    // acknowledged
                 VIEW();

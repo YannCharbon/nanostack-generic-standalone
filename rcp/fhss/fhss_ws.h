@@ -100,7 +100,6 @@ struct fhss_ws_lfn {
     bool view_pend_on_air;          // an attempt of the frame view_pend_handle went on the air, unacknowledged
     bool view_pend_known;           // the MSDU handle of the pending view's frame, from the MAC's reports since it was built
     uint8_t view_pend_frame;
-    bool view_pend_failed;          //   and that frame failed since (no rebuild): a later TX done is another frame's
     uint8_t view_pend_handle;
     uint64_t ref_par_us;            //   whatever the age of the reference
     bool sync_par_valid;            // the last sync's slot start on the parent's clock: its LFN broadcast
