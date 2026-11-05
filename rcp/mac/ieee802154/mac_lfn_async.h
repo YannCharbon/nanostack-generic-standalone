@@ -7,6 +7,7 @@
 
 struct fhss_api;
 struct mac_pre_build_frame;
+struct protocol_interface_rf_mac_setup;
 
 #define MAC_LFN_ASYNC_DEFER_MAX_US 10000000u   /**< An asynchronous sweep waits at most this long for LFN frames */
 #define MAC_LFN_ASYNC_MARGIN_US    20000u      /**< Added to the sweep's estimated length */
@@ -25,5 +26,15 @@ bool mac_lfn_async_hold(const struct fhss_api *fhss_api, const struct mac_pre_bu
 
 /** The estimated length of the asynchronous sweep 'async', µs: per channel its airtime + 3 ms, + MAC_LFN_ASYNC_MARGIN_US */
 uint32_t mac_lfn_async_sweep_us(const struct mac_pre_build_frame *async, uint32_t datarate);
+
+/**
+ * After a data exchange (its confirm), does the radio stay on? With
+ * macRxOnWhenIdle, while waiting for polled data, in an open LFN receive
+ * window, and while a window's close waits for the frame being received
+ * (FHSS_RX_WINDOW_CLOSE returned 1; the FHSS closes it again shortly): a
+ * confirm then, such as a queued frame's timeout, cut that frame (GS11
+ * follow-up, emulator test_lfn_left.sh) [I].
+ */
+bool mac_lfn_radio_stays_on(const struct protocol_interface_rf_mac_setup *rf_mac_setup);
 
 #endif

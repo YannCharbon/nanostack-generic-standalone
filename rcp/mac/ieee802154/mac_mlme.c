@@ -979,13 +979,16 @@ int mac_mlme_rx_window(protocol_interface_rf_mac_setup_s *rf_mac_setup, fhss_rx_
         case FHSS_RX_WINDOWS_START:
             rf_mac_setup->mac_rx_windows = true;
             rf_mac_setup->mac_rx_window_open = false;
+            rf_mac_setup->mac_rx_window_close_deferred = false;
             return 0;
         case FHSS_RX_WINDOWS_STOP:
             rf_mac_setup->mac_rx_windows = false;
             rf_mac_setup->mac_rx_window_open = false;
+            rf_mac_setup->mac_rx_window_close_deferred = false;
             return 0;
         case FHSS_RX_WINDOW_OPEN:
             rf_mac_setup->mac_rx_window_open = true;
+            rf_mac_setup->mac_rx_window_close_deferred = false;
             if (!rf_mac_setup->macUpState) {
                 return 0;
             }
@@ -1001,11 +1004,16 @@ int mac_mlme_rx_window(protocol_interface_rf_mac_setup_s *rf_mac_setup, fhss_rx_
             return 0;
         case FHSS_RX_WINDOW_CLOSE:
             rf_mac_setup->mac_rx_window_open = false;
+            rf_mac_setup->mac_rx_window_close_deferred = false;
             if (rf_mac_setup->macCapRxOnIdle || !rf_mac_setup->macUpState) {
                 return 0;
             }
-            // A frame being received, or our ACK to it: off afterwards
+            // A frame being received, or our ACK to it: off afterwards (the
+            // FHSS closes again), and nothing else turns the radio off
+            // meanwhile (mac_data_poll_radio_disable_check(): a data
+            // confirm, such as a queued frame's timeout, cut the frame)
             if (rf_mac_setup->mac_ack_tx_active || mac_mlme_phy_rx_active(rf_mac_setup)) {
+                rf_mac_setup->mac_rx_window_close_deferred = true;
                 return 1;
             }
             // A data frame of our own (CSMA, TX, waiting for its ACK) ends

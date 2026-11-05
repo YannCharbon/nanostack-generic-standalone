@@ -6,6 +6,9 @@
  * and the 10 h sync slot of the Eco profile [I]; wisun-br-linux leaves frame
  * timing to its RCP. Kept apart from mac_mcps_sap.c for its unit test
  * (tests/lfn_units).
+ *
+ * Also the LFN's rule for turning the radio off after a data confirm
+ * (mac_lfn_radio_stays_on(), unit test tests/mac_window).
  */
 #include <stdbool.h>
 #include <stddef.h>
@@ -13,7 +16,14 @@
 #include "nanostack/mac/mlme.h"
 #include "nanostack/mac/fhss_api.h"
 #include "mac_data_buffer.h"
+#include "mac_defines.h"
 #include "mac_lfn_async.h"
+
+bool mac_lfn_radio_stays_on(const struct protocol_interface_rf_mac_setup *rf_mac_setup)
+{
+    return rf_mac_setup->macCapRxOnIdle || rf_mac_setup->macWaitingData || rf_mac_setup->mac_rx_window_open ||
+           rf_mac_setup->mac_rx_window_close_deferred;
+}
 
 uint32_t mac_lfn_async_sweep_us(const struct mac_pre_build_frame *async, uint32_t datarate)
 {

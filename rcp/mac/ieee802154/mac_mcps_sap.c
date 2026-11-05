@@ -120,8 +120,9 @@ static bool mac_data_request_confirmation_finish(protocol_interface_rf_mac_setup
 
 static void mac_data_poll_radio_disable_check(protocol_interface_rf_mac_setup_s *rf_mac_setup)
 {
-    // An open LFN receive window keeps the radio on until it closes
-    if (rf_mac_setup->macCapRxOnIdle || rf_mac_setup->macWaitingData || rf_mac_setup->mac_rx_window_open) {
+    // An open LFN receive window keeps the radio on until it closes, and so
+    // does a window whose close waits for the frame being received
+    if (mac_lfn_radio_stays_on(rf_mac_setup)) {
         return;
     }
 

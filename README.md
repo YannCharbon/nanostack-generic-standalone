@@ -50,6 +50,8 @@ the fire-alarm protocol stack, which takes no code from it.
 | `tests/housekeeping/` | — | Neighbour and destination caches, MLD query timer, blacklist: periodic against skipping the housekeeping with nothing to do ([docs/PORTING.md](docs/PORTING.md)) |
 | `tests/fhss_lfn/` | — | FAN 1.1 LFN unicast mechanics in the FHSS ([docs/LFN_MAC.md](docs/LFN_MAC.md)) |
 | `tests/fhss_poll/` | — | FHSS TX queue poll: periodic against idle-poll skipping ([docs/PORTING.md](docs/PORTING.md)) |
+| `tests/lfn_units/` | — | LFN code outside the FHSS: asynchronous sweep hold-back, duplicates, TTL to LFN children, LPAS jitter ([docs/LFN_MAC.md](docs/LFN_MAC.md)) |
+| `tests/mac_window/` | — | An LFN's receive windows in the MAC and its radio-off rule after a data confirm ([docs/LFN_MAC.md](docs/LFN_MAC.md)) |
 
 `rcp/` keeps its own `mac/rf_driver_storage.h`, which differs slightly from
 `nanostack/source/mac/rf_driver_storage.h`, exactly as before.
@@ -253,6 +255,14 @@ emulator (`sim_utils/vtime/test_lfn_mac.sh`):
 
 ```bash
 tests/fhss_lfn/run.sh [build dir]
+```
+
+An LFN's receive windows in the MAC (`mac_mlme_rx_window()`) and its rule
+for turning the radio off after a data confirm, on a fake PHY
+([docs/LFN_MAC.md](docs/LFN_MAC.md) §3):
+
+```bash
+tests/mac_window/run.sh [build dir]
 ```
 
 ## Verification

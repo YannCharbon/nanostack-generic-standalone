@@ -213,6 +213,10 @@ typedef struct protocol_interface_rf_mac_setup {
      * false). Both false otherwise, and nothing changes. */
     bool mac_rx_windows: 1;
     bool mac_rx_window_open: 1;
+    /* A window's close deferred for a frame being received or our ACK to
+     * it (FHSS_RX_WINDOW_CLOSE returned 1): the FHSS closes it again
+     * shortly, so nothing else turns the radio off meanwhile */
+    bool mac_rx_window_close_deferred: 1;
     uint16_t mac_short_address;
     uint16_t pan_id;
     uint8_t mac64[8];

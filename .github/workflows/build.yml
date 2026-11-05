@@ -43,6 +43,8 @@ jobs:
         run: tests/housekeeping/run.sh build-housekeeping-tests
       - name: FHSS TX queue poll, periodic against idle-poll skipping
         run: tests/fhss_poll/run.sh build-fhss-poll-tests
+      - name: LFN receive windows in the MAC
+        run: tests/mac_window/run.sh build-mac-window-tests
       - name: Build mbedTLS v3.0.0
         run: |
           git clone --depth 1 --branch v3.0.0 https://github.com/Mbed-TLS/mbedtls.git ../mbedtls
