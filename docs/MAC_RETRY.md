@@ -58,10 +58,10 @@ With `NS_MAC_RETRY_SUN_BACKOFF`, a retry of an FFN (not an LFN) waits:
     hold + 5 ms + draw × (1 ms + 8 symbols)
 
 - **The backoff unit is IEEE 802.15.4's for SUN PHYs**
-  [S: IEEE 802.15.4 aUnitBackoffPeriod = aTurnaroundTime + aCcaTime, with
-  aTurnaroundTime 1 ms for SUN PHYs and aCcaTime 8 symbols]: 1053 µs at
-  150 kb/s, 1160 µs at 50 kb/s. Upstream's 20 symbols is the value for
-  12-symbol turnarounds (O-QPSK). The draw is unchanged (0 … 2^BE − 1, BE
+  (aUnitBackoffPeriod = aTurnaroundTime + aCcaTime, with aTurnaroundTime
+  1 ms and aCcaTime 8 symbols; sources in §5): 1053 µs at 150 kb/s, 1160 µs
+  at 50 kb/s. Upstream's 20 symbols is the value for the PHYs whose
+  turnaround is 12 symbols (O-QPSK among them). The draw is unchanged (0 … 2^BE − 1, BE
   raised once per retry): 0 … 15.8 ms after the first retry, 0 … 32.6 ms
   after the next ones, at 150 kb/s.
 - **The draw comes after the hold**, and 5 ms is always added.
@@ -110,3 +110,25 @@ Join times are unchanged in the first two (routers ready, median and last ready 
 in the range of the upstream runs). FAN 1.0 logs change wherever a retry
 happens, so the emulator's permanent reference runs were made again
 (emulator `sim_utils/reference-runs.md`).
+
+## 5. The SUN constants and their sources
+
+| Constant | SUN FSK value | Source |
+| --- | --- | --- |
+| aTurnaroundTime | 1 ms, as a whole number of symbol periods (rounded up); 12 symbols for the other PHYs | IEEE 802.15.4-2020 §11.3, Table 11-1 (PHY constants), as quoted by Zephyr's `include/zephyr/net/ieee802154_radio.h` (`IEEE802154_PHY_A_TURNAROUND_TIME_1MS`: "SUN, RS-GFSK, TVWS, and LECIM FSK PHY"); 1000 µs for an IEEE 802.15.4g 2-FSK PHY in Int. J. of Informatics Society 15(2) 79–87 (2023), Table 1 (Sumi et al., Mitsubishi Electric) |
+| aCcaTime | 8 symbols, every PHY except SUN O-QPSK | the same Table 11-1, as quoted by Zephyr (`IEEE802154_PHY_A_CCA_TIME`) |
+| aUnitBackoffPeriod | aTurnaroundTime + aCcaTime, every PHY except SUN PHYs in the 920 MHz band, where the CCA part is phyCcaDuration | IEEE 802.15.4-2020 §8.4.2, Table 8-93 (MAC constants), as quoted by Zephyr (`IEEE802154_MAC_A_UNIT_BACKOFF_PERIOD`); worked for SUN FSK at 50 kb/s, (50 + 8) × 20 µs = 1160 µs, in Zephyr pull request 58439 (cc13xx/cc26xx sub-GHz driver); 1000 + 130 µs = 1130 µs for 920 MHz in the paper above |
+
+The standard's own text was not available here: these are secondary
+sources quoting its tables, and they agree with each other.
+
+- **The rounding of aTurnaroundTime changes nothing** for Wi-SUN FSK: 1 ms
+  is a whole number of symbols at every rate (50, 100, 150, 200 and
+  300 kb/s: 50 to 300 symbols). The code adds 1000 µs to 8 symbols rather
+  than rounding the symbol count, because the MAC's symbol time is truncated
+  to whole ns (6666 ns at 150 kb/s), which would round 150 symbols up to 151.
+- **920 MHz band (Japan):** the CCA part of the unit would be
+  phyCcaDuration (a PHY attribute; ARIB STD-T108 carrier sense), not
+  8 symbols. The code uses 8 symbols in every band: at 100 kb/s the unit is
+  1080 µs instead of 1130 µs with the 130 µs of the paper above, a 4 %
+  shorter draw, which does not matter for the defect (§2).

@@ -30,7 +30,14 @@
 
 #include <stdint.h>
 
-/* IEEE 802.15.4 PHY constants for the SUN PHYs */
+/*
+ * IEEE 802.15.4 PHY constants for the SUN FSK PHYs (IEEE 802.15.4-2020
+ * Table 11-1; aUnitBackoffPeriod: Table 8-93; sources in docs/MAC_RETRY.md
+ * §5). aTurnaroundTime is 1 ms rounded up to whole symbols, which is exact
+ * at every Wi-SUN FSK rate; the 1 ms is kept in µs because the MAC's symbol
+ * time is truncated to whole ns. In the 920 MHz band the standard uses
+ * phyCcaDuration instead of aCcaTime in the unit.
+ */
 #define MAC_SUN_TURNAROUND_TIME_US  1000    // aTurnaroundTime
 #define MAC_SUN_CCA_TIME_SYMBOLS    8       // aCcaTime
 
