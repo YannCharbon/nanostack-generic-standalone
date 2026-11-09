@@ -218,6 +218,13 @@ typedef fhss_lfn_tx_e fhss_lfn_tx_at(const fhss_api_t *api, const uint8_t *desti
 typedef void fhss_lfn_pending(const fhss_api_t *api, const uint8_t *peer);
 
 /**
+ * @brief Outcome of a frame sent to an LFN (FAN 1.1 parent): acknowledged,
+ * or no ACK. The FHSS learns from the frames of a burst whether the LFN holds
+ * its window on the frame-pending bit. Optional.
+ */
+typedef void fhss_lfn_tx_result(const fhss_api_t *api, const uint8_t *peer, bool acked);
+
+/**
  * @brief Time until a frame queued for an LFN (or, destination NULL, for the
  * LFN broadcast slots) may next be sent, without side effects (FAN 1.1
  * parent). The MAC keeps an asynchronous sweep from starting when it would
@@ -261,6 +268,7 @@ struct fhss_api {
     fhss_lfn_tx_check *lfn_tx_check;                    /**< LFN destination check (FAN 1.1 parent). Optional, may be NULL. */
     fhss_lfn_tx_at *lfn_tx_at;                          /**< Frame to an LFN at a requested time (FAN 1.1 parent). Optional, may be NULL. */
     fhss_lfn_pending *lfn_pending;                      /**< Frame-pending bit exchanged with an LFN (FAN 1.1). Optional, may be NULL. */
+    fhss_lfn_tx_result *lfn_tx_result;                  /**< Outcome of a frame to an LFN (FAN 1.1 parent). Optional, may be NULL. */
     fhss_lfn_tx_delay *lfn_tx_delay;                    /**< Time to an LFN frame's next TX opportunity (FAN 1.1 parent). Optional, may be NULL. */
     fhss_tx_queued *tx_queued;                          /**< A frame was queued for unicast TX. Optional, may be NULL. */
     fhss_tx_frame *tx_frame;                            /**< The handle of the data frame written next. Optional, may be NULL. */

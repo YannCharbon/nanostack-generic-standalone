@@ -2106,6 +2106,88 @@ static void test_tx_delay(void)
     lfn_neighbor_known = false;
     CHECK(ns_fhss_delete(api) == 0);
 }
+
+/* Bursts learned per LFN (lfn_tx_result): an LFN that never acknowledges a
+ * burst frame (Silicon Labs' LFN on the kits) gets no more bursts after
+ * FHSS_LFN_BURST_FAILS_OFF in a row; one that acknowledged one keeps them
+ * whatever it loses later; a burst frame that never went out (a frame
+ * released for a window comes first) is not judged */
+static void test_burst_learning(void)
+{
+    const uint32_t interval_ms = 2000;
+    fhss_ws_lfn_parent_t pcfg;
+    lfn_unicast_timing_info_t *lt = &lfn_neighbor.lfn_uc_timing_info;
+    fhss_api_t *api;
+    uint32_t d, tx_time;
+
+    for (int ours = 0; ours <= 1; ours++) {
+        reset_fakes();
+        api = create_fhss(parent_mac, 255, 1020, 255);
+        ns_fhss_set_neighbor_info_fp(api, get_neighbor);
+        api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+        CHECK(api->lfn_tx_result != NULL);
+        memset(&lfn_neighbor, 0, sizeof(lfn_neighbor));
+        lfn_neighbor_known = true;
+        lfn_neighbor.uc_timing_info.unicast_channel_function = WS_DH1CF;
+        lt->listen_interval_ms = interval_ms;
+        lt->slot_number = 7;
+        lt->interval_offset_ms = 500;
+        lt->lutt_rx_timestamp = ts();
+        ns_fhss_ws_lfn_parent_defaults(&pcfg);
+        CHECK(ns_fhss_ws_lfn_parent_set(api, &pcfg) == 0);
+        // An outcome with no burst frame out changes nothing
+        api->lfn_tx_result(api, lfn_mac, false);
+        CHECK(lt->burst_fails == 0 && !lt->burst_off);
+        if (ours) {
+            // Acknowledges one burst frame: kept although later ones are lost
+            api->lfn_pending(api, lfn_mac);
+            CHECK(api->lfn_tx_check(api, lfn_mac, ts(), &tx_time) == FHSS_LFN_TX_NOW);
+            api->lfn_tx_result(api, lfn_mac, true);
+            CHECK(lt->burst_ok);
+        }
+        for (unsigned i = 0; i < FHSS_LFN_BURST_FAILS_OFF + 1; i++) {
+            now_us += 1000;
+            api->lfn_pending(api, lfn_mac);
+            CHECK(api->lfn_tx_delay(api, lfn_mac, &d) && d == 0);   // burst granted
+            CHECK(api->lfn_tx_check(api, lfn_mac, ts(), &tx_time) == FHSS_LFN_TX_NOW);
+            api->lfn_tx_result(api, lfn_mac, false);
+            CHECK(lt->burst_off == (!ours && i + 1 >= FHSS_LFN_BURST_FAILS_OFF));
+            if (lt->burst_off) {
+                break;
+            }
+        }
+        now_us += 1000;
+        api->lfn_pending(api, lfn_mac);
+        CHECK(api->lfn_tx_delay(api, lfn_mac, &d));
+        CHECK(ours ? d == 0 : d > 0);                                // no burst: its next window
+        lfn_neighbor_known = false;
+        CHECK(ns_fhss_delete(api) == 0);
+    }
+
+    // A burst frame that did not go out (a frame released for a window
+    // came first): not judged
+    reset_fakes();
+    api = create_fhss(parent_mac, 255, 1020, 255);
+    ns_fhss_set_neighbor_info_fp(api, get_neighbor);
+    api->synch_state_set(api, FHSS_SYNCHRONIZED, 0xabcd);
+    memset(&lfn_neighbor, 0, sizeof(lfn_neighbor));
+    lfn_neighbor_known = true;
+    lfn_neighbor.uc_timing_info.unicast_channel_function = WS_DH1CF;
+    lt->listen_interval_ms = interval_ms;
+    lt->slot_number = 7;
+    lt->interval_offset_ms = 500;
+    lt->lutt_rx_timestamp = ts();
+    ns_fhss_ws_lfn_parent_defaults(&pcfg);
+    CHECK(ns_fhss_ws_lfn_parent_set(api, &pcfg) == 0);
+    api->lfn_pending(api, lfn_mac);
+    CHECK(api->lfn_tx_check(api, lfn_mac, ts(), &tx_time) == FHSS_LFN_TX_NOW);
+    now_us += 1500000u - pcfg.tx_lead_us / 2;                      // slot 8 within the lead
+    CHECK(api->lfn_tx_check(api, lfn_mac, ts(), &tx_time) == FHSS_LFN_TX_NOW);
+    api->lfn_tx_result(api, lfn_mac, false);
+    CHECK(lt->burst_fails == 0);
+    lfn_neighbor_known = false;
+    CHECK(ns_fhss_delete(api) == 0);
+}
 #endif
 
 int main(void)
@@ -2151,6 +2233,7 @@ int main(void)
     test_ffn_rate();
 #ifndef OLD_STACK
     test_tx_delay();
+    test_burst_learning();
 #endif
     printf("fhss_lfn: %u checks, %u failed\n", checks, failures);
     return failures ? 1 : 0;

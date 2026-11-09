@@ -151,6 +151,8 @@ struct fhss_ws_lfn {
     bool burst_valid;               // parent: the LFN burst_dst acknowledged a frame with the pending bit
     uint8_t burst_dst[8];
     uint32_t burst_until;
+    bool burst_sent_valid;          // parent: a frame released under a burst grant, to burst_sent_dst, awaits its ACK
+    uint8_t burst_sent_dst[8];
     bool pending_valid;             // LFN: a frame with the pending bit: the window stays open until pending_until
     uint32_t pending_until;
     bool lto_cache_valid;           // the LTO offset written in the last frame with an LTO-IE

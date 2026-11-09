@@ -407,6 +407,10 @@ static void mac_sap_no_ack_cb(protocol_interface_rf_mac_setup_s *rf_ptr)
     tr_info("%u no_ack", mac_mcps_sap_get_phy_timestamp(rf_ptr));
 #endif
     rf_ptr->macRfRadioTxActive = false;
+    // FAN 1.1 LFN parent: the LFN did not acknowledge (burst learning)
+    if (rf_ptr->active_pd_data_request && rf_ptr->active_pd_data_request->lfn_dst && rf_ptr->fhss_api && rf_ptr->fhss_api->lfn_tx_result) {
+        rf_ptr->fhss_api->lfn_tx_result(rf_ptr->fhss_api, rf_ptr->active_pd_data_request->DstAddr, false);
+    }
     if (rf_ptr->mac_tx_retry < rf_ptr->mac_mlme_retry_max) {
         rf_ptr->mac_cca_retry = 0;
         rf_ptr->mac_tx_retry++; //Update retry counter
@@ -725,6 +729,9 @@ static int8_t mac_data_interface_tx_done_by_ack_cb(protocol_interface_rf_mac_set
     if (rf_ptr->active_pd_data_request && rf_ptr->active_pd_data_request->lfn_dst &&
             rf_ptr->active_pd_data_request->fcf_dsn.framePending && rf_ptr->fhss_api && rf_ptr->fhss_api->lfn_pending) {
         rf_ptr->fhss_api->lfn_pending(rf_ptr->fhss_api, rf_ptr->active_pd_data_request->DstAddr);
+    }
+    if (rf_ptr->active_pd_data_request && rf_ptr->active_pd_data_request->lfn_dst && rf_ptr->fhss_api && rf_ptr->fhss_api->lfn_tx_result) {
+        rf_ptr->fhss_api->lfn_tx_result(rf_ptr->fhss_api, rf_ptr->active_pd_data_request->DstAddr, true);
     }
     rf_ptr->macRfRadioTxActive = false;
     rf_ptr->macTxProcessActive = false;

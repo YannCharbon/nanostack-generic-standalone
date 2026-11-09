@@ -120,6 +120,7 @@ static fhss_lfn_tx_e fhss_ws_lfn_tx_check_callback(const fhss_api_t *api, const 
 static bool fhss_ws_lfn_tx_delay_callback(const fhss_api_t *api, const uint8_t *destination_address, uint32_t *delay_us);
 static fhss_lfn_tx_e fhss_ws_lfn_tx_at_callback(const fhss_api_t *api, const uint8_t *destination_address, uint32_t requested_us, int32_t slot, uint32_t *tx_time);
 static void fhss_ws_lfn_pending_callback(const fhss_api_t *api, const uint8_t *peer);
+static void fhss_ws_lfn_tx_result_callback(const fhss_api_t *api, const uint8_t *peer, bool acked);
 static void fhss_ws_lfn_disc_timer(fhss_structure_t *fhss_structure);
 static bool fhss_ws_lfn_uplink_blocked(fhss_structure_t *fhss_structure, uint32_t t, uint16_t frame_length, uint8_t phy_header_length, uint8_t phy_tail_length);
 
@@ -1475,6 +1476,7 @@ int fhss_ws_set_callbacks(fhss_structure_t *fhss_structure)
     fhss_structure->fhss_api->lfn_tx_check = &fhss_ws_lfn_tx_check_callback;
     fhss_structure->fhss_api->lfn_tx_at = &fhss_ws_lfn_tx_at_callback;
     fhss_structure->fhss_api->lfn_pending = &fhss_ws_lfn_pending_callback;
+    fhss_structure->fhss_api->lfn_tx_result = &fhss_ws_lfn_tx_result_callback;
     fhss_structure->fhss_api->lfn_tx_delay = &fhss_ws_lfn_tx_delay_callback;
 #ifdef NS_FHSS_POLL_SKIP_IDLE
     fhss_structure->fhss_api->tx_queued = &fhss_ws_tx_queued_callback;
@@ -2084,10 +2086,54 @@ static void fhss_ws_lfn_pending_callback(const fhss_api_t *api, const uint8_t *p
         return;
     }
     if (lfn->parent_enabled && lfn->parent_cfg.burst_us) {
+        // Not to an LFN that lost the bursts it was given (another
+        // implementation that does not hold its window on the pending bit:
+        // the next frame waits for its next window)
+        fhss_ws_neighbor_timing_info_t *info = fhss_ws_lfn_neighbor(fhss_structure, peer);
+        if (info && info->lfn_uc_timing_info.burst_off) {
+            return;
+        }
         memcpy(lfn->burst_dst, peer, 8);
         lfn->burst_until = now + lfn->parent_cfg.burst_us;
         lfn->burst_valid = true;
         tr_debug("LFN burst to %s", trace_array(peer, 8));
+    }
+}
+
+// Parent: the outcome of a frame to an LFN. A frame sent under a burst grant
+// tells whether the LFN held its window on the pending bit: one acknowledged
+// is enough to keep bursting to it; FHSS_LFN_BURST_FAILS_OFF lost in a row,
+// none acknowledged, turn bursts off for it (Silicon Labs' LFN on the kits
+// never acknowledged one: each lost burst frame waited a listen interval)
+static void fhss_ws_lfn_tx_result_callback(const fhss_api_t *api, const uint8_t *peer, bool acked)
+{
+    fhss_structure_t *fhss_structure = fhss_get_object_with_api(api);
+    if (!fhss_structure || !fhss_structure->ws || !peer) {
+        return;
+    }
+    struct fhss_ws_lfn *lfn = &fhss_structure->ws->lfn;
+    if (!lfn->burst_sent_valid || memcmp(lfn->burst_sent_dst, peer, 8)) {
+        return;
+    }
+    lfn->burst_sent_valid = false;
+    fhss_ws_neighbor_timing_info_t *info = fhss_ws_lfn_neighbor(fhss_structure, peer);
+    if (!info) {
+        return;
+    }
+    lfn_unicast_timing_info_t *lt = &info->lfn_uc_timing_info;
+    if (acked) {
+        lt->burst_ok = true;
+        lt->burst_fails = 0;
+        return;
+    }
+    lfn->stats.burst_lost++;
+    if (lt->burst_ok || lt->burst_off) {
+        return;
+    }
+    if (++lt->burst_fails >= FHSS_LFN_BURST_FAILS_OFF) {
+        lt->burst_off = true;
+        lfn->stats.burst_off++;
+        tr_info("LFN %s: no bursts (%u burst frames lost, none acknowledged)", trace_array(peer, 8), lt->burst_fails);
     }
 }
 
@@ -2130,6 +2176,8 @@ static fhss_lfn_tx_e fhss_ws_lfn_tx_check_callback(const fhss_api_t *api, const 
             lfn->burst_valid = false;
             *tx_time = now + cfg->tx_min_prep_us;
             lfn->stats.tx_released++;
+            memcpy(lfn->burst_sent_dst, destination_address, 8);
+            lfn->burst_sent_valid = true;
             memcpy(lfn->tx_dst, destination_address, 8);
             lfn->tx_dst_time = *tx_time;
             lfn->tx_dst_valid = true;
@@ -2145,6 +2193,8 @@ static fhss_lfn_tx_e fhss_ws_lfn_tx_check_callback(const fhss_api_t *api, const 
         *tx_time = tx;
         if (destination_address) {
             lfn->stats.tx_released++;
+            // a frame in its window: a burst frame not sent ends unjudged
+            lfn->burst_sent_valid = false;
             memcpy(lfn->tx_dst, destination_address, 8);
             lfn->tx_dst_time = tx;
             lfn->tx_dst_valid = true;
@@ -3383,6 +3433,7 @@ static fhss_lfn_tx_e fhss_ws_lfn_tx_at_callback(const fhss_api_t *api, const uin
         lfn->tx_slot_valid = slot >= 0;
         lfn->tx_slot = (uint16_t)slot;
         lfn->stats.tx_released++;
+        lfn->burst_sent_valid = false;
         return FHSS_LFN_TX_NOW;
     }
     uint32_t poll = tx - cfg->tx_lead_us;

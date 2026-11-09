@@ -74,6 +74,9 @@ typedef struct lfn_unicast_timing_info {
     uint_fast24_t interval_offset_ms;           /**< LUTT-IE unicast interval offset (ms into the slot) */
     uint32_t lutt_rx_timestamp;                 /**< LUTT-IE reception timestamp (µs) */
     uint16_t interval_offset_rem_us;            /**< FHSS re-anchoring: µs beyond interval_offset_ms (0 from a LUTT-IE) */
+    uint8_t burst_fails;                        /**< FHSS (parent): burst frames in a row the LFN did not acknowledge, while none was */
+    bool burst_ok;                              /**< FHSS (parent): the LFN acknowledged a burst frame (it holds its window on the pending bit) */
+    bool burst_off;                             /**< FHSS (parent): no bursts to this LFN (FHSS_LFN_BURST_FAILS_OFF failed, none acknowledged) */
 } lfn_unicast_timing_info_t;
 
 /**
@@ -219,6 +222,7 @@ typedef struct fhss_ws_lfn_listen {
 #define FHSS_LFN_TX_MIN_PREP_US_DEFAULT         2000u   /**< Shortest time from release to TX; a closer window is skipped */
 #define FHSS_LFN_TX_TTL_INTERVALS_DEFAULT       20u     /**< Frame dropped after waiting this many listen intervals */
 #define FHSS_LFN_BURST_US_DEFAULT               10000u  /**< Next frame of a burst at most this long after the ACK of the previous one */
+#define FHSS_LFN_BURST_FAILS_OFF                2u      /**< Parent: no more bursts to an LFN after this many unacknowledged burst frames in a row, none acknowledged (an LFN that does not hold its window on the pending bit) */
 #define FHSS_LFN_PENDING_HOLD_US_DEFAULT        30000u  /**< LFN: window kept open this long after a frame with the frame-pending bit (covers its ACK, the parent's turnaround and CCA) */
 
 /**
@@ -279,6 +283,8 @@ typedef struct fhss_ws_lfn_stats {
     uint32_t tx_released;           /**< Parent: frames released for an LFN window */
     uint32_t tx_held;               /**< Parent: checks that held a frame for a later window */
     uint32_t tx_expired;            /**< Parent: frames dropped after their TTL */
+    uint32_t burst_lost;            /**< Parent: burst frames the LFN did not acknowledge */
+    uint32_t burst_off;             /**< Parent: LFNs for which bursts were turned off */
     uint32_t uplink_deferred;       /**< LFN: uplink frames held until the parent's broadcast dwell ended */
     uint32_t bc_windows_opened;     /**< LFN: windows opened in the parent's LFN broadcast slots */
     uint32_t bc_windows_skipped;    /**< LFN: broadcast windows skipped (unicast window open, late timer) */
