@@ -22,6 +22,9 @@ Documentation:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): how the stack was made
   generic, before and after;
 - [`docs/PORTING.md`](docs/PORTING.md): how to port it to a new platform;
+- [`docs/MAC_RETRY.md`](docs/MAC_RETRY.md): how the MAC times a retry after
+  a missing ACK, and the GS12 change (routers that collide at their parent
+  no longer retry in step);
 - [`docs/GENERICITY_PLAN.md`](docs/GENERICITY_PLAN.md): the plan, its
   specification and the progress table. The stack runs on FreeRTOS
 on the EFR32FG25, see
@@ -52,6 +55,7 @@ the fire-alarm protocol stack, which takes no code from it.
 | `tests/fhss_poll/` | — | FHSS TX queue poll: periodic against idle-poll skipping ([docs/PORTING.md](docs/PORTING.md)) |
 | `tests/lfn_units/` | — | LFN code outside the FHSS: asynchronous sweep hold-back, duplicates, TTL to LFN children, LPAS jitter ([docs/LFN_MAC.md](docs/LFN_MAC.md)) |
 | `tests/mac_window/` | — | An LFN's receive windows in the MAC and its radio-off rule after a data confirm ([docs/LFN_MAC.md](docs/LFN_MAC.md)) |
+| `tests/mac_retry/` | — | Backoff of a MAC retry after a missing ACK, with the FHSS hold: the fix against upstream's lock-step (GS12, [docs/MAC_RETRY.md](docs/MAC_RETRY.md)) |
 
 `rcp/` keeps its own `mac/rf_driver_storage.h`, which differs slightly from
 `nanostack/source/mac/rf_driver_storage.h`, exactly as before.
@@ -263,6 +267,16 @@ for turning the radio off after a data confirm, on a fake PHY
 
 ```bash
 tests/mac_window/run.sh [build dir]
+```
+
+The backoff of a MAC retry after a missing ACK (`mac_csma_backoff_get()`),
+with a fake FHSS hold and scripted draws, built with and without
+`NS_MAC_RETRY_SUN_BACKOFF`: two routers hidden from each other retry less
+than a frame apart in every case upstream, and at most 72 % (first retry),
+41 % (next ones) with the fix ([docs/MAC_RETRY.md](docs/MAC_RETRY.md)):
+
+```bash
+tests/mac_retry/run.sh [build dir]
 ```
 
 ## Verification

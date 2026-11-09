@@ -49,6 +49,7 @@
 #include "mac/ieee802154/mac_indirect_data.h"
 #include "mac/ieee802154/mac_cca_threshold.h"
 #include "mac/ieee802154/mac_mode_switch.h"
+#include "mac/ieee802154/mac_retry_backoff.h"
 #include "mac/rf_driver_storage.h"
 
 #include "nanostack/mac/sw_mac.h"
@@ -1487,8 +1488,8 @@ static void mac_security_authentication_data_params_set(ccm_globals_t *ccm_ptr, 
 static uint32_t mcps_calculate_tx_time(protocol_interface_rf_mac_setup_s *rf_mac_setup, uint32_t time_to_tx)
 {
     // Max. time to TX is 65ms
-    if (time_to_tx > 65000) {
-        time_to_tx = 65000;
+    if (time_to_tx > MAC_TX_TIME_MAX_US) {
+        time_to_tx = MAC_TX_TIME_MAX_US;
     }
     return mac_mcps_sap_get_phy_timestamp(rf_mac_setup) + time_to_tx;
 }

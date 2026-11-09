@@ -79,6 +79,16 @@ project(nanostack-generic-standalone C)
 #                               periodic poll of the reference. Defines
 #                               NS_FHSS_POLL_SKIP_IDLE for nanostack_eventloop
 #                               and its consumers (the RCP library)
+#   NANOSTACK_MAC_RETRY_SUN_BACKOFF
+#                               a MAC retry after a missing ACK (FFN, with
+#                               FHSS) waits for the FHSS hold, then a random
+#                               backoff in IEEE 802.15.4 SUN backoff units
+#                               (1 ms + 8 symbols) instead of 20 symbols
+#                               (GS12, docs/MAC_RETRY.md): two routers that
+#                               do not hear each other no longer retry in
+#                               step after a collision. Default ON; OFF gives
+#                               the upstream backoff. Defines
+#                               NS_MAC_RETRY_SUN_BACKOFF for the RCP library
 # mbedTLS: if the consumer already defines MbedTLS::mbedtls,
 # MbedTLS::mbedcrypto and MbedTLS::mbedx509, they are used as they are;
 # otherwise find_package(MbedTLS) looks for v3.0.0.
@@ -91,6 +101,7 @@ option(NANOSTACK_TLS_STRONG_PORT_ENTROPY "The port's random source is a TRNG: st
 option(NANOSTACK_EVENTLOOP_SKIP_IDLE_TICKS "Idle-tick skipping: the 10 ms tick runs only when an event timer is due" ON)
 option(NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE "Idle-tick skipping of the protocol timers: they run only when a module has work" ON)
 option(NANOSTACK_PROTOCOL_TIMERS_SKIP_HOUSEKEEPING "With NANOSTACK_PROTOCOL_TIMERS_SKIP_IDLE: idle housekeeping (cache collections, MLD query timer, an LFN's blacklist purge) does not wake the stack" ON)
+option(NANOSTACK_MAC_RETRY_SUN_BACKOFF "A MAC retry after a missing ACK: the FHSS hold, then a random backoff in IEEE 802.15.4 SUN backoff units (GS12)" ON)
 option(NANOSTACK_FHSS_POLL_SKIP_IDLE "Idle-poll skipping: before the FHSS schedules start, the TX queue is polled only while it holds frames" ON)
 
 if(NANOSTACK_PORT MATCHES "^nanostack_port_(posix|sim)$")
@@ -442,6 +453,9 @@ function(nanostack_add_rcp_library name)
     )
     if(ARG_DEFINITIONS)
         target_compile_definitions(${name} PRIVATE ${ARG_DEFINITIONS})
+    endif()
+    if(NANOSTACK_MAC_RETRY_SUN_BACKOFF)
+        target_compile_definitions(${name} PRIVATE NS_MAC_RETRY_SUN_BACKOFF)
     endif()
     target_link_libraries(${name} PUBLIC
         ${NANOSTACK_PORT} nanostack_eventloop nanostack_libservice

@@ -35,6 +35,7 @@
 #include "mac/ieee802154/mac_mcps_sap.h"
 #include "mac/ieee802154/mac_cca_threshold.h"
 #include "mac/ieee802154/mac_mode_switch.h"
+#include "mac/ieee802154/mac_retry_backoff.h"
 #include "mac/rf_driver_storage.h"
 #include "mbed-client-libservice/ns_trace.h"
 
@@ -109,6 +110,18 @@ uint32_t mac_csma_backoff_get(protocol_interface_rf_mac_setup_s *rf_mac_setup)
         backoff_in_us = 1;
     }
     if (rf_mac_setup->fhss_api) {
+#ifdef NS_MAC_RETRY_SUN_BACKOFF
+        // GS12: a retry after a missing ACK (an FFN's): the FHSS hold, then
+        // a random backoff in SUN backoff units (mac_retry_backoff.h)
+        if (rf_mac_setup->mac_tx_retry && !rf_mac_setup->mac_rx_windows) {
+            uint32_t min_us = MIN_FHSS_CSMA_PERIOD_US;
+            if (rf_mac_setup->active_pd_data_request->phy_mode_id) {
+                min_us += MDR_SETTLING_TIME_US;
+            }
+            uint32_t hold_us = rf_mac_setup->fhss_api->get_retry_period(rf_mac_setup->fhss_api, rf_mac_setup->active_pd_data_request->DstAddr, rf_mac_setup->phy_mtu_size);
+            return mac_retry_backoff_us(hold_us, backoff, mac_sun_unit_backoff_us(rf_mac_setup->symbol_time_ns), min_us);
+        }
+#endif
         if (rf_mac_setup->active_pd_data_request->phy_mode_id) {
             backoff_in_us += MDR_SETTLING_TIME_US;
         }
